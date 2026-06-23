@@ -37,7 +37,7 @@ prior-art review (psdoom-ng), and open decisions.
 ## Requirements (planned)
 
 - macOS (Apple Silicon or Intel), any version supporting SDL2
-- A retail or shareware Ultimate Doom or Doom II WAD
+- A retail Ultimate Doom or Doom II WAD (or the Doom shareware WAD, `doom1.wad`, for testing)
 
 ---
 
