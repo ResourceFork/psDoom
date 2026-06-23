@@ -96,7 +96,7 @@ From the recovered info page (`psDoom for OS X/X11 - 1.0`):
   it kills the process. Shipped **pre-compiled**.
 - **No confirmation / no undo** — the page explicitly warns that killing a labeled monster kills
   the process with no "save your work?" prompt.
-- **Requirements:** an Ultimate Doom or Doom II WAD (retail or shareware), any Mac running
+- **Requirements:** a retail Ultimate Doom or Doom II WAD (or the Doom shareware WAD, `doom1.wad`, for testing), any Mac running
   **Mac OS X + X11**.
 - **Run:** under X11, `cd` into the psdoom folder and `./psdoom`.
 - **Upstream link:** http://psdoom.sourceforge.net/
