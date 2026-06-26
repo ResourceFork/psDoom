@@ -27,6 +27,7 @@
 enum
 {
     psd_row_killpolicy,
+    psd_row_monstercap,
     psd_row_allusers,
     psd_row_showlabels,
     psd_row_labelrange,
@@ -56,10 +57,11 @@ extern menu_t OptionsDef;
 static menuitem_t PsDoomMenu[] =
 {
     /* status 3 = left/right/enter cycles, no mouse-x (Crispy convention). */
-    {3, "", psdoom_opt_cycle_killpolicy, 'k'},
-    {3, "", psdoom_opt_toggle_allusers,  'a'},
-    {3, "", psdoom_opt_toggle_labels,    'l'},
-    {3, "", psdoom_opt_cycle_labelrange, 'd'},
+    {3, "", psdoom_opt_cycle_killpolicy,  'k'},
+    {3, "", psdoom_opt_adjust_monstercap, 'm'},
+    {3, "", psdoom_opt_toggle_allusers,   'a'},
+    {3, "", psdoom_opt_toggle_labels,     'l'},
+    {3, "", psdoom_opt_cycle_labelrange,  'd'},
 };
 
 static menu_t PsDoomDef =
@@ -105,6 +107,14 @@ static void M_DrawPsDoom(void)
                  crstr[CR_NONE], vc, psd_killpolicy_names[psdoom_kill_policy]);
         M_WriteText(PSD_MENU_X, PSD_MENU_Y + psd_row_killpolicy * PSD_MENU_LH, buf);
     }
+
+    /* Max live monsters: a left/right slider clamped to 5..35. */
+    {
+        char numbuf[16];
+        snprintf(numbuf, sizeof(numbuf), "%d", psdoom_monster_cap);
+        PSD_Row(psd_row_monstercap, "Max live monsters", numbuf, 1, 1);
+    }
+
     PSD_Row(psd_row_allusers, "Target all users' processes",
             psdoom_all_users ? "on" : "off", 1, psdoom_all_users);
     PSD_Row(psd_row_showlabels, "Show process labels",

@@ -62,11 +62,8 @@
  * comfortably larger than the cap. */
 #define PSD_CANDIDATE_CAP 64
 
-/* Hard cap on *live* process-monsters at once. The E1M1 courtyard and hallways
- * become impassable with more, so this keeps the level playable. The curated
- * list is relevance-ordered, so the cap keeps the most relevant processes.
- * Tunable (the user wanted ~20-25). */
-#define PSD_MONSTER_CAP   24
+/* The live-monster cap is now a user setting (psdoom_monster_cap, the menu
+ * slider). The candidate pool stays comfortably larger than its max. */
 
 /* Cap on remembered killed-this-level processes (see PSD_MarkKilled). */
 #define PSD_MAX_KILLED    1024
@@ -375,7 +372,7 @@ void psdoom_sync(void)
      *    and only up to the live-monster cap so the level stays playable.
      *    psd_selected is relevance-ordered, so the cap keeps the most relevant. */
     live = PSD_LiveMonsterCount();
-    for (i = 0; i < n && live < PSD_MONSTER_CAP; i++)
+    for (i = 0; i < n && live < psdoom_monster_cap; i++)
     {
         const psd_proc_t *p = &psd_selected[i];
 

@@ -11,6 +11,7 @@
 int psdoom_kill_policy = PSD_KILL_RENICE;   /* SAFE default: renice, never kill
                                              * (opt into real kills via the menu
                                              * or the -psdoom-live flag)       */
+int psdoom_monster_cap = 24;                /* live-monster cap; menu slider   */
 int psdoom_all_users   = 0;                 /* default: our own processes     */
 int psdoom_show_labels = 1;                 /* default: labels on             */
 int psdoom_label_range = PSD_LABELS_NORMAL;
@@ -38,6 +39,16 @@ void psdoom_options_parse_args(void)
     if (M_ParmExists("-psdoom-nolabels"))
     {
         psdoom_show_labels = 0;
+    }
+
+    /* Sanitize a config-loaded cap into the valid slider range. */
+    if (psdoom_monster_cap < PSD_MONSTER_CAP_MIN)
+    {
+        psdoom_monster_cap = PSD_MONSTER_CAP_MIN;
+    }
+    if (psdoom_monster_cap > PSD_MONSTER_CAP_MAX)
+    {
+        psdoom_monster_cap = PSD_MONSTER_CAP_MAX;
     }
 }
 
@@ -94,6 +105,20 @@ static void psd_cycle(int *value, int choice, int count)
 void psdoom_opt_cycle_killpolicy(int choice)
 {
     psd_cycle(&psdoom_kill_policy, choice, PSD_KILL_NUM);
+}
+
+void psdoom_opt_adjust_monstercap(int choice)
+{
+    psdoom_monster_cap += (choice == 1) ? 1 : -1;
+
+    if (psdoom_monster_cap < PSD_MONSTER_CAP_MIN)
+    {
+        psdoom_monster_cap = PSD_MONSTER_CAP_MIN;
+    }
+    if (psdoom_monster_cap > PSD_MONSTER_CAP_MAX)
+    {
+        psdoom_monster_cap = PSD_MONSTER_CAP_MAX;
+    }
 }
 
 void psdoom_opt_toggle_allusers(int choice)

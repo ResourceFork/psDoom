@@ -449,6 +449,7 @@ void D_BindVariables(void)
 
     // [psDoom] bind options config variables (persisted across runs)
     M_BindIntVariable("psdoom_kill_policy",     &psdoom_kill_policy);
+    M_BindIntVariable("psdoom_monster_cap",     &psdoom_monster_cap);
     M_BindIntVariable("psdoom_all_users",       &psdoom_all_users);
     M_BindIntVariable("psdoom_show_labels",     &psdoom_show_labels);
     M_BindIntVariable("psdoom_label_range",     &psdoom_label_range);
