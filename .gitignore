@@ -80,7 +80,7 @@ fastlane/test_output
 xcuserdata/
 *.xcuserstate
 
-# Doom IWAD/PWAD game data (not GPL, never commit)
-*.wad
-*.WAD
+# Doom IWAD runtime data (not GPL, never commit). Path-anchored on purpose: the
+# recovered original source under docs/original/ legitimately tracks .wad files,
+# so a blanket *.wad ignore would be wrong here.
 /wads/
