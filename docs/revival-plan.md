@@ -9,8 +9,8 @@ no engine code has been modified for psDoom yet.
 ```
 third_party/crispy-doom/   vendored engine, kept pristine (provenance: third_party/README.md)
 src/app/macos/             the .app launcher (launcher_main.c + Info.plist.in)
-src/psdoom/                process<->monster game logic        (to be written)
-src/platform/macos/        native libproc/renice/kill backend  (to be written)
+src/psdoom/                process<->monster game logic + triage
+src/platform/macos/        native sysctl/renice/kill backend
 CMakeLists.txt             single build: engine + psDoom.app bundle
 docs/                      handoff.md (origin context), revival-plan.md (this), original/ (archive)
 wads/                      runtime IWAD (gitignored, not GPL)
@@ -49,10 +49,31 @@ in the vendored tree, and each is recorded in `third_party/README.md`:
 
 ## New modules
 
+The process data flows through three isolated layers, OS -> policy -> game, so
+each concern can be reasoned about (and the triage tested) on its own:
+
+```
+proc_macos        ->   proc_select         ->   psdoom
+(read the OS)          (filter/rank/             (turn the curated
+                        truncate)                 collection into monsters)
+```
+
+- `src/platform/macos/` — native macOS process backend (no engine, no policy):
+  - `proc_macos.c` / `proc_macos.h` — enumerate via `sysctl(KERN_PROC_ALL)` (pid, ppid, uid,
+    daemon flag, short name), renice via `setpriority(PRIO_PROCESS, pid, nice)`, kill via
+    `kill(pid, SIGTERM)`.
 - `src/psdoom/` — game-side logic:
-  - `psdoom.c` / `psdoom.h` — process↔monster registry, spawn/wound/kill policy, label text. Engine-facing API: `psdoom_init`, `psdoom_sync`, `psdoom_wound(mobj)`, `psdoom_kill(mobj)`.
-- `src/platform/macos/` — native macOS process backend:
-  - `proc_macos.c` / `proc_macos.h` — enumerate via `libproc` (`proc_listpids` / `proc_pidinfo`), renice via `setpriority(PRIO_PROCESS, pid, nice)`, kill via `kill(pid, SIGTERM)` escalating to `SIGKILL`.
+  - `proc_select.c` / `proc_select.h` — the process reader/evaluator (no engine deps, no game
+    state). `psd_select_collect()` acquires the live list and returns a curated, ranked,
+    truncated collection of `psd_proc_t`; the pure `psd_select_triage()` does the
+    filter+rank+truncate so the policy is testable in isolation. Owns the safety exclusions
+    (session-critical name deny-list + launcher-chain `ppid` walk) and the relevance ranking
+    (interactive/tty processes score highest; a tunable noise-substring list sinks system
+    helpers) so the most relevant processes survive truncation.
+  - `psdoom.c` / `psdoom.h` — the monster creator. Consumes `proc_select`'s collection and
+    reconciles monsters (spawn/retire), draws labels, and maps wound->renice / kill->SIGTERM.
+    Engine-facing API: `psdoom_init`, `psdoom_sync`, `psdoom_wound(mobj)`, `psdoom_kill(mobj)`,
+    `psdoom_draw_label(...)`.
 
 ## Hook points (vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`)
 
@@ -108,11 +129,23 @@ in the vendored tree, and each is recorded in `third_party/README.md`:
     Also raised the per-sync process cap (`PSD_MAX_PROCS` 512 -> 4096): a busy desktop has >512
     processes, and the old cap silently dropped many (including those critical ones), which both
     hid processes and would have let the filter miss them.
+  - Process-selection layer (`src/psdoom/proc_select.{h,c}`): an isolated, engine-free reader that
+    acquires the live process list and returns a curated, ranked, truncated collection. It owns
+    the safety exclusions and a relevance ranking (interactive/tty processes first; a tunable
+    noise-substring list sinks system helpers) so the most relevant processes survive truncation
+    to the candidate cap. `psdoom_sync` is now just the monster creator: it consumes the
+    collection and reconciles monsters, with no triage logic of its own. The triage core
+    (`psd_select_triage`) is a pure function over an input snapshot, so the policy can be
+    exercised in isolation.
 - **Next:**
-  1. Placement: the E1M1 courtyard only fits a few dozen monsters, so on a busy machine most
-     processes collide and don't appear. Add a larger arena / custom WAD (as the original did)
-     and/or daemon filtering.
-  2. Safety polish: optional all-users mode (opt-in), and a kill confirmation / undo grace period.
+  1. Placement: the courtyard's pid-hash grid (`pid%16`, `pid%10`) collides, so the monsters that
+     actually appear are chosen by pid hash, not relevance -- the ranking only decides the
+     candidate pool. Assign cells in relevance order (stable per pid) and/or use a larger arena /
+     custom WAD so the most-relevant processes reliably show.
+  2. Richer relevance signals: the ranking is name + tty only. Surfacing CPU/memory from the
+     backend (e.g. `proc_pid_rusage`) would let "busy/heavy" processes rank up -- a natural psDoom
+     metric -- instead of the current heuristic noise list.
+  3. Safety polish: optional all-users mode (opt-in), and a kill confirmation / undo grace period.
 
 > Runtime note: a Doom or Doom II WAD is required to launch (not committed — not GPL). A shareware
 > `DOOM1.WAD` in `wads/` is bundled automatically by the build.

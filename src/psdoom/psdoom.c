@@ -1,9 +1,16 @@
 /*
- * psDoom -- process-management layer.
+ * psDoom -- process-management layer (the "monster creator").
  *
- * Each of the current user's processes is represented by a monster spawned in
- * the E1M1 "hidden courtyard" (coordinates taken from the original psDoom).
- * Wounding a process-monster renices its process; killing it sends SIGTERM.
+ * Each process the player should see is represented by a monster spawned in the
+ * E1M1 "hidden courtyard" (coordinates taken from the original psDoom). Which
+ * processes those are -- ownership, safety exclusions, relevance ranking and
+ * truncation -- is decided entirely by the isolated proc_select layer; this
+ * file just turns the curated collection it returns into monsters and keeps
+ * them reconciled with the live set. Wounding a process-monster renices its
+ * process; killing it sends SIGTERM.
+ *
+ *     proc_macos  ->  proc_select  ->  psdoom (here)
+ *     (read OS)       (triage)         (spawn/reconcile/wound/kill/label)
  *
  * Engine integration points (see third_party/README.md):
  *   psdoom_init   <- D_DoomMain
@@ -18,7 +25,8 @@
  */
 
 #include "psdoom.h"
-#include "proc_macos.h"
+#include "proc_macos.h"     /* current uid, renice, kill */
+#include "proc_select.h"    /* curated process collection */
 
 #include <stdio.h>
 #include <string.h>
@@ -44,12 +52,14 @@
 
 /* ------------------------------------------------------------------ config */
 
-#define PSD_MAX_PROCS     4096  /* cap on processes considered per sync; high  *
-                                 * enough to cover a busy desktop so the safety*
-                                 * filter never misses a protected process     */
-#define PSD_SYNC_INTERVAL 35    /* tics between syncs (~1s at 35Hz)           */
-#define PSD_WOUND_NICE    4     /* priority drop per non-fatal hit            */
-#define PSD_MAX_ANCESTORS 16    /* depth of launcher-chain protection         */
+#define PSD_SYNC_INTERVAL 35    /* tics between syncs (~1s at 35Hz)            */
+#define PSD_WOUND_NICE    4     /* priority drop per non-fatal hit             */
+
+/* Truncation cap handed to the triage layer: at most this many (most-relevant)
+ * processes are candidates for monsters each sync. Comfortably above what the
+ * courtyard fits, so the relevance cut -- not this number -- is what the player
+ * notices on a busy machine. Tunable. */
+#define PSD_MAX_MONSTERS  64
 
 /* Label drawing. Scale is normalized to 320-space (>> hires) before this
  * comparison, so the threshold is resolution-independent. The original psDoom
@@ -64,33 +74,9 @@
 
 /* ------------------------------------------------------------------- state */
 
-static boolean      psd_enabled;
-static unsigned int psd_uid;        /* only represent our own processes       */
-static int          psd_self_pid;   /* never spawn the game itself            */
-static int          psd_next_sync;  /* leveltime gate                         */
-
-static psd_proc_t   psd_procs[PSD_MAX_PROCS];  /* reused scratch each sync     */
-
-/* Launcher chain (self -> shell -> terminal -> ...): rebuilt each sync by
- * walking ppid up from the game, so a stray shot can't kill what started us. */
-static int          psd_protected_pids[PSD_MAX_ANCESTORS];
-static int          psd_n_protected;
-
-/* Session-critical, UID-owned processes that must never become killable
- * monsters. Killing any of these would disrupt or end the GUI login session.
- * Matched against the kernel short name (p_comm, truncated to 16 chars).
- * NULL-terminated; extend as needed. */
-static const char *const psd_protected_names[] =
-{
-    "loginwindow",      /* killing this logs the user out                    */
-    "WindowServer",     /* the display server (usually _windowserver-owned)  */
-    "Dock",             /* Dock + Mission Control                            */
-    "Finder",
-    "SystemUIServer",   /* menu-bar extras                                   */
-    "launchd",          /* pid 1 (defensive; already excluded by pid<=1)     */
-    "kernel_task",      /* defensive                                         */
-    NULL,
-};
+static boolean    psd_enabled;
+static int        psd_next_sync;               /* leveltime gate              */
+static psd_proc_t psd_selected[PSD_MAX_MONSTERS]; /* curated set, reused each sync */
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -104,82 +90,14 @@ static boolean PSD_OnSpawnLevel(void)
         && gamemap == 1;
 }
 
-/* True if `pid` appears in this sync's process snapshot. */
-static boolean PSD_PidAlive(int pid, int nprocs)
+/* True if `pid` is in this sync's curated collection. */
+static boolean PSD_InSelected(int pid, int n)
 {
     int i;
 
-    for (i = 0; i < nprocs; i++)
+    for (i = 0; i < n; i++)
     {
-        if (psd_procs[i].pid == pid)
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-/* True if `name` is on the session-critical deny-list. */
-static boolean PSD_IsProtectedName(const char *name)
-{
-    int i;
-
-    for (i = 0; psd_protected_names[i] != NULL; i++)
-    {
-        if (strcmp(name, psd_protected_names[i]) == 0)
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-/* Parent pid of `pid` in this sync's snapshot, or 0 if not found. */
-static int PSD_PpidOf(int pid, int nprocs)
-{
-    int i;
-
-    for (i = 0; i < nprocs; i++)
-    {
-        if (psd_procs[i].pid == pid)
-        {
-            return psd_procs[i].ppid;
-        }
-    }
-    return 0;
-}
-
-/* Rebuild the protected launcher chain: walk ppid up from the game (shell,
- * terminal, ...), so none of our ancestors can be turned into a monster. */
-static void PSD_BuildProtectedAncestors(int nprocs)
-{
-    int pid = psd_self_pid;
-    int guard;
-
-    psd_n_protected = 0;
-
-    for (guard = 0; guard < PSD_MAX_ANCESTORS; guard++)
-    {
-        int ppid = PSD_PpidOf(pid, nprocs);
-
-        if (ppid <= 1)
-        {
-            break;  /* reached launchd / kernel */
-        }
-
-        psd_protected_pids[psd_n_protected++] = ppid;
-        pid = ppid;
-    }
-}
-
-/* True if `pid` is in the protected launcher chain. */
-static boolean PSD_IsProtectedPid(int pid)
-{
-    int i;
-
-    for (i = 0; i < psd_n_protected; i++)
-    {
-        if (psd_protected_pids[i] == pid)
+        if (psd_selected[i].pid == pid)
         {
             return true;
         }
@@ -247,20 +165,19 @@ static boolean PSD_SpawnMonster(const psd_proc_t *p)
 
 void psdoom_init(void)
 {
-    psd_uid       = proc_macos_current_uid();
-    psd_self_pid  = (int) getpid();
+    psd_select_init();
     psd_next_sync = 0;
     psd_enabled   = true;
 
     fprintf(stderr, "psDoom: process management active (uid %u, pid %d)\n",
-            psd_uid, psd_self_pid);
+            proc_macos_current_uid(), (int) getpid());
 }
 
 void psdoom_sync(void)
 {
     thinker_t *th;
     thinker_t *next;
-    int nprocs;
+    int n;
     int i;
     int spawned = 0;
     int removed = 0;
@@ -277,12 +194,11 @@ void psdoom_sync(void)
     }
     psd_next_sync = leveltime + PSD_SYNC_INTERVAL;
 
-    nprocs = proc_macos_list(psd_procs, PSD_MAX_PROCS);
+    /* Ask the triage layer for the curated, ranked, truncated collection. */
+    n = psd_select_collect(psd_selected, PSD_MAX_MONSTERS);
 
-    /* Rebuild the protected launcher chain from this snapshot before spawning. */
-    PSD_BuildProtectedAncestors(nprocs);
-
-    /* 1) Retire monsters whose process has exited. */
+    /* 1) Retire monsters no longer in the curated set (process exited, or it
+     *    dropped below the relevance cut). */
     for (th = thinkercap.next; th != &thinkercap; th = next)
     {
         next = th->next;
@@ -290,7 +206,7 @@ void psdoom_sync(void)
         if (th->function.acp1 == (actionf_p1) P_MobjThinker)
         {
             mobj_t *mo = (mobj_t *) th;
-            if (mo->psd_pid != 0 && !PSD_PidAlive(mo->psd_pid, nprocs))
+            if (mo->psd_pid != 0 && !PSD_InSelected(mo->psd_pid, n))
             {
                 P_RemoveMobj(mo);
                 removed++;
@@ -298,16 +214,10 @@ void psdoom_sync(void)
         }
     }
 
-    /* 2) Spawn a monster for each of our processes not already represented. */
-    for (i = 0; i < nprocs; i++)
+    /* 2) Spawn a monster for each curated process not already represented. */
+    for (i = 0; i < n; i++)
     {
-        psd_proc_t *p = &psd_procs[i];
-
-        if (p->uid != psd_uid)        continue;  /* only our own processes      */
-        if (p->pid == psd_self_pid)   continue;  /* not the game itself         */
-        if (p->pid <= 1)              continue;  /* never kernel/launchd        */
-        if (PSD_IsProtectedName(p->name)) continue; /* session-critical process */
-        if (PSD_IsProtectedPid(p->pid))   continue; /* our shell/terminal chain */
+        const psd_proc_t *p = &psd_selected[i];
 
         if (PSD_FindMonster(p->pid) == NULL && PSD_SpawnMonster(p))
         {

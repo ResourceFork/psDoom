@@ -38,6 +38,7 @@ add_subdirectory(third_party/crispy-doom)
 # third_party/ stays untouched.
 target_sources(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
 target_include_directories(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
