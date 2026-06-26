@@ -102,11 +102,17 @@ in the vendored tree, and each is recorded in `third_party/README.md`:
     (`PSD_LABEL_MIN_SCALE`). Labels respect wall occlusion (drawn only if the sprite actually
     rendered a pixel, via `psd_col_drawn` in `R_DrawMaskedColumn`) and are offset by the 3D view
     window origin (`viewwindowx`/`viewwindowy`) so they stay aligned at reduced screen sizes.
+  - Protected-process safety filter: session-critical UID-owned processes (`loginwindow`, `Dock`,
+    `Finder`, `SystemUIServer`, ...) and the game's launcher chain (shell/terminal, found by
+    walking `ppid` up from the game) never spawn as monsters, so a stray shot can't SIGTERM them.
+    Also raised the per-sync process cap (`PSD_MAX_PROCS` 512 -> 4096): a busy desktop has >512
+    processes, and the old cap silently dropped many (including those critical ones), which both
+    hid processes and would have let the filter miss them.
 - **Next:**
   1. Placement: the E1M1 courtyard only fits a few dozen monsters, so on a busy machine most
      processes collide and don't appear. Add a larger arena / custom WAD (as the original did)
      and/or daemon filtering.
-  2. Safety polish: allow/deny filter and an optional all-users mode.
+  2. Safety polish: optional all-users mode (opt-in), and a kill confirmation / undo grace period.
 
 > Runtime note: a Doom or Doom II WAD is required to launch (not committed — not GPL). A shareware
 > `DOOM1.WAD` in `wads/` is bundled automatically by the build.

@@ -13,6 +13,7 @@
 typedef struct
 {
     int          pid;
+    int          ppid;                      /* parent pid (for safety filter) */
     unsigned int uid;
     int          is_daemon;                 /* 1 if it has no controlling tty */
     char         name[PSD_PROC_NAME_MAX];   /* short process name             */

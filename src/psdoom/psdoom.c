@@ -44,9 +44,12 @@
 
 /* ------------------------------------------------------------------ config */
 
-#define PSD_MAX_PROCS     512   /* cap on processes considered per sync       */
+#define PSD_MAX_PROCS     4096  /* cap on processes considered per sync; high  *
+                                 * enough to cover a busy desktop so the safety*
+                                 * filter never misses a protected process     */
 #define PSD_SYNC_INTERVAL 35    /* tics between syncs (~1s at 35Hz)           */
 #define PSD_WOUND_NICE    4     /* priority drop per non-fatal hit            */
+#define PSD_MAX_ANCESTORS 16    /* depth of launcher-chain protection         */
 
 /* Label drawing. Scale is normalized to 320-space (>> hires) before this
  * comparison, so the threshold is resolution-independent. The original psDoom
@@ -68,6 +71,27 @@ static int          psd_next_sync;  /* leveltime gate                         */
 
 static psd_proc_t   psd_procs[PSD_MAX_PROCS];  /* reused scratch each sync     */
 
+/* Launcher chain (self -> shell -> terminal -> ...): rebuilt each sync by
+ * walking ppid up from the game, so a stray shot can't kill what started us. */
+static int          psd_protected_pids[PSD_MAX_ANCESTORS];
+static int          psd_n_protected;
+
+/* Session-critical, UID-owned processes that must never become killable
+ * monsters. Killing any of these would disrupt or end the GUI login session.
+ * Matched against the kernel short name (p_comm, truncated to 16 chars).
+ * NULL-terminated; extend as needed. */
+static const char *const psd_protected_names[] =
+{
+    "loginwindow",      /* killing this logs the user out                    */
+    "WindowServer",     /* the display server (usually _windowserver-owned)  */
+    "Dock",             /* Dock + Mission Control                            */
+    "Finder",
+    "SystemUIServer",   /* menu-bar extras                                   */
+    "launchd",          /* pid 1 (defensive; already excluded by pid<=1)     */
+    "kernel_task",      /* defensive                                         */
+    NULL,
+};
+
 /* ------------------------------------------------------------------ helpers */
 
 /* The original spawns process-monsters only on Doom 1 E1M1 (and Doom 2
@@ -88,6 +112,74 @@ static boolean PSD_PidAlive(int pid, int nprocs)
     for (i = 0; i < nprocs; i++)
     {
         if (psd_procs[i].pid == pid)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* True if `name` is on the session-critical deny-list. */
+static boolean PSD_IsProtectedName(const char *name)
+{
+    int i;
+
+    for (i = 0; psd_protected_names[i] != NULL; i++)
+    {
+        if (strcmp(name, psd_protected_names[i]) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Parent pid of `pid` in this sync's snapshot, or 0 if not found. */
+static int PSD_PpidOf(int pid, int nprocs)
+{
+    int i;
+
+    for (i = 0; i < nprocs; i++)
+    {
+        if (psd_procs[i].pid == pid)
+        {
+            return psd_procs[i].ppid;
+        }
+    }
+    return 0;
+}
+
+/* Rebuild the protected launcher chain: walk ppid up from the game (shell,
+ * terminal, ...), so none of our ancestors can be turned into a monster. */
+static void PSD_BuildProtectedAncestors(int nprocs)
+{
+    int pid = psd_self_pid;
+    int guard;
+
+    psd_n_protected = 0;
+
+    for (guard = 0; guard < PSD_MAX_ANCESTORS; guard++)
+    {
+        int ppid = PSD_PpidOf(pid, nprocs);
+
+        if (ppid <= 1)
+        {
+            break;  /* reached launchd / kernel */
+        }
+
+        psd_protected_pids[psd_n_protected++] = ppid;
+        pid = ppid;
+    }
+}
+
+/* True if `pid` is in the protected launcher chain. */
+static boolean PSD_IsProtectedPid(int pid)
+{
+    int i;
+
+    for (i = 0; i < psd_n_protected; i++)
+    {
+        if (psd_protected_pids[i] == pid)
         {
             return true;
         }
@@ -187,6 +279,9 @@ void psdoom_sync(void)
 
     nprocs = proc_macos_list(psd_procs, PSD_MAX_PROCS);
 
+    /* Rebuild the protected launcher chain from this snapshot before spawning. */
+    PSD_BuildProtectedAncestors(nprocs);
+
     /* 1) Retire monsters whose process has exited. */
     for (th = thinkercap.next; th != &thinkercap; th = next)
     {
@@ -208,9 +303,11 @@ void psdoom_sync(void)
     {
         psd_proc_t *p = &psd_procs[i];
 
-        if (p->uid != psd_uid)      continue;  /* only our own processes      */
-        if (p->pid == psd_self_pid) continue;  /* not the game itself         */
-        if (p->pid <= 1)            continue;  /* never kernel/launchd        */
+        if (p->uid != psd_uid)        continue;  /* only our own processes      */
+        if (p->pid == psd_self_pid)   continue;  /* not the game itself         */
+        if (p->pid <= 1)              continue;  /* never kernel/launchd        */
+        if (PSD_IsProtectedName(p->name)) continue; /* session-critical process */
+        if (PSD_IsProtectedPid(p->pid))   continue; /* our shell/terminal chain */
 
         if (PSD_FindMonster(p->pid) == NULL && PSD_SpawnMonster(p))
         {

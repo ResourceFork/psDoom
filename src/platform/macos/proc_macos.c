@@ -63,6 +63,7 @@ int proc_macos_list(psd_proc_t *out, int max)
         }
 
         out[count].pid       = pid;
+        out[count].ppid      = kp->kp_eproc.e_ppid;
         out[count].uid       = (unsigned int) kp->kp_eproc.e_ucred.cr_uid;
         out[count].is_daemon = (kp->kp_eproc.e_tdev == NODEV) ? 1 : 0;
         strncpy(out[count].name, kp->kp_proc.p_comm, PSD_PROC_NAME_MAX - 1);
