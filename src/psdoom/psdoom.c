@@ -265,40 +265,66 @@ static mobjtype_t PSD_ClassifyMonster(const psd_proc_t *p)
     return psd_monster_tiers[0].type;
 }
 
-/* Spawn a monster for `p` at its courtyard grid cell. Returns true if placed. */
+/* Courtyard placement grid. Origin is the original psDoom's E1M1 "hidden
+ * courtyard"; the cell spacing is wide enough to fit a Baron (radius 24) so the
+ * big memory-hog monsters actually spawn, and the grid stays within the
+ * courtyard footprint. Monsters wander once active, so this only sets the
+ * initial spawn position. */
+#define PSD_COURT_X   1800
+#define PSD_COURT_Y  (-3600)
+#define PSD_CELL        56
+#define PSD_COLS        11
+#define PSD_ROWS         7
+
+/* Spawn `p`'s monster at the first free courtyard cell, scanning row-major.
+ * The caller iterates the curated list in relevance order, so the most relevant
+ * processes claim cells first and reliably appear -- no more losing monsters to
+ * pid-hash collisions, and big monsters get room to spawn. Returns true if
+ * placed. */
 static boolean PSD_SpawnMonster(const psd_proc_t *p)
 {
-    fixed_t x;
-    fixed_t y;
-    mobjtype_t type;
+    mobjtype_t type = PSD_ClassifyMonster(p);  /* footprint -> toughness */
     mobj_t *mo;
+    int col;
+    int row;
 
-    /* E1M1 "hidden courtyard" grid, from the original psDoom's add_new_process(). */
-    x = (1800 + (p->pid % 16) * 40) << FRACBITS;
-    y = (-3600 + (p->pid % 10) * 40) << FRACBITS;
-
-    type = PSD_ClassifyMonster(p);  /* memory footprint -> monster toughness */
-
-    mo = P_SpawnMobj(x, y, ONFLOORZ, type);
+    mo = P_SpawnMobj(PSD_COURT_X * FRACUNIT, PSD_COURT_Y * FRACUNIT,
+                     ONFLOORZ, type);
     if (mo == NULL)
     {
         return false;
     }
 
-    /* Process-monsters don't count toward the level kill %. */
-    mo->flags &= ~MF_COUNTKILL;
-    mo->psd_pid = p->pid;
-    strncpy(mo->psd_name, p->name, sizeof(mo->psd_name) - 1);
-    mo->psd_name[sizeof(mo->psd_name) - 1] = '\0';
-
-    /* If it landed on top of something, drop it and retry next sync. */
-    if (!P_CheckPosition(mo, mo->x, mo->y))
+    for (row = 0; row < PSD_ROWS; row++)
     {
-        P_RemoveMobj(mo);
-        return false;
+        for (col = 0; col < PSD_COLS; col++)
+        {
+            fixed_t x = (PSD_COURT_X + col * PSD_CELL) * FRACUNIT;
+            fixed_t y = (PSD_COURT_Y + row * PSD_CELL) * FRACUNIT;
+
+            /* P_CheckPosition is clear only when the cell has no wall and no
+             * other thing -- i.e. the cell is free. */
+            if (P_CheckPosition(mo, x, y))
+            {
+                P_UnsetThingPosition(mo);
+                mo->x = x;
+                mo->y = y;
+                mo->floorz = mo->z = tmfloorz;
+                mo->ceilingz = tmceilingz;
+                P_SetThingPosition(mo);
+
+                mo->flags &= ~MF_COUNTKILL;   /* not part of the level kill % */
+                mo->psd_pid = p->pid;
+                strncpy(mo->psd_name, p->name, sizeof(mo->psd_name) - 1);
+                mo->psd_name[sizeof(mo->psd_name) - 1] = '\0';
+                return true;
+            }
+        }
     }
 
-    return true;
+    /* Courtyard full this sync; drop it and retry next time. */
+    P_RemoveMobj(mo);
+    return false;
 }
 
 /* ---------------------------------------------------------------- public API */

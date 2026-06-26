@@ -173,17 +173,19 @@ proc_macos        ->   proc_select         ->   psdoom
     pool (`PSD_CANDIDATE_CAP`, 64) stays relevance-ordered, so the cap keeps the most relevant
     processes on screen. Raising the cap takes effect next sync; lowering it stops new spawns and
     lets the count thin naturally (existing monsters aren't culled).
+  - Placement: monsters now spawn into the first *free* courtyard cell, scanned in relevance order
+    (`PSD_SpawnMonster` grid-search via `P_CheckPosition` + relocate), instead of a pid-hash cell.
+    So the most-relevant processes reliably appear (no more losing monsters to pid collisions),
+    and the wider grid spacing (56, was 40) fits Baron-sized monsters so the big memory-hogs
+    actually spawn. Monsters wander once active, so this only sets the initial position.
 - **Next:**
-  1. Placement: the courtyard's pid-hash grid (`pid%16`, `pid%10`) collides, so the monsters that
-     actually appear are chosen by pid hash, not relevance -- the ranking only decides the
-     candidate pool. This now also gates the *big* monsters: Baron/Cyberdemon (radius 24-40) rarely
-     fit the 40-unit grid and fail `P_CheckPosition`, so a memory hog often won't appear until it
-     lands a free cell. Assign cells in relevance order (stable per pid) and/or use a larger arena /
-     custom WAD so the most-relevant (and biggest) processes reliably show.
-  2. CPU load as a second toughness/behavior signal. Memory drives the monster *type* because it's
+  1. CPU load as a second toughness/behavior signal. Memory drives the monster *type* because it's
      stable (CPU% would make types flap frame to frame); CPU is better suited to dynamic behavior
      (e.g. a high-CPU process is more aggressive/faster). Needs delta sampling between syncs
      (cumulative CPU time alone just favors long-lived processes), plus a small per-pid history.
+  2. Larger arena / custom WAD: the courtyard (~11x7 cells at 56) tops out short of the slider's
+     max of 35 on busy maps, and a Cyberdemon (radius 40) needs more elbow room than 56 spacing
+     gives. A dedicated pen (as the original psDoom shipped) would lift both limits.
   3. Safety polish: a kill confirmation / undo grace period (all-users mode and a non-lethal
      "safe" kill policy now exist via the psDoom options menu / `-psdoom-*` flags).
 
