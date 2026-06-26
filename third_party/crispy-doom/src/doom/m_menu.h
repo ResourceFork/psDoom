@@ -25,6 +25,50 @@
 #include "d_event.h"
 
 //
+// [crispy] menu item / menu definitions. Exposed here (rather than kept private
+// to m_menu.c) so the psDoom options menu (src/psdoom/psdoom_menu.c) can define
+// its own self-contained menu page without living in m_menu.c.
+//
+typedef struct
+{
+    // 0 = no cursor here, 1 = ok, 2 = arrows ok
+    // [crispy] 3 = arrows ok, no mouse x
+    // [crispy] 4 = arrows ok, enter for numeric entry, no mouse x
+    short	status;
+
+    char	name[10];
+
+    // choice = menu item #.
+    // if status = 2 or 3,
+    //   choice=0:leftarrow,1:rightarrow
+    // [crispy] if status = 4,
+    //   choice=0:leftarrow,1:rightarrow,2:enter
+    void	(*routine)(int choice);
+
+    // hotkey in menu
+    char	alphaKey;
+    const char	*alttext; // [crispy] alternative text for menu items
+} menuitem_t;
+
+typedef struct menu_s
+{
+    short		numitems;	// # of menu items
+    struct menu_s*	prevMenu;	// previous menu
+    menuitem_t*		menuitems;	// menu items
+    void		(*routine)();	// draw routine
+    short		x;
+    short		y;		// x,y of menu
+    short		lastOn;		// last item user was on in menu
+    short		lumps_missing;	// [crispy] indicate missing menu graphics lumps
+} menu_t;
+
+// Switch to a different menu page.
+void M_SetupNextMenu(menu_t *menudef);
+
+// Draw a string using the HUD font (supports color escapes).
+void M_WriteText(int x, int y, const char *string);
+
+//
 // MENUS
 //
 // Called by main loop,

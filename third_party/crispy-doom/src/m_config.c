@@ -2581,6 +2581,18 @@ static default_t extra_defaults_list[] =
     //!
     // @game doom
     //
+    // [psDoom] options: kill policy, target-all-users, show-labels,
+    // label draw distance.
+    //
+
+    CONFIG_VARIABLE_INT(psdoom_kill_policy),
+    CONFIG_VARIABLE_INT(psdoom_all_users),
+    CONFIG_VARIABLE_INT(psdoom_show_labels),
+    CONFIG_VARIABLE_INT(psdoom_label_range),
+
+    //!
+    // @game doom
+    //
     // Misc. sound fixes.
     //
 

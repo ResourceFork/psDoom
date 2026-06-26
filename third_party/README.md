@@ -34,17 +34,21 @@ tree; only these thin call-sites and fields are in here:
 | File | Change |
 |---|---|
 | `src/doom/p_mobj.h` | Added `int psd_pid;` + `char psd_name[16];` to `mobj_t` (0 = ordinary monster). |
-| `src/doom/d_main.c` | `#include "psdoom.h"`; call `psdoom_init()` before the final `D_DoomLoop()`. |
+| `src/doom/d_main.c` | `#include "psdoom.h"`; call `psdoom_init()` before the final `D_DoomLoop()`. `#include "psdoom_options.h"` and `M_BindIntVariable` the four `psdoom_*` settings (alongside the crispy binds) so they persist in the config file. |
 | `src/doom/p_tick.c` | `#include "psdoom.h"`; call `psdoom_sync()` each tic in `P_Ticker` (after `P_RespawnSpecials`). |
 | `src/doom/p_inter.c` | `#include "psdoom.h"`; `psdoom_kill(target)` in `P_KillMobj`; `psdoom_wound(target)` in `P_DamageMobj` (survival path). |
 | `src/doom/r_defs.h` | Added `int psd_pid;` + `const char *psd_name;` to `vissprite_t` so the renderer can carry process identity onto a sprite. |
 | `src/doom/r_things.c` | `#include "psdoom.h"`; copy `psd_pid`/`psd_name` from the `mobj_t` onto the `vissprite_t` in `R_ProjectSprite`. `R_DrawMaskedColumn` records (`psd_col_drawn`/`psd_col_top`) whether a sprite actually rendered a pixel and its topmost row; `R_DrawVisSprite` resets that per sprite and calls `psdoom_draw_label(...)` only when something drew, so labels are suppressed for monsters fully hidden behind walls and anchored to the visible sprite top. |
+| `src/doom/m_menu.h` | Moved the `menuitem_t` / `menu_t` typedefs here from `m_menu.c`, and declared `M_SetupNextMenu` + `M_WriteText`, so the psDoom options page (`src/psdoom/psdoom_menu.c`) can build its own menu without living in `m_menu.c`. |
+| `src/doom/m_menu.c` | `#include "psdoom_menu.h"`; one `"psDoom"` item in `OptionsMenu` calling `M_PsDoom` (the doorway into the isolated psDoom menu). The moved typedefs are compiled out via `#if 0`; `M_SetupNextMenu`/`M_WriteText` forward decls un-`static`ed (extern, like the existing `M_StringWidth`). No psDoom menu data/draw code lives here. |
+| `src/m_config.c` | Four `CONFIG_VARIABLE_INT(psdoom_*)` entries so the options persist in the config file. |
 
 The `psdoom_*` entry points are implemented in `src/psdoom/` (+ `src/platform/macos/` for the
 native process backend): enumerate processes, spawn one monster per current-UID process on E1M1,
-wound -> renice, kill -> SIGTERM, and draw each process-monster's PID/name label above its
-sprite (`psdoom_draw_label`, using the HUD font). After an engine update, re-apply these
-call-site/field edits.
+wound -> renice, kill -> SIGTERM, draw each process-monster's PID/name label, and present an
+in-game psDoom options menu (`src/psdoom/psdoom_menu.c` + `psdoom_options.{h,c}`). All the menu's
+data, drawing and toggles live in `src/psdoom/`; `m_menu.c` only gains the one-line Options
+doorway. After an engine update, re-apply these call-site/field edits.
 
 ### Updating the engine
 

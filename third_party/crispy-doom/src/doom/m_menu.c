@@ -63,6 +63,7 @@
 
 #include "m_menu.h"
 #include "m_crispy.h" // [crispy] Crispness menu
+#include "psdoom_menu.h" // [psDoom] options sub-menu
 
 #include "v_trans.h" // [crispy] colored "invert mouse" message
 
@@ -164,6 +165,12 @@ extern boolean speedkeydown (void);
 //
 // MENU TYPEDEFS
 //
+// [psDoom] menuitem_t and menu_t are now declared in m_menu.h so the psDoom
+//  options page (src/psdoom/psdoom_menu.c) can define its own menu without
+//  living in this file. The originals are compiled out here (rather than
+//  deleted) to keep this a minimal, obvious diff against upstream Crispy.
+//
+#if 0
 typedef struct
 {
     // 0 = no cursor here, 1 = ok, 2 = arrows ok
@@ -198,6 +205,7 @@ typedef struct menu_s
     short		lastOn;		// last item user was on in menu
     short		lumps_missing;	// [crispy] indicate missing menu graphics lumps
 } menu_t;
+#endif // [psDoom] menuitem_t / menu_t now declared in m_menu.h
 
 short		itemOn;			// menu item skull is on
 short		skullAnimCounter;	// skull animation counter
@@ -255,9 +263,9 @@ static void M_DrawLoad(void);
 static void M_DrawSave(void);
 
 static void M_DrawSaveLoadBorder(int x,int y);
-static void M_SetupNextMenu(menu_t *menudef);
+void M_SetupNextMenu(menu_t *menudef); // [psDoom] un-static for psdoom_menu.c
 static void M_DrawThermo(int x,int y,int thermWidth,int thermDot);
-static void M_WriteText(int x, int y, const char *string);
+void M_WriteText(int x, int y, const char *string); // [psDoom] un-static for psdoom_menu.c
 int  M_StringWidth(const char *string); // [crispy] un-static
 static int  M_StringHeight(const char *string);
 static void M_StartMessage(const char *string, void *routine, boolean input);
@@ -401,6 +409,7 @@ enum
     mousesens,
     soundvol,
     crispness, // [crispy] Crispness menu
+    psdoomopt, // [psDoom] options sub-menu
     opt_end
 } options_e;
 
@@ -413,7 +422,8 @@ menuitem_t OptionsMenu[]=
     {-1,"",0,'\0'},
     {1,"M_MSENS",	M_Mouse,'m', "Mouse Sensitivity"}, // [crispy] mouse sensitivity menu
     {1,"M_SVOL",	M_Sound,'s', "Sound Volume"},
-    {1,"M_CRISPY",	M_CrispnessCur,'c', "Crispness"} // [crispy] Crispness menu
+    {1,"M_CRISPY",	M_CrispnessCur,'c', "Crispness"}, // [crispy] Crispness menu
+    {1,"M_PSDOOM",	M_PsDoom,'p', "psDoom"} // [psDoom] options sub-menu
 };
 
 menu_t  OptionsDef =

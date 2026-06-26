@@ -48,15 +48,16 @@ int psd_select_collect(psd_proc_t *out, int max);
  * the policy can be exercised directly in isolation.
  *
  *   raw / n_raw : the input snapshot
- *   uid         : keep only processes owned by this uid
+ *   uid         : keep only processes owned by this uid (unless all_users)
  *   self_pid    : the game's pid -- excluded, and the root of the launcher
  *                 chain that is walked (via ppid) and excluded
+ *   all_users   : if nonzero, do not filter by uid (show every user's procs)
  *   out / max   : destination (descending relevance) and its capacity
  *
  * Returns the count written to `out`.
  */
 int psd_select_triage(const psd_proc_t *raw, int n_raw,
-                      unsigned int uid, int self_pid,
+                      unsigned int uid, int self_pid, int all_users,
                       psd_proc_t *out, int max);
 
 #ifdef __cplusplus

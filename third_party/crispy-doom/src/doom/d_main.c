@@ -79,6 +79,7 @@
 
 #include "d_main.h"
 #include "psdoom.h"
+#include "psdoom_options.h" // [psDoom] persisted options
 
 #include "doom_icon.c"
 
@@ -445,6 +446,12 @@ void D_BindVariables(void)
         M_snprintf(buf, sizeof(buf), "chatmacro%i", i);
         M_BindStringVariable(buf, &chat_macros[i]);
     }
+
+    // [psDoom] bind options config variables (persisted across runs)
+    M_BindIntVariable("psdoom_kill_policy",     &psdoom_kill_policy);
+    M_BindIntVariable("psdoom_all_users",       &psdoom_all_users);
+    M_BindIntVariable("psdoom_show_labels",     &psdoom_show_labels);
+    M_BindIntVariable("psdoom_label_range",     &psdoom_label_range);
 
     // [crispy] bind "crispness" config variables
     M_BindIntVariable("crispy_automapoverlay",  &crispy->automapoverlay);

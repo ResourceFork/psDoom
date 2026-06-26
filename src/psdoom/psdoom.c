@@ -27,6 +27,7 @@
 #include "psdoom.h"
 #include "proc_macos.h"     /* current uid, renice, kill */
 #include "proc_select.h"    /* curated process collection */
+#include "psdoom_options.h" /* user-tunable settings (menu / CLI / config) */
 
 #include <stdio.h>
 #include <string.h>
@@ -49,6 +50,7 @@
 #include "i_video.h"    /* ORIGHEIGHT                           */
 #include "crispy.h"     /* crispy->hires                        */
 #include "r_main.h"     /* viewwindowx, viewwindowy             */
+#include "r_state.h"    /* sprites[], numsprites (WAD sprite check) */
 
 /* ------------------------------------------------------------------ config */
 
@@ -61,11 +63,12 @@
  * notices on a busy machine. Tunable. */
 #define PSD_MAX_MONSTERS  64
 
-/* Label drawing. Scale is normalized to 320-space (>> hires) before this
- * comparison, so the threshold is resolution-independent. The original psDoom
- * gated at 18000; we start more lenient so labels are easy to see, then it can
- * be tuned up to reduce clutter. */
-#define PSD_LABEL_MIN_SCALE 8000
+/* Cap on remembered killed-this-level processes (see PSD_MarkKilled). */
+#define PSD_MAX_KILLED    1024
+
+/* Label layout. The minimum sprite scale to draw a label at now comes from the
+ * "Label draw distance" option (psdoom_label_min_scale()); scale is normalized
+ * to 320-space (>> hires) before the comparison so it is resolution-independent. */
 /* Highest Y (320-space) we let the top label row sit, so both rows stay above
  * the 32px status bar (200 - 32 - 16). */
 #define PSD_LABEL_MAX_Y     (ORIGHEIGHT - 32 - 16)
@@ -77,6 +80,20 @@
 static boolean    psd_enabled;
 static int        psd_next_sync;               /* leveltime gate              */
 static psd_proc_t psd_selected[PSD_MAX_MONSTERS]; /* curated set, reused each sync */
+
+/* Processes the player has killed on the current level. Remembered (by pid +
+ * name, so a reused pid isn't wrongly suppressed) so psdoom_sync doesn't
+ * respawn them -- essential when the kill policy doesn't actually terminate the
+ * process, and the masking death-corpse may be retired. Cleared on level restart. */
+typedef struct
+{
+    int  pid;
+    char name[16];
+} psd_killed_t;
+
+static psd_killed_t psd_killed[PSD_MAX_KILLED];
+static int          psd_killed_count;
+static int          psd_last_leveltime;   /* detect a level restart */
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -105,6 +122,40 @@ static boolean PSD_InSelected(int pid, int n)
     return false;
 }
 
+/* True if (pid, name) was killed this level. The name is compared with the same
+ * truncation used when storing it, so it matches the mobj's psd_name. */
+static boolean PSD_IsKilled(int pid, const char *name)
+{
+    int i;
+
+    for (i = 0; i < psd_killed_count; i++)
+    {
+        if (psd_killed[i].pid == pid
+            && strncmp(psd_killed[i].name, name,
+                       sizeof(psd_killed[i].name) - 1) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Remember that the monster for (pid, name) was killed, so psdoom_sync won't
+ * respawn it this level. */
+static void PSD_MarkKilled(int pid, const char *name)
+{
+    if (pid <= 1 || psd_killed_count >= PSD_MAX_KILLED || PSD_IsKilled(pid, name))
+    {
+        return;
+    }
+
+    psd_killed[psd_killed_count].pid = pid;
+    strncpy(psd_killed[psd_killed_count].name, name,
+            sizeof(psd_killed[psd_killed_count].name) - 1);
+    psd_killed[psd_killed_count].name[sizeof(psd_killed[psd_killed_count].name) - 1] = '\0';
+    psd_killed_count++;
+}
+
 /* Return the live process-monster for `pid`, or NULL. */
 static mobj_t *PSD_FindMonster(int pid)
 {
@@ -124,6 +175,72 @@ static mobj_t *PSD_FindMonster(int pid)
     return NULL;
 }
 
+/*
+ * Map a process to a monster by its memory footprint: heavier process -> tougher
+ * monster. The ladder is grounded (no floating types) so the courtyard grid can
+ * place them, and ordered by Doom HP: Zombieman(20) -> Shotgun Guy(30) ->
+ * Imp(60) -> Pinky(150) -> Hell Knight(500) -> Baron(1000) -> Cyberdemon(4000).
+ * A process keeps getting wounded (reniced) until it dies, so a heavier process
+ * is literally harder to kill -- exactly the intent. Thresholds are tunable.
+ */
+static const struct
+{
+    unsigned long long max_bytes;   /* upper bound (exclusive) for this tier */
+    mobjtype_t         type;
+} psd_monster_tiers[] =
+{
+    {   16ULL << 20, MT_POSSESSED },  /* <  16 MB : Zombieman    */
+    {   64ULL << 20, MT_SHOTGUY  },   /* <  64 MB : Shotgun Guy  */
+    {  192ULL << 20, MT_TROOP    },   /* < 192 MB : Imp          */
+    {  512ULL << 20, MT_SERGEANT },   /* < 512 MB : Pinky Demon  */
+    { 1536ULL << 20, MT_KNIGHT   },   /* < 1.5 GB : Hell Knight  */
+    { 4096ULL << 20, MT_BRUISER  },   /* < 4   GB : Baron of Hell*/
+    { ~0ULL,         MT_CYBORG   },   /* >= 4  GB : Cyberdemon   */
+};
+
+/* True if monster `type`'s sprite is present in the loaded WAD. Spawning a
+ * monster the renderer can't draw is fatal (R_ProjectSprite I_Error), and the
+ * shareware IWAD is missing several monster sprites, so classification checks
+ * this and degrades to a drawable type. */
+static boolean PSD_MonsterDrawable(mobjtype_t type)
+{
+    statenum_t  st  = mobjinfo[type].spawnstate;
+    spritenum_t spr = states[st].sprite;
+
+    return spr >= 0 && spr < numsprites && sprites[spr].numframes > 0;
+}
+
+static mobjtype_t PSD_ClassifyMonster(const psd_proc_t *p)
+{
+    const int ntiers = (int) (sizeof(psd_monster_tiers) / sizeof(psd_monster_tiers[0]));
+    int ideal = ntiers - 1;
+    int i;
+
+    /* Toughest tier this footprint earns. */
+    for (i = 0; i < ntiers; i++)
+    {
+        if (p->footprint < psd_monster_tiers[i].max_bytes)
+        {
+            ideal = i;
+            break;
+        }
+    }
+
+    /* Degrade to the first lighter tier whose sprite the loaded WAD actually
+     * has. The shareware IWAD lacks Hell Knight / Cyberdemon sprites, and
+     * spawning an undrawable monster is fatal (R_ProjectSprite I_Error), so a
+     * heavy process caps at Baron there and uses the full ladder on a complete
+     * WAD. Zombieman (the last fallback) exists in every Doom IWAD. */
+    for (i = ideal; i > 0; i--)
+    {
+        if (PSD_MonsterDrawable(psd_monster_tiers[i].type))
+        {
+            return psd_monster_tiers[i].type;
+        }
+    }
+    return psd_monster_tiers[0].type;
+}
+
 /* Spawn a monster for `p` at its courtyard grid cell. Returns true if placed. */
 static boolean PSD_SpawnMonster(const psd_proc_t *p)
 {
@@ -136,8 +253,7 @@ static boolean PSD_SpawnMonster(const psd_proc_t *p)
     x = (1800 + (p->pid % 16) * 40) << FRACBITS;
     y = (-3600 + (p->pid % 10) * 40) << FRACBITS;
 
-    type = p->is_daemon ? MT_SERGEANT   /* daemons -> pink demons          */
-                        : MT_SHOTGUY;   /* tty-owning procs -> shotgun guys */
+    type = PSD_ClassifyMonster(p);  /* memory footprint -> monster toughness */
 
     mo = P_SpawnMobj(x, y, ONFLOORZ, type);
     if (mo == NULL)
@@ -166,8 +282,11 @@ static boolean PSD_SpawnMonster(const psd_proc_t *p)
 void psdoom_init(void)
 {
     psd_select_init();
-    psd_next_sync = 0;
-    psd_enabled   = true;
+    psdoom_options_parse_args();   /* let -psdoom-* flags override the config */
+    psd_next_sync      = 0;
+    psd_killed_count   = 0;
+    psd_last_leveltime = 0;
+    psd_enabled        = true;
 
     fprintf(stderr, "psDoom: process management active (uid %u, pid %d)\n",
             proc_macos_current_uid(), (int) getpid());
@@ -186,6 +305,15 @@ void psdoom_sync(void)
     {
         return;
     }
+
+    /* A fresh level restarts leveltime; forget this level's kills and resync
+     * immediately (this also clears a stale throttle when re-entering E1M1). */
+    if (leveltime < psd_last_leveltime)
+    {
+        psd_killed_count = 0;
+        psd_next_sync    = 0;
+    }
+    psd_last_leveltime = leveltime;
 
     /* Self-throttle: reconcile roughly once a second. */
     if (leveltime < psd_next_sync)
@@ -214,11 +342,16 @@ void psdoom_sync(void)
         }
     }
 
-    /* 2) Spawn a monster for each curated process not already represented. */
+    /* 2) Spawn a monster for each curated process not already represented,
+     *    unless the player already killed it this level (don't respawn kills). */
     for (i = 0; i < n; i++)
     {
         const psd_proc_t *p = &psd_selected[i];
 
+        if (PSD_IsKilled(p->pid, p->name))
+        {
+            continue;
+        }
         if (PSD_FindMonster(p->pid) == NULL && PSD_SpawnMonster(p))
         {
             spawned++;
@@ -235,7 +368,7 @@ void psdoom_wound(struct mobj_s *target)
 {
     mobj_t *mo = (mobj_t *) target;
 
-    if (mo != NULL && mo->psd_pid > 1)
+    if (mo != NULL && mo->psd_pid > 1 && psdoom_should_renice())
     {
         proc_macos_renice(mo->psd_pid, PSD_WOUND_NICE);
     }
@@ -245,10 +378,19 @@ void psdoom_kill(struct mobj_s *target)
 {
     mobj_t *mo = (mobj_t *) target;
 
-    if (mo != NULL && mo->psd_pid > 1)
+    if (mo == NULL || mo->psd_pid <= 1)
+    {
+        return;
+    }
+
+    if (psdoom_should_kill())
     {
         proc_macos_kill(mo->psd_pid);
     }
+
+    /* Remember it so psdoom_sync won't respawn it -- crucial when the kill
+     * policy leaves the real process running. */
+    PSD_MarkKilled(mo->psd_pid, mo->psd_name);
 }
 
 /* --------------------------------------------------------------- label draw */
@@ -292,8 +434,14 @@ void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
     int y;
     char buf[16];
 
-    /* Skip distant sprites to keep the screen readable. */
-    if ((scale >> hires) < PSD_LABEL_MIN_SCALE)
+    if (!psdoom_labels_enabled())
+    {
+        return;
+    }
+
+    /* Skip distant sprites to keep the screen readable (gate from the
+     * "Label draw distance" option). */
+    if ((scale >> hires) < psdoom_label_min_scale())
     {
         return;
     }

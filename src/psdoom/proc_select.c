@@ -8,6 +8,7 @@
 
 #include "proc_select.h"
 #include "proc_macos.h"
+#include "psdoom_options.h"   /* psdoom_all_users_enabled() */
 
 #include <stdlib.h>   /* qsort         */
 #include <string.h>   /* strcmp/strstr */
@@ -29,6 +30,7 @@
 #define PSD_SCORE_BASE        100
 #define PSD_SCORE_INTERACTIVE  50   /* bonus: has a controlling tty           */
 #define PSD_SCORE_NOISE        80   /* penalty: looks like a system helper     */
+#define PSD_SCORE_MEM_MAX     120   /* cap on the memory-footprint bonus       */
 
 /* ------------------------------------------------------------------- state */
 
@@ -106,6 +108,7 @@ static int select_is_noise_name(const char *name)
 static int select_score(const psd_proc_t *p)
 {
     int score = PSD_SCORE_BASE;
+    int mem_bonus;
 
     if (!p->is_daemon)                  /* interactive / tty-owning: user is here */
     {
@@ -115,6 +118,17 @@ static int select_score(const psd_proc_t *p)
     {
         score -= PSD_SCORE_NOISE;
     }
+
+    /* Heavier processes are more interesting (and become bigger monsters), so
+     * give them a bounded relevance bonus: ~+1 per 32 MB, capped. Keeps a
+     * memory hog from being truncated away before it can be classified. */
+    mem_bonus = (int) (p->footprint >> 25);   /* bytes / 32 MiB */
+    if (mem_bonus > PSD_SCORE_MEM_MAX)
+    {
+        mem_bonus = PSD_SCORE_MEM_MAX;
+    }
+    score += mem_bonus;
+
     return score;
 }
 
@@ -196,7 +210,7 @@ void psd_select_init(void)
 }
 
 int psd_select_triage(const psd_proc_t *raw, int n_raw,
-                      unsigned int uid, int self_pid,
+                      unsigned int uid, int self_pid, int all_users,
                       psd_proc_t *out, int max)
 {
     int ancestors[PSD_MAX_ANCESTORS];
@@ -218,7 +232,7 @@ int psd_select_triage(const psd_proc_t *raw, int n_raw,
     {
         const psd_proc_t *p = &raw[i];
 
-        if (p->uid != uid)                        continue; /* not ours        */
+        if (!all_users && p->uid != uid)          continue; /* not ours        */
         if (p->pid == self_pid)                   continue; /* the game itself  */
         if (p->pid <= 1)                          continue; /* kernel/launchd   */
         if (select_is_protected_name(p->name))    continue; /* session-critical */
@@ -243,5 +257,6 @@ int psd_select_collect(psd_proc_t *out, int max)
     int n_raw = proc_macos_list(select_raw, PSD_RAW_MAX);
 
     return psd_select_triage(select_raw, n_raw,
-                             select_uid, select_self_pid, out, max);
+                             select_uid, select_self_pid,
+                             psdoom_all_users_enabled(), out, max);
 }

@@ -71,9 +71,16 @@ proc_macos        ->   proc_select         ->   psdoom
     (interactive/tty processes score highest; a tunable noise-substring list sinks system
     helpers) so the most relevant processes survive truncation.
   - `psdoom.c` / `psdoom.h` — the monster creator. Consumes `proc_select`'s collection and
-    reconciles monsters (spawn/retire), draws labels, and maps wound->renice / kill->SIGTERM.
-    Engine-facing API: `psdoom_init`, `psdoom_sync`, `psdoom_wound(mobj)`, `psdoom_kill(mobj)`,
-    `psdoom_draw_label(...)`.
+    reconciles monsters (spawn/retire), draws labels, classifies by memory footprint, and maps
+    wound->renice / kill->SIGTERM. Engine-facing API: `psdoom_init`, `psdoom_sync`,
+    `psdoom_wound(mobj)`, `psdoom_kill(mobj)`, `psdoom_draw_label(...)`.
+  - `psdoom_options.{h,c}` — user-tunable settings (kill policy live/renice-only/simulate,
+    target-all-users, show-labels, label distance), the policy getters the game asks
+    (`psdoom_should_kill` etc.), and `-psdoom-*` CLI parsing. Engine-free; the ints are bound to
+    the config file (d_main.c) for persistence.
+  - `psdoom_menu.{h,c}` — the in-game psDoom options page: its own menu definition, drawing and
+    toggle wiring, fully isolated from the engine's menus. `m_menu.c` holds only a one-line
+    "psDoom" entry in the Options menu (`M_PsDoom`) as the doorway.
 
 ## Hook points (vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`)
 
@@ -137,15 +144,45 @@ proc_macos        ->   proc_select         ->   psdoom
     collection and reconciles monsters, with no triage logic of its own. The triage core
     (`psd_select_triage`) is a pure function over an input snapshot, so the policy can be
     exercised in isolation.
+  - Resource-based monster classification: a process's memory footprint (read via
+    `proc_pid_rusage`) drives monster toughness -- heavier process, bigger/harder monster.
+    `PSD_ClassifyMonster` maps footprint tiers to a grounded ladder (Zombieman -> Shotgun Guy ->
+    Imp -> Pinky -> Hell Knight -> Baron -> Cyberdemon; tunable table). Because a heavy monster
+    takes more hits, and each non-fatal hit renices, a memory hog is literally harder to kill.
+    Footprint also feeds the relevance ranking so heavy processes survive truncation. The
+    classifier is WAD-aware: it checks each candidate monster's sprite is actually loaded
+    (`sprites[].numframes`) and degrades to a lighter, drawable type otherwise -- so the
+    shareware IWAD (no Hell Knight / Cyberdemon sprites) caps at Baron instead of crashing
+    (`R_ProjectSprite` I_Error), while a registered Doom / Doom II WAD lights up the full ladder.
+  - In-game options menu: a dedicated psDoom page (reached from Options) with kill policy
+    (live / renice only / simulate), target-all-users, show-labels and label-distance. All of the
+    menu's data, drawing and toggles live in `src/psdoom/psdoom_menu.{c,h}` +
+    `psdoom_options.{c,h}`, isolated from the engine's menus (`m_menu.c` gains only a one-line
+    doorway). Settings persist in the config file and can be overridden with `-psdoom-safe` /
+    `-psdoom-simulate` / `-psdoom-live` / `-psdoom-allusers` / `-psdoom-nolabels`. Default kill
+    policy is **renice-only** (safe: wounding renices, but a monster's death never terminates the
+    process); real killing is opt-in via the menu or `-psdoom-live`, and the menu shows the live
+    mode in red. Killing a
+    process-monster is remembered for the level (`psd_killed`, by pid+name), so it doesn't
+    respawn on the next sync -- without this, a "killed" process in renice-only/simulate mode
+    (still running) would just reappear a second later. The set clears on level restart.
 - **Next:**
   1. Placement: the courtyard's pid-hash grid (`pid%16`, `pid%10`) collides, so the monsters that
      actually appear are chosen by pid hash, not relevance -- the ranking only decides the
-     candidate pool. Assign cells in relevance order (stable per pid) and/or use a larger arena /
-     custom WAD so the most-relevant processes reliably show.
-  2. Richer relevance signals: the ranking is name + tty only. Surfacing CPU/memory from the
-     backend (e.g. `proc_pid_rusage`) would let "busy/heavy" processes rank up -- a natural psDoom
-     metric -- instead of the current heuristic noise list.
-  3. Safety polish: optional all-users mode (opt-in), and a kill confirmation / undo grace period.
+     candidate pool. This now also gates the *big* monsters: Baron/Cyberdemon (radius 24-40) rarely
+     fit the 40-unit grid and fail `P_CheckPosition`, so a memory hog often won't appear until it
+     lands a free cell. Assign cells in relevance order (stable per pid) and/or use a larger arena /
+     custom WAD so the most-relevant (and biggest) processes reliably show.
+  2. CPU load as a second toughness/behavior signal. Memory drives the monster *type* because it's
+     stable (CPU% would make types flap frame to frame); CPU is better suited to dynamic behavior
+     (e.g. a high-CPU process is more aggressive/faster). Needs delta sampling between syncs
+     (cumulative CPU time alone just favors long-lived processes), plus a small per-pid history.
+  3. Safety polish: a kill confirmation / undo grace period (all-users mode and a non-lethal
+     "safe" kill policy now exist via the psDoom options menu / `-psdoom-*` flags).
+
+> Monster variety note: the bundled shareware `DOOM1.WAD` only has Episode 1 monster sprites, so
+> the classifier caps at Baron of Hell. Point psDoom at a registered Doom or Doom II IWAD to get
+> Hell Knights and Cyberdemons for your heaviest processes.
 
 > Runtime note: a Doom or Doom II WAD is required to launch (not committed — not GPL). A shareware
 > `DOOM1.WAD` in `wads/` is bundled automatically by the build.

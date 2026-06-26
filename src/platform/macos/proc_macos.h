@@ -12,11 +12,12 @@
 
 typedef struct
 {
-    int          pid;
-    int          ppid;                      /* parent pid (for safety filter) */
-    unsigned int uid;
-    int          is_daemon;                 /* 1 if it has no controlling tty */
-    char         name[PSD_PROC_NAME_MAX];   /* short process name             */
+    int                pid;
+    int                ppid;               /* parent pid (for safety filter)  */
+    unsigned int       uid;
+    int                is_daemon;          /* 1 if it has no controlling tty  */
+    unsigned long long footprint;          /* resident memory, bytes (0 if n/a) */
+    char               name[PSD_PROC_NAME_MAX]; /* short process name          */
 } psd_proc_t;
 
 #ifdef __cplusplus

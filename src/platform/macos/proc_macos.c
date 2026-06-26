@@ -13,11 +13,27 @@
 #include <sys/sysctl.h>
 #include <sys/proc.h>
 #include <sys/resource.h>
+#include <libproc.h>      /* proc_pid_rusage (per-process memory)            */
 #include <signal.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Current resident memory footprint of `pid` in bytes, or 0 if it can't be
+ * read (proc_pid_rusage only succeeds for our own processes -- which is exactly
+ * the set we care about). ri_phys_footprint matches Activity Monitor's
+ * "Memory" column. */
+static unsigned long long proc_macos_footprint(int pid)
+{
+    struct rusage_info_v2 ri;
+
+    if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *) &ri) == 0)
+    {
+        return ri.ri_phys_footprint;
+    }
+    return 0;
+}
 
 int proc_macos_list(psd_proc_t *out, int max)
 {
@@ -66,6 +82,7 @@ int proc_macos_list(psd_proc_t *out, int max)
         out[count].ppid      = kp->kp_eproc.e_ppid;
         out[count].uid       = (unsigned int) kp->kp_eproc.e_ucred.cr_uid;
         out[count].is_daemon = (kp->kp_eproc.e_tdev == NODEV) ? 1 : 0;
+        out[count].footprint = proc_macos_footprint(pid);
         strncpy(out[count].name, kp->kp_proc.p_comm, PSD_PROC_NAME_MAX - 1);
         out[count].name[PSD_PROC_NAME_MAX - 1] = '\0';
         count++;
