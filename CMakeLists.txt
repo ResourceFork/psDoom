@@ -69,25 +69,29 @@ set_target_properties(psDoom PROPERTIES
 
 add_dependencies(psDoom crispy-doom)
 
-# Assemble the bundle on EVERY build via an always-out-of-date custom target.
-# A plain POST_BUILD on psDoom is skipped when only the engine changed (the
-# launcher doesn't relink), which would leave a stale crispy-doom inside the
-# .app. This target re-copies whenever either psDoom or the engine is rebuilt.
+# Assemble the bundle as a POST_BUILD step of the app target itself, so building
+# (or running) the psDoom target/scheme always yields a complete .app. The
+# earlier separate "embed" target wasn't built by the psDoom scheme, leaving the
+# engine out of the bundle in Xcode. LINK_DEPENDS makes the app relink -- and so
+# re-run this assembly -- whenever the engine binary changes, so engine-only
+# rebuilds don't leave a stale bundle (CMake's Xcode post-build phases already
+# run on every build).
+set_target_properties(psDoom PROPERTIES LINK_DEPENDS "$<TARGET_FILE:crispy-doom>")
+
 set(_PSD_MACOS_DIR "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/MacOS")
 set(_PSD_RES_DIR   "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/Resources")
 
-add_custom_target(psdoom_embed ALL
+add_custom_command(TARGET psDoom POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_PSD_RES_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy
         "$<TARGET_FILE:crispy-doom>" "${_PSD_MACOS_DIR}/crispy-doom"
     VERBATIM
 )
-add_dependencies(psdoom_embed psDoom crispy-doom)
 
 # For local double-click play, bundle an IWAD if one is present in wads/.
 # Build-time convenience only; the WAD is gitignored and never committed.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD")
-    add_custom_command(TARGET psdoom_embed POST_BUILD
+    add_custom_command(TARGET psDoom POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD"
             "${_PSD_RES_DIR}/DOOM1.WAD"
