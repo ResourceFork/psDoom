@@ -57,11 +57,16 @@
 #define PSD_SYNC_INTERVAL 35    /* tics between syncs (~1s at 35Hz)            */
 #define PSD_WOUND_NICE    4     /* priority drop per non-fatal hit             */
 
-/* Truncation cap handed to the triage layer: at most this many (most-relevant)
- * processes are candidates for monsters each sync. Comfortably above what the
- * courtyard fits, so the relevance cut -- not this number -- is what the player
- * notices on a busy machine. Tunable. */
-#define PSD_MAX_MONSTERS  64
+/* Candidate pool: the triage layer returns at most this many (most-relevant)
+ * processes each sync. The live-monster cap below picks from these, so keep it
+ * comfortably larger than the cap. */
+#define PSD_CANDIDATE_CAP 64
+
+/* Hard cap on *live* process-monsters at once. The E1M1 courtyard and hallways
+ * become impassable with more, so this keeps the level playable. The curated
+ * list is relevance-ordered, so the cap keeps the most relevant processes.
+ * Tunable (the user wanted ~20-25). */
+#define PSD_MONSTER_CAP   24
 
 /* Cap on remembered killed-this-level processes (see PSD_MarkKilled). */
 #define PSD_MAX_KILLED    1024
@@ -79,7 +84,7 @@
 
 static boolean    psd_enabled;
 static int        psd_next_sync;               /* leveltime gate              */
-static psd_proc_t psd_selected[PSD_MAX_MONSTERS]; /* curated set, reused each sync */
+static psd_proc_t psd_selected[PSD_CANDIDATE_CAP]; /* curated set, reused each sync */
 
 /* Processes the player has killed on the current level. Remembered (by pid +
  * name, so a reused pid isn't wrongly suppressed) so psdoom_sync doesn't
@@ -173,6 +178,28 @@ static mobj_t *PSD_FindMonster(int pid)
         }
     }
     return NULL;
+}
+
+/* Number of live (still-alive) process-monsters in the world. Corpses don't
+ * count -- they're non-solid and don't block the player, so only living
+ * monsters press against the live-monster cap. */
+static int PSD_LiveMonsterCount(void)
+{
+    thinker_t *th;
+    int count = 0;
+
+    for (th = thinkercap.next; th != &thinkercap; th = th->next)
+    {
+        if (th->function.acp1 == (actionf_p1) P_MobjThinker)
+        {
+            mobj_t *mo = (mobj_t *) th;
+            if (mo->psd_pid != 0 && mo->health > 0)
+            {
+                count++;
+            }
+        }
+    }
+    return count;
 }
 
 /*
@@ -298,6 +325,7 @@ void psdoom_sync(void)
     thinker_t *next;
     int n;
     int i;
+    int live;
     int spawned = 0;
     int removed = 0;
 
@@ -323,7 +351,7 @@ void psdoom_sync(void)
     psd_next_sync = leveltime + PSD_SYNC_INTERVAL;
 
     /* Ask the triage layer for the curated, ranked, truncated collection. */
-    n = psd_select_collect(psd_selected, PSD_MAX_MONSTERS);
+    n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
 
     /* 1) Retire monsters no longer in the curated set (process exited, or it
      *    dropped below the relevance cut). */
@@ -343,8 +371,11 @@ void psdoom_sync(void)
     }
 
     /* 2) Spawn a monster for each curated process not already represented,
-     *    unless the player already killed it this level (don't respawn kills). */
-    for (i = 0; i < n; i++)
+     *    unless the player already killed it this level (don't respawn kills),
+     *    and only up to the live-monster cap so the level stays playable.
+     *    psd_selected is relevance-ordered, so the cap keeps the most relevant. */
+    live = PSD_LiveMonsterCount();
+    for (i = 0; i < n && live < PSD_MONSTER_CAP; i++)
     {
         const psd_proc_t *p = &psd_selected[i];
 
@@ -355,6 +386,7 @@ void psdoom_sync(void)
         if (PSD_FindMonster(p->pid) == NULL && PSD_SpawnMonster(p))
         {
             spawned++;
+            live++;
         }
     }
 
