@@ -420,6 +420,11 @@ typedef struct vissprite_s
 #ifdef CRISPY_TRUECOLOR
     const pixel_t	(*blendfunc)(const pixel_t fg, const pixel_t bg);
 #endif
+
+    // [psDoom] process-monster label: PID (0 if not a process-monster)
+    //  and a borrowed pointer to the owning mobj's name buffer.
+    int			psd_pid;
+    const char		*psd_name;
     
 } vissprite_t;
 

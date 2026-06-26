@@ -37,10 +37,14 @@ tree; only these thin call-sites and fields are in here:
 | `src/doom/d_main.c` | `#include "psdoom.h"`; call `psdoom_init()` before the final `D_DoomLoop()`. |
 | `src/doom/p_tick.c` | `#include "psdoom.h"`; call `psdoom_sync()` each tic in `P_Ticker` (after `P_RespawnSpecials`). |
 | `src/doom/p_inter.c` | `#include "psdoom.h"`; `psdoom_kill(target)` in `P_KillMobj`; `psdoom_wound(target)` in `P_DamageMobj` (survival path). |
+| `src/doom/r_defs.h` | Added `int psd_pid;` + `const char *psd_name;` to `vissprite_t` so the renderer can carry process identity onto a sprite. |
+| `src/doom/r_things.c` | `#include "psdoom.h"`; copy `psd_pid`/`psd_name` from the `mobj_t` onto the `vissprite_t` in `R_ProjectSprite`. `R_DrawMaskedColumn` records (`psd_col_drawn`/`psd_col_top`) whether a sprite actually rendered a pixel and its topmost row; `R_DrawVisSprite` resets that per sprite and calls `psdoom_draw_label(...)` only when something drew, so labels are suppressed for monsters fully hidden behind walls and anchored to the visible sprite top. |
 
 The `psdoom_*` entry points are implemented in `src/psdoom/` (+ `src/platform/macos/` for the
 native process backend): enumerate processes, spawn one monster per current-UID process on E1M1,
-wound -> renice, kill -> SIGTERM. After an engine update, re-apply these call-site/field edits.
+wound -> renice, kill -> SIGTERM, and draw each process-monster's PID/name label above its
+sprite (`psdoom_draw_label`, using the HUD font). After an engine update, re-apply these
+call-site/field edits.
 
 ### Updating the engine
 

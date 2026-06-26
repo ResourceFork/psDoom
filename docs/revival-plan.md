@@ -63,7 +63,7 @@ in the vendored tree, and each is recorded in `third_party/README.md`:
 | Wound → renice | `p_inter.c` : `P_DamageMobj` (852) | if target is a process-monster and survives, `psdoom_wound(target)` → `setpriority` |
 | Kill → kill | `p_inter.c` : `P_KillMobj` (728), called at line 971 | if target is a process-monster, `psdoom_kill(target)` → `kill(pid)` |
 | Periodic sync | `p_tick.c` : `P_Ticker` (131) | throttled `psdoom_sync()` (~once/second) near `leveltime++`: add monsters for new procs, retire dead ones |
-| Labels over monsters | `r_things.c` : `R_ProjectSprite` (558) / `R_DrawMasked` (1382) | draw `psd_name`/`psd_pid` above each process-monster sprite (text via `M_WriteText`) |
+| Labels over monsters | `r_things.c` : `R_ProjectSprite` (558) / `R_DrawVisSprite` (469) | copy `psd_pid`/`psd_name` onto the `vissprite_t`, then `psdoom_draw_label(...)` draws them above the sprite (HUD font `hu_font[]` via `V_DrawPatch`; `M_WriteText` is static in Crispy) |
 | One-time init | `d_main.c` : `D_DoomMain` (1449) | `psdoom_init()`: open backend, load config, default current-UID + allow/deny |
 
 ## Safety (built in from the start)
@@ -96,12 +96,17 @@ in the vendored tree, and each is recorded in `third_party/README.md`:
   - `proc_macos` enumerates processes via `sysctl(KERN_PROC_ALL)`; `psdoom_sync` spawns a monster
     per current-UID process at the E1M1 courtyard (daemons -> demons, others -> shotgun guys);
     wound -> `setpriority` renice; kill -> `SIGTERM`. Verified on E1M1 (~35 process-monsters).
+  - Process labels: each process-monster's PID and name are drawn above its sprite
+    (`psdoom_draw_label` in `src/psdoom/psdoom.c`, HUD font; renderer carries `psd_pid`/`psd_name`
+    on the `vissprite_t`). A scale gate skips distant sprites; placement/scale are tunable
+    (`PSD_LABEL_MIN_SCALE`). Labels respect wall occlusion (drawn only if the sprite actually
+    rendered a pixel, via `psd_col_drawn` in `R_DrawMaskedColumn`) and are offset by the 3D view
+    window origin (`viewwindowx`/`viewwindowy`) so they stay aligned at reduced screen sizes.
 - **Next:**
-  1. Draw the process name/PID label over each monster (`R_ProjectSprite`).
-  2. Placement: the E1M1 courtyard only fits a few dozen monsters, so on a busy machine most
+  1. Placement: the E1M1 courtyard only fits a few dozen monsters, so on a busy machine most
      processes collide and don't appear. Add a larger arena / custom WAD (as the original did)
      and/or daemon filtering.
-  3. Safety polish: allow/deny filter and an optional all-users mode.
+  2. Safety polish: allow/deny filter and an optional all-users mode.
 
 > Runtime note: a Doom or Doom II WAD is required to launch (not committed — not GPL). A shareware
 > `DOOM1.WAD` in `wads/` is bundled automatically by the build.

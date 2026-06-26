@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 
 #include "doomtype.h"
 #include "doomdef.h"
@@ -33,11 +34,30 @@
 #include "p_local.h"
 #include "p_mobj.h"
 
+/* For drawing process labels into the framebuffer. */
+#include "hu_stuff.h"   /* hu_font[], HU_FONTSTART, HU_FONTSIZE */
+#include "v_video.h"    /* V_DrawPatch                          */
+#include "i_swap.h"     /* SHORT                                */
+#include "i_video.h"    /* ORIGHEIGHT                           */
+#include "crispy.h"     /* crispy->hires                        */
+#include "r_main.h"     /* viewwindowx, viewwindowy             */
+
 /* ------------------------------------------------------------------ config */
 
 #define PSD_MAX_PROCS     512   /* cap on processes considered per sync       */
 #define PSD_SYNC_INTERVAL 35    /* tics between syncs (~1s at 35Hz)           */
 #define PSD_WOUND_NICE    4     /* priority drop per non-fatal hit            */
+
+/* Label drawing. Scale is normalized to 320-space (>> hires) before this
+ * comparison, so the threshold is resolution-independent. The original psDoom
+ * gated at 18000; we start more lenient so labels are easy to see, then it can
+ * be tuned up to reduce clutter. */
+#define PSD_LABEL_MIN_SCALE 8000
+/* Highest Y (320-space) we let the top label row sit, so both rows stay above
+ * the 32px status bar (200 - 32 - 16). */
+#define PSD_LABEL_MAX_Y     (ORIGHEIGHT - 32 - 16)
+#define PSD_LABEL_LINE_H    8   /* vertical gap between the PID and name rows  */
+#define PSD_LABEL_SPACE_W   4   /* width of a space / unprintable glyph        */
 
 /* ------------------------------------------------------------------- state */
 
@@ -221,5 +241,78 @@ void psdoom_kill(struct mobj_s *target)
     if (mo != NULL && mo->psd_pid > 1)
     {
         proc_macos_kill(mo->psd_pid);
+    }
+}
+
+/* --------------------------------------------------------------- label draw */
+
+/* Draw `str` at logical (320-space) position (x, y) using the HUD font. The
+ * HUD font only carries uppercase letters, digits and some punctuation, so
+ * lowercase is folded to uppercase and unknown glyphs advance as a space.
+ * V_DrawPatch clips safely at every screen edge, so off-screen x/y is fine. */
+static void PSD_DrawHUString(int x, int y, const char *str)
+{
+    const char *p;
+    int cx = x;
+
+    for (p = str; *p != '\0'; p++)
+    {
+        int c = toupper((unsigned char) *p);
+
+        if (c == ' ')
+        {
+            cx += PSD_LABEL_SPACE_W;
+            continue;
+        }
+
+        c -= HU_FONTSTART;
+        if (c < 0 || c >= HU_FONTSIZE || hu_font[c] == NULL)
+        {
+            cx += PSD_LABEL_SPACE_W;
+            continue;
+        }
+
+        V_DrawPatch(cx, y, hu_font[c]);
+        cx += SHORT(hu_font[c]->width);
+    }
+}
+
+void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
+                       const char *name)
+{
+    const int hires = crispy->hires;
+    int x;
+    int y;
+    char buf[16];
+
+    /* Skip distant sprites to keep the screen readable. */
+    if ((scale >> hires) < PSD_LABEL_MIN_SCALE)
+    {
+        return;
+    }
+
+    /* The renderer's x1/top are relative to the 3D view window's top-left, in
+     * framebuffer pixels (320 << hires). Add the view-window origin to get
+     * absolute framebuffer coords, then fold back to the 320x200 logical space
+     * V_DrawPatch expects. Including viewwindowx/y keeps labels aligned when a
+     * smaller screen size / the status bar insets the 3D view. */
+    x = (x1_fb + viewwindowx) >> hires;
+    y = (top_fb + viewwindowy) >> hires;
+
+    if (y < 0)
+    {
+        y = 0;
+    }
+    if (y > PSD_LABEL_MAX_Y)
+    {
+        y = PSD_LABEL_MAX_Y;
+    }
+
+    snprintf(buf, sizeof(buf), "%d", pid);
+    PSD_DrawHUString(x, y, buf);
+
+    if (name != NULL)
+    {
+        PSD_DrawHUString(x, y + PSD_LABEL_LINE_H, name);
     }
 }

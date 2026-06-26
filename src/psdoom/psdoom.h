@@ -37,6 +37,25 @@ void psdoom_wound(struct mobj_s *target);
  * not a process-monster. */
 void psdoom_kill(struct mobj_s *target);
 
+/*
+ * Draw a process-monster's PID and name just above its sprite. Called from the
+ * renderer (R_DrawVisSprite) once per visible process-monster.
+ *
+ *   x1_fb   : vissprite left edge, view-window-relative framebuffer pixels
+ *   top_fb  : topmost rendered row of the sprite, view-window-relative
+ *             framebuffer pixels (the visible sprite top)
+ *   scale   : vissprite scale (larger = closer)
+ *   pid     : process id to print (caller guarantees != 0)
+ *   name    : process name (may be NULL)
+ *
+ * Coordinates are offset by the 3D view window origin and converted to
+ * 320x200 logical space internally. Distant sprites are skipped to avoid
+ * clutter. The caller only invokes this for sprites that actually rendered,
+ * so labels never show through walls.
+ */
+void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
+                       const char *name);
+
 #ifdef __cplusplus
 }
 #endif

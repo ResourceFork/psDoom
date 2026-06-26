@@ -39,6 +39,8 @@
 #include "p_local.h" // [crispy] MLOOKUNIT
 #include "r_bmaps.h" // [crispy] R_BrightmapForTexName()
 
+#include "psdoom.h" // [psDoom] process-monster labels
+
 
 #define MINZ				(FRACUNIT*4)
 #define BASEYCENTER			(ORIGHEIGHT/2)
@@ -409,6 +411,13 @@ int*		mceilingclip; // [crispy] 32-bit integer math
 fixed_t		spryscale;
 int64_t		sprtopscreen; // [crispy] WiggleFix
 
+// [psDoom] set true by R_DrawMaskedColumn whenever it draws at least one post;
+//  R_DrawVisSprite resets it before its column loop and uses it to suppress the
+//  process label when a monster is fully occluded by a wall. psd_col_top tracks
+//  the topmost drawn screen row so the label sits at the *visible* sprite top.
+boolean		psd_col_drawn;
+int		psd_col_top;
+
 void R_DrawMaskedColumn (column_t* column)
 {
     int64_t	topscreen; // [crispy] WiggleFix
@@ -448,6 +457,12 @@ void R_DrawMaskedColumn (column_t* column)
 	    dc_source = (byte *)column + 3;
 	    dc_texturemid = basetexturemid - (top<<FRACBITS);
 	    // dc_source = (byte *)column + 3 - top;
+
+	    // [psDoom] record that a pixel actually rendered, and the topmost
+	    //  drawn row, for label occlusion + placement (see R_DrawVisSprite).
+	    if (!psd_col_drawn || dc_yl < psd_col_top)
+		psd_col_top = dc_yl;
+	    psd_col_drawn = true;
 
 	    // Drawn by either R_DrawColumn
 	    //  or (SHADOW) R_DrawFuzzColumn.
@@ -520,6 +535,8 @@ R_DrawVisSprite
     frac = vis->startfrac;
     spryscale = vis->scale;
     sprtopscreen = centeryfrac - FixedMul(dc_texturemid,spryscale);
+
+    psd_col_drawn = false; // [psDoom] reset per-sprite render tracking
 	
     for (dc_x=vis->x1 ; dc_x<=vis->x2 ; dc_x++, frac += vis->xiscale)
     {
@@ -546,6 +563,16 @@ R_DrawVisSprite
 #ifdef CRISPY_TRUECOLOR
     blendfunc = I_BlendOverTranmap;
 #endif
+
+    // [psDoom] label this process-monster only if it actually rendered: when a
+    //  monster is fully behind a wall, no column draws (psd_col_drawn stays
+    //  false) so its label is suppressed instead of showing through the wall.
+    //  psd_col_top is the topmost drawn row, i.e. the *visible* sprite top.
+    if (vis->psd_pid != 0 && psd_col_drawn)
+    {
+	psdoom_draw_label(vis->x1, psd_col_top,
+			  vis->scale, vis->psd_pid, vis->psd_name);
+    }
 }
 
 
@@ -728,6 +755,9 @@ void R_ProjectSprite (mobj_t* thing)
     vis = R_NewVisSprite ();
     vis->translation = NULL; // [crispy] no color translation
     vis->mobjflags = thing->flags;
+    // [psDoom] carry the process identity onto the vissprite for labeling
+    vis->psd_pid = thing->psd_pid;
+    vis->psd_name = thing->psd_name;
     vis->scale = xscale<<detailshift;
     vis->gx = interpx;
     vis->gy = interpy;
@@ -1028,6 +1058,11 @@ void R_DrawPSprite (pspdef_t* psp, psprnum_t psprnum) // [crispy] differentiate 
     vis = &avis;
     vis->translation = NULL; // [crispy] no color translation
     vis->mobjflags = 0;
+    // [psDoom] weapon/flash sprites are never process-monsters; clear the
+    //  label fields so R_DrawVisSprite's label gate skips this stack-local
+    //  vissprite (its psd_* are otherwise uninitialized).
+    vis->psd_pid = 0;
+    vis->psd_name = NULL;
     // [crispy] weapons drawn 1 pixel too high when player is idle
     vis->texturemid = (BASEYCENTER<<FRACBITS)+FRACUNIT/(2<<crispy->hires)-(psp->sy2-spritetopoffset[lump]);
     vis->x1 = x1 < 0 ? 0 : x1;
