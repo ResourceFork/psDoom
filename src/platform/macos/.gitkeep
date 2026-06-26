@@ -1,0 +1,2 @@
+# Placeholder so git tracks this directory until the native macOS process
+# backend (proc_macos.c / proc_macos.h) lands here. Safe to delete once real files exist.

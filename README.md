@@ -57,13 +57,13 @@ survives in the Internet Archive but isn't committed yet; see
 
 ## Revival plan
 
-The goal is a faithful, buildable psDoom on Apple Silicon, with the OS
-integration rewritten as a small native macOS module.
+A faithful, buildable psDoom on Apple Silicon, with the OS integration written
+as a small native macOS module.
 
-**Engine direction (recommended):** revive on the **Chocolate / Crispy Doom
-(SDL2)** lineage — vanilla-accurate, cross-platform, and builds on Apple Silicon
-via Homebrew. Alternatives under consideration are a clean-room build on
-`doomgeneric` and a modern-visuals build on GZDoom.
+**Engine:** built on **Crispy Doom 7.1** (SDL2) — vanilla-accurate, builds on
+Apple Silicon via Homebrew — vendored under [`third_party/`](third_party/). The
+engine is bootstrapped and wrapped in a native macOS `.app`; the psDoom process
+layer is the next step.
 
 **The OS contract is tiny.** Prior art (psdoom-ng) reduces the whole game↔OS
 integration to three operations:
@@ -85,15 +85,43 @@ integration to three operations:
 - **Process count:** a modern Mac runs hundreds of processes, so filtering (hide
   daemons by default) matters.
 
+## Repository layout
+
+```
+third_party/crispy-doom/   vendored Crispy Doom engine (pristine; see third_party/README.md)
+src/app/macos/             the .app launcher
+src/psdoom/                process<->monster logic        (in progress)
+src/platform/macos/        native libproc/renice/kill     (in progress)
+CMakeLists.txt             single build: engine + psDoom.app
+docs/                      revival-plan.md, handoff.md, original/ (recovered v1.0 archive)
+wads/                      runtime IWAD (gitignored, not GPL)
+```
+
+## Build & run
+
+Requires a Doom IWAD; a shareware `DOOM1.WAD` placed in `wads/` is bundled into
+the app automatically. Dependencies via Homebrew:
+`brew install sdl2 sdl2_mixer libsamplerate libpng fluid-synth`.
+
+```bash
+cmake -S . -B build && cmake --build build -j
+open build/psDoom.app
+```
+
+Or generate an Xcode project from the same build and Run the `psDoom` scheme:
+
+```bash
+cmake -G Xcode -S . -B build-xcode && open build-xcode/psDoom.xcodeproj
+```
+
+See [`docs/revival-plan.md`](docs/revival-plan.md) for build details and the
+engine integration plan.
+
 ## Status
 
-Original artifacts located in the Internet Archive; revival in planning. Two
-decisions remain before writing code:
-
-1. **Engine:** faithful (Chocolate/Crispy Doom, recommended) vs. clean-room
-   (doomgeneric) vs. modern (GZDoom).
-2. **Presentation:** native macOS (Cocoa/SDL2 window) vs. keeping the X11 flavor
-   for nostalgia.
+Engine bootstrapped: `psDoom.app` builds and runs **stock** Crispy Doom on Apple
+Silicon. The psDoom process-management layer (process→monster, wound→renice,
+kill→kill, labels) is the next step — see the revival plan above.
 
 ## References
 

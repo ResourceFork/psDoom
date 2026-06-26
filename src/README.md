@@ -1,29 +1,15 @@
 # src/
 
-Source code for the psDoom revival lives here.
+Our code for the psDoom revival. The vendored Doom engine it builds on lives separately in
+[`../third_party/`](../third_party/) — `src/` is psDoom's own code only.
 
-This directory will be populated once the engine and presentation decisions are made
-(see [`CONTEXT.md` § Open Decisions](../CONTEXT.md#open-decisions)).
+## Layout
 
-## Planned structure
-
-```
-src/
-├── engine/        # Chosen Doom engine (e.g. Chocolate Doom submodule or copy)
-└── ps_macos/      # Native macOS process management module
-    ├── ps_macos.h
-    └── ps_macos.c
-```
-
-## macOS process module overview
-
-The native process layer will implement the three integration points from the psdoom-ng contract:
-
-| Contract point | Native API |
+| Path | Purpose |
 |---|---|
-| Enumerate processes (spawn monsters) | `proc_listpids` + `proc_pidinfo` from `<libproc.h>` |
-| Kill process (monster death) | `kill(pid, SIGTERM)` → `kill(pid, SIGKILL)` |
-| Renice process (wounding) | `setpriority(PRIO_PROCESS, pid, niceValue)` |
+| `app/macos/` | The macOS `.app` launcher (`launcher_main.c`, `Info.plist.in`). Locates an IWAD and `exec()`s the engine binary inside the bundle. |
+| `psdoom/` | Process↔monster game logic — registry, spawn/wound/kill policy, label text. *(to be written)* |
+| `platform/macos/` | Native macOS process backend — `libproc` enumeration, `setpriority` renice, `kill`. *(to be written)* |
 
-See [`CONTEXT.md` § macOS Process Module](../CONTEXT.md#macos-process-module--design-notes) for
-full design notes and caveats (permissions, safety filtering, process count).
+See [`../docs/revival-plan.md`](../docs/revival-plan.md) for the engine hook points, module API,
+and build; and [`../docs/handoff.md`](../docs/handoff.md) for project background and history.

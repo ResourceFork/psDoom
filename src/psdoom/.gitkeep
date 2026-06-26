@@ -1,0 +1,2 @@
+# Placeholder so git tracks this directory until the psDoom process<->monster
+# logic (psdoom.c / psdoom.h) lands here. Safe to delete once real files exist.

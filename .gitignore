@@ -74,3 +74,13 @@ fastlane/test_output
 
 # Out-of-source build output
 /build/
+/build-xcode/
+
+# Xcode per-user state (the psDoom.xcodeproj project itself IS committed)
+xcuserdata/
+*.xcuserstate
+
+# Doom IWAD/PWAD game data (not GPL, never commit)
+*.wad
+*.WAD
+/wads/
