@@ -1,37 +1,41 @@
 /*
- * proc_macos.h -- native macOS process backend for psDoom.
+ * psDoom -- native macOS process backend.
  *
- * The original psDoom shelled out to `ps`, `kill -9`, and `renice`. This is the
- * native equivalent: enumerate via libproc, signal via kill(2), renice via
- * setpriority(2). No engine headers here -- pure OS layer.
+ * Pure OS layer (no engine dependencies): enumerate processes, renice, kill.
+ * The game-side logic in src/psdoom/psdoom.c calls into here.
  */
 
 #ifndef PSDOOM_PROC_MACOS_H
 #define PSDOOM_PROC_MACOS_H
 
-#include <sys/types.h>
+#define PSD_PROC_NAME_MAX 32
 
-/* One enumerated process. */
 typedef struct
 {
-    pid_t pid;
-    uid_t uid;          /* real uid of the process owner */
-    int   is_daemon;    /* 1 if the process has no controlling terminal */
-    char  name[32];     /* process (accounting) name, NUL-terminated */
+    int          pid;
+    unsigned int uid;
+    int          is_daemon;                 /* 1 if it has no controlling tty */
+    char         name[PSD_PROC_NAME_MAX];   /* short process name             */
 } psd_proc_t;
 
-/*
- * Fill `out` (capacity `max`) with the live processes; returns the count.
- * If `current_uid_only` is nonzero, only processes whose real uid matches the
- * caller are returned. The calling process is always excluded (so the game
- * never spawns a monster for itself).
- */
-int psd_proc_list(psd_proc_t *out, int max, int current_uid_only);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/* Lower a process's scheduling priority by a step (renice). Best-effort. */
-void psd_proc_renice(pid_t pid);
+/* Fill `out` (capacity `max`) with the live processes; returns the count. */
+int          proc_macos_list(psd_proc_t *out, int max);
 
-/* Kill a process with SIGKILL (the original's `kill -9`). Best-effort. */
-void psd_proc_kill(pid_t pid);
+/* The current (real) user id. */
+unsigned int proc_macos_current_uid(void);
+
+/* Lower `pid`'s scheduling priority by `nice_delta` (clamped to +20). */
+void         proc_macos_renice(int pid, int nice_delta);
+
+/* Ask `pid` to terminate (SIGTERM). Returns 1 on success, 0 on failure. */
+int          proc_macos_kill(int pid);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* PSDOOM_PROC_MACOS_H */

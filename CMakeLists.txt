@@ -36,8 +36,14 @@ add_subdirectory(third_party/crispy-doom)
 # Compile the psDoom module into the engine's `doom` static library, and let the
 # engine call-sites find <psdoom.h>. Done from here so the vendored CMake under
 # third_party/ stays untouched.
-target_sources(doom PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom.c")
-target_include_directories(doom PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom")
+target_sources(doom PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
+target_include_directories(doom PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src/doom")
 
 if(NOT APPLE)
     message(FATAL_ERROR
@@ -63,24 +69,28 @@ set_target_properties(psDoom PROPERTIES
 
 add_dependencies(psDoom crispy-doom)
 
-# Drop the engine binary into the bundle next to the launcher, and ensure a
-# Resources/ directory exists for the IWAD.
-add_custom_command(TARGET psDoom POST_BUILD
+# Assemble the bundle on EVERY build via an always-out-of-date custom target.
+# A plain POST_BUILD on psDoom is skipped when only the engine changed (the
+# launcher doesn't relink), which would leave a stale crispy-doom inside the
+# .app. This target re-copies whenever either psDoom or the engine is rebuilt.
+set(_PSD_MACOS_DIR "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/MacOS")
+set(_PSD_RES_DIR   "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/Resources")
+
+add_custom_target(psdoom_embed ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_PSD_RES_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy
-        "$<TARGET_FILE:crispy-doom>"
-        "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/MacOS/crispy-doom"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/Resources"
+        "$<TARGET_FILE:crispy-doom>" "${_PSD_MACOS_DIR}/crispy-doom"
     VERBATIM
 )
+add_dependencies(psdoom_embed psDoom crispy-doom)
 
 # For local double-click play, bundle an IWAD if one is present in wads/.
 # Build-time convenience only; the WAD is gitignored and never committed.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD")
-    add_custom_command(TARGET psDoom POST_BUILD
+    add_custom_command(TARGET psdoom_embed POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD"
-            "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/Resources/DOOM1.WAD"
+            "${_PSD_RES_DIR}/DOOM1.WAD"
         VERBATIM
     )
     message(STATUS "psDoom: will bundle wads/DOOM1.WAD into the .app")

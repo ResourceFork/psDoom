@@ -33,13 +33,14 @@ tree; only these thin call-sites and fields are in here:
 
 | File | Change |
 |---|---|
-| `src/doom/p_mobj.h` | Added `int psd_pid;` + `const char *psd_name;` to `mobj_t` (0/NULL = ordinary monster). |
+| `src/doom/p_mobj.h` | Added `int psd_pid;` + `char psd_name[16];` to `mobj_t` (0 = ordinary monster). |
 | `src/doom/d_main.c` | `#include "psdoom.h"`; call `psdoom_init()` before the final `D_DoomLoop()`. |
 | `src/doom/p_tick.c` | `#include "psdoom.h"`; call `psdoom_sync()` each tic in `P_Ticker` (after `P_RespawnSpecials`). |
 | `src/doom/p_inter.c` | `#include "psdoom.h"`; `psdoom_kill(target)` in `P_KillMobj`; `psdoom_wound(target)` in `P_DamageMobj` (survival path). |
 
-All four `psdoom_*` entry points are no-ops in the current increment, so behavior is unchanged.
-After an engine update, re-apply these four edits.
+The `psdoom_*` entry points are implemented in `src/psdoom/` (+ `src/platform/macos/` for the
+native process backend): enumerate processes, spawn one monster per current-UID process on E1M1,
+wound -> renice, kill -> SIGTERM. After an engine update, re-apply these call-site/field edits.
 
 ### Updating the engine
 

@@ -1,108 +1,117 @@
 /*
- * proc_macos.c -- native macOS process backend for psDoom.
+ * psDoom -- native macOS process backend (implementation).
  *
- * Uses libproc to enumerate processes and read per-process info, setpriority(2)
- * to renice, and kill(2) to terminate. Replaces the original psDoom's shelling
- * out to `ps` / `renice` / `kill`.
+ * Enumeration uses sysctl(KERN_PROC_ALL), which yields pid, owning uid, short
+ * name and controlling-tty in a single call -- everything the original psDoom
+ * scraped from `ps`. Renice/kill use the POSIX syscalls directly (the original
+ * shelled out to `renice`/`kill`).
  */
 
 #include "proc_macos.h"
 
-#include <errno.h>
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <sys/proc.h>
+#include <sys/resource.h>
 #include <signal.h>
+#include <unistd.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/resource.h>
 
-#include <libproc.h>
-#include <sys/proc_info.h>
-
-/* How much a single wound lowers a process's scheduling priority. */
-#define PSD_RENICE_STEP 5
-
-int psd_proc_list(psd_proc_t *out, int max, int current_uid_only)
+int proc_macos_list(psd_proc_t *out, int max)
 {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t len = 0;
+    struct kinfo_proc *procs;
+    int total;
+    int count = 0;
+    int i;
+
     if (out == NULL || max <= 0)
     {
         return 0;
     }
 
-    const pid_t self = getpid();
-    const uid_t me = getuid();
-
-    /* First call sizes the buffer, second call fills it. */
-    int bytes = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
-    if (bytes <= 0)
+    /* Ask how big the table is, then fetch it. */
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) < 0 || len == 0)
     {
         return 0;
     }
 
-    int cap = bytes / (int)sizeof(pid_t);
-    pid_t *pids = (pid_t *)calloc((size_t)cap, sizeof(pid_t));
-    if (pids == NULL)
+    procs = (struct kinfo_proc *) malloc(len);
+    if (procs == NULL)
     {
         return 0;
     }
 
-    bytes = proc_listpids(PROC_ALL_PIDS, 0, pids, (int)(cap * (int)sizeof(pid_t)));
-    int npids = bytes / (int)sizeof(pid_t);
-
-    int count = 0;
-    for (int i = 0; i < npids && count < max; i++)
+    if (sysctl(mib, 4, procs, &len, NULL, 0) < 0)
     {
-        pid_t pid = pids[i];
-        if (pid <= 0 || pid == self)
+        free(procs);
+        return 0;
+    }
+
+    total = (int) (len / sizeof(struct kinfo_proc));
+    for (i = 0; i < total && count < max; i++)
+    {
+        struct kinfo_proc *kp = &procs[i];
+        int pid = kp->kp_proc.p_pid;
+
+        if (pid <= 0)
         {
             continue;
         }
 
-        struct proc_bsdinfo bi;
-        int r = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, PROC_PIDTBSDINFO_SIZE);
-        if (r != (int)PROC_PIDTBSDINFO_SIZE)
-        {
-            continue;   /* process exited, or we lack permission to inspect it */
-        }
-
-        if (current_uid_only && bi.pbi_ruid != me)
-        {
-            continue;
-        }
-
-        out[count].pid = pid;
-        out[count].uid = bi.pbi_ruid;
-        /* No controlling terminal (e_tdev == NODEV) => daemon. */
-        out[count].is_daemon = (bi.e_tdev == (uint32_t)-1) ? 1 : 0;
-
-        const char *nm = (bi.pbi_name[0] != '\0') ? bi.pbi_name : bi.pbi_comm;
-        strncpy(out[count].name, nm, sizeof(out[count].name) - 1);
-        out[count].name[sizeof(out[count].name) - 1] = '\0';
-
+        out[count].pid       = pid;
+        out[count].uid       = (unsigned int) kp->kp_eproc.e_ucred.cr_uid;
+        out[count].is_daemon = (kp->kp_eproc.e_tdev == NODEV) ? 1 : 0;
+        strncpy(out[count].name, kp->kp_proc.p_comm, PSD_PROC_NAME_MAX - 1);
+        out[count].name[PSD_PROC_NAME_MAX - 1] = '\0';
         count++;
     }
 
-    free(pids);
+    free(procs);
     return count;
 }
 
-void psd_proc_renice(pid_t pid)
+unsigned int proc_macos_current_uid(void)
 {
-    errno = 0;
-    int cur = getpriority(PRIO_PROCESS, pid);
-    if (cur == -1 && errno != 0)
-    {
-        return;   /* couldn't read current priority (gone / no permission) */
-    }
-
-    int next = cur + PSD_RENICE_STEP;
-    if (next > PRIO_MAX)
-    {
-        next = PRIO_MAX;
-    }
-    setpriority(PRIO_PROCESS, pid, next);
+    return (unsigned int) getuid();
 }
 
-void psd_proc_kill(pid_t pid)
+void proc_macos_renice(int pid, int nice_delta)
 {
-    kill(pid, SIGKILL);
+    int cur;
+    int target;
+
+    if (pid <= 0)
+    {
+        return;
+    }
+
+    /* getpriority can legitimately return -1, so disambiguate via errno. */
+    errno = 0;
+    cur = getpriority(PRIO_PROCESS, pid);
+    if (cur == -1 && errno != 0)
+    {
+        cur = 0;
+    }
+
+    target = cur + nice_delta;
+    if (target > PRIO_MAX)              /* PRIO_MAX == 20 */
+    {
+        target = PRIO_MAX;
+    }
+
+    setpriority(PRIO_PROCESS, pid, target);
+}
+
+int proc_macos_kill(int pid)
+{
+    if (pid <= 1)                       /* never signal kernel/launchd */
+    {
+        return 0;
+    }
+
+    return (kill(pid, SIGTERM) == 0) ? 1 : 0;
 }

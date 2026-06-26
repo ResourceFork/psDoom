@@ -89,13 +89,19 @@ in the vendored tree, and each is recorded in `third_party/README.md`:
 
 ## Status / next steps
 
-- **Done:** engine vendored (`third_party/crispy-doom`, Crispy 7.1); single CMake build producing a
-  double-clickable `psDoom.app`; Xcode project generated from the same CMake; runs stock Crispy.
-- **Next (the psDoom layer):**
-  1. Add `mobj_t` fields + `psdoom_init/sync/wound/kill` **stubs** + call-sites; confirm it still builds and boots a WAD.
-  2. Implement `proc_macos` enumeration; map processes → spawned monsters (current UID only).
-  3. Wire wound→renice and kill→kill behind the safety filter.
-  4. Draw the process labels.
+- **Done:**
+  - Engine vendored (`third_party/crispy-doom`, Crispy 7.1); single CMake build producing a
+    double-clickable `psDoom.app`; Xcode project generated from the same CMake.
+  - psDoom hooks wired into the engine (`mobj_t.psd_pid`/`psd_name` + call-sites).
+  - `proc_macos` enumerates processes via `sysctl(KERN_PROC_ALL)`; `psdoom_sync` spawns a monster
+    per current-UID process at the E1M1 courtyard (daemons -> demons, others -> shotgun guys);
+    wound -> `setpriority` renice; kill -> `SIGTERM`. Verified on E1M1 (~35 process-monsters).
+- **Next:**
+  1. Draw the process name/PID label over each monster (`R_ProjectSprite`).
+  2. Placement: the E1M1 courtyard only fits a few dozen monsters, so on a busy machine most
+     processes collide and don't appear. Add a larger arena / custom WAD (as the original did)
+     and/or daemon filtering.
+  3. Safety polish: allow/deny filter and an optional all-users mode.
 
 > Runtime note: a Doom or Doom II WAD is required to launch (not committed — not GPL). A shareware
 > `DOOM1.WAD` in `wads/` is bundled automatically by the build.
