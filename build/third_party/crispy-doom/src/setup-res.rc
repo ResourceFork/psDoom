@@ -1,0 +1,28 @@
+1 ICON "/Users/stepblk/Source/psDoom/third_party/crispy-doom/data/setup.ico"
+
+1 24 MOVEABLE PURE "/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/setup/setup-manifest.xml"
+
+1 VERSIONINFO
+PRODUCTVERSION 7, 1, 0, 0
+FILEVERSION 7, 1, 0, 0
+FILETYPE 1
+{
+ BLOCK "StringFileInfo"
+ {
+  BLOCK "040904E4"
+  {
+   VALUE "FileVersion", "7.1.0.0"
+   VALUE "FileDescription", "Crispy Doom 7.1.0 Setup"
+   VALUE "InternalName", "crispy-doom"
+   VALUE "CompanyName", "https://github.com/fabiangreffrath/crispy-doom/issues"
+   VALUE "LegalCopyright", "GNU General Public License"
+   VALUE "ProductName", "Crispy Doom Setup"
+   VALUE "ProductVersion", "7.1.0"
+  }
+ }
+ BLOCK "VarFileInfo"
+ {
+  VALUE "Translation", 0x409, 1252
+ }
+}
+

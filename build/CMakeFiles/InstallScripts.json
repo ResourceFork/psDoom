@@ -1,0 +1,17 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/stepblk/Source/psDoom/build/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/textscreen/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/opl/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/pcsound/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/doom/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/heretic/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/hexen/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/strife/cmake_install.cmake",
+		"/Users/stepblk/Source/psDoom/build/third_party/crispy-doom/src/setup/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
