@@ -62,9 +62,15 @@ fastlane/screenshots/**/*.png
 fastlane/test_output
 
 # Original archived binaries — download locally via docs/original/README.md
-docs/original/*.zip
-docs/original/*.sit
-docs/original/*.hqx
-docs/original/*.dmg
-docs/original/*.gz
-docs/original/*.tgz
+# docs/original/*.zip
+# docs/original/*.sit
+# docs/original/*.hqx
+# docs/original/*.dmg
+# docs/original/*.gz
+# docs/original/*.tgz
+
+# macOS Finder metadata
+.DS_Store
+
+# Out-of-source build output
+/build/
