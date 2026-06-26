@@ -27,8 +27,19 @@ process-management hooks.
 
 ### psDoom local modifications
 
-None yet. As we add the process→monster hooks, record each change here (file + purpose) so the
-patch set against upstream stays auditable and re-appliable after an engine update.
+Hooks added so the psDoom module (in `src/psdoom/`, compiled into the `doom` library from the
+top-level `CMakeLists.txt`) can drive process management. The module itself lives outside this
+tree; only these thin call-sites and fields are in here:
+
+| File | Change |
+|---|---|
+| `src/doom/p_mobj.h` | Added `int psd_pid;` + `const char *psd_name;` to `mobj_t` (0/NULL = ordinary monster). |
+| `src/doom/d_main.c` | `#include "psdoom.h"`; call `psdoom_init()` before the final `D_DoomLoop()`. |
+| `src/doom/p_tick.c` | `#include "psdoom.h"`; call `psdoom_sync()` each tic in `P_Ticker` (after `P_RespawnSpecials`). |
+| `src/doom/p_inter.c` | `#include "psdoom.h"`; `psdoom_kill(target)` in `P_KillMobj`; `psdoom_wound(target)` in `P_DamageMobj` (survival path). |
+
+All four `psdoom_*` entry points are no-ops in the current increment, so behavior is unchanged.
+After an engine update, re-apply these four edits.
 
 ### Updating the engine
 

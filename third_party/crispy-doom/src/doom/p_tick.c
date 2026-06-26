@@ -23,6 +23,7 @@
 #include "s_musinfo.h" // [crispy] T_MAPMusic()
 
 #include "doomstat.h"
+#include "psdoom.h"
 
 
 int	leveltime;
@@ -153,6 +154,8 @@ void P_Ticker (void)
     P_RunThinkers ();
     P_UpdateSpecials ();
     P_RespawnSpecials ();
+
+    psdoom_sync();      // [psDoom] reconcile the live process list with monsters (self-throttled)
 
     // for par times
     leveltime++;	

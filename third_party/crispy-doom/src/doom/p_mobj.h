@@ -297,6 +297,10 @@ typedef struct mobj_s
     fixed_t		oldz;
     angle_t		oldangle;
 
+    // [psDoom] the process this monster represents (0 / NULL for an ordinary
+    // monster that is not a process-monster).
+    int			psd_pid;
+    const char		*psd_name;
 } mobj_t;
 
 

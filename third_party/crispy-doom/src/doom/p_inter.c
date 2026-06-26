@@ -38,6 +38,7 @@
 #include "s_sound.h"
 
 #include "p_inter.h"
+#include "psdoom.h"
 
 
 #define BONUSADD	6
@@ -732,6 +733,7 @@ P_KillMobj
     mobjtype_t	item;
     mobj_t*	mo;
 	
+    psdoom_kill(target);    // [psDoom] if target is a process-monster, signal its process
     target->flags &= ~(MF_SHOOTABLE|MF_FLOAT|MF_SKULLFLY);
 
     if (target->type != MT_SKULL)
@@ -971,6 +973,8 @@ P_DamageMobj
 	P_KillMobj (source, target);
 	return;
     }
+
+    psdoom_wound(target);   // [psDoom] survived a hit -> renice its process
 
     if ( (P_Random () < target->info->painchance)
 	 && !(target->flags&MF_SKULLFLY) )

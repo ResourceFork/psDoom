@@ -33,6 +33,12 @@ set(ENABLE_SDL2_NET OFF CACHE BOOL "Disable SDL2_net (psDoom has no netplay)" FO
 # Build the vendored engine. Defines the `crispy-doom` executable target.
 add_subdirectory(third_party/crispy-doom)
 
+# Compile the psDoom module into the engine's `doom` static library, and let the
+# engine call-sites find <psdoom.h>. Done from here so the vendored CMake under
+# third_party/ stays untouched.
+target_sources(doom PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom.c")
+target_include_directories(doom PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom")
+
 if(NOT APPLE)
     message(FATAL_ERROR
         "The psDoom .app bundle target is macOS-only. On other platforms build "

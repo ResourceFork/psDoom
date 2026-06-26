@@ -78,6 +78,7 @@
 #include "statdump.h"
 
 #include "d_main.h"
+#include "psdoom.h"
 
 #include "doom_icon.c"
 
@@ -2443,6 +2444,7 @@ void D_DoomMain (void)
 	    D_StartTitle ();                // start up intro loop
     }
 
+    psdoom_init();      // [psDoom] one-time process-management init before the game loop
     D_DoomLoop ();  // never returns
 }
 
