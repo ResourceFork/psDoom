@@ -31,6 +31,7 @@ enum
     psd_row_classify,
     psd_row_allusers,
     psd_row_showlabels,
+    psd_row_showpid,
     psd_row_labelrange,
     psd_row_count
 };
@@ -69,6 +70,7 @@ static menuitem_t PsDoomMenu[] =
     {3, "", psdoom_opt_cycle_classifyby,  'c'},
     {3, "", psdoom_opt_toggle_allusers,   'a'},
     {3, "", psdoom_opt_toggle_labels,     'l'},
+    {3, "", psdoom_opt_toggle_pid,        'i'},
     {3, "", psdoom_opt_cycle_labelrange,  'd'},
 };
 
@@ -130,6 +132,8 @@ static void M_DrawPsDoom(void)
             psdoom_all_users ? "on" : "off", 1, psdoom_all_users);
     PSD_Row(psd_row_showlabels, "Show process labels",
             psdoom_show_labels ? "on" : "off", 1, psdoom_show_labels);
+    PSD_Row(psd_row_showpid, "Show PID in label",
+            psdoom_show_pid ? "on" : "off", psdoom_show_labels, psdoom_show_pid);
     PSD_Row(psd_row_labelrange, "Label draw distance",
             psd_labelrange_names[psdoom_label_range], psdoom_show_labels, 1);
 

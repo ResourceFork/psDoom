@@ -15,6 +15,7 @@ int psdoom_monster_cap = 10;                /* live-monster cap; menu slider   *
 int psdoom_classify_by = PSD_CLASSIFY_MEM;  /* default: classify by memory     */
 int psdoom_all_users   = 0;                 /* default: our own processes     */
 int psdoom_show_labels = 1;                 /* default: labels on             */
+int psdoom_show_pid    = 0;                 /* default: name only (less clutter)*/
 int psdoom_label_range = PSD_LABELS_NORMAL;
 
 /* ------------------------------------------------------------------ startup */
@@ -40,6 +41,10 @@ void psdoom_options_parse_args(void)
     if (M_ParmExists("-psdoom-nolabels"))
     {
         psdoom_show_labels = 0;
+    }
+    if (M_ParmExists("-psdoom-showpid"))
+    {
+        psdoom_show_pid = 1;
     }
     if (M_ParmExists("-psdoom-cpu"))
     {
@@ -73,6 +78,11 @@ int psdoom_should_renice(void)
 int psdoom_labels_enabled(void)
 {
     return psdoom_show_labels != 0;
+}
+
+int psdoom_pid_enabled(void)
+{
+    return psdoom_show_pid != 0;
 }
 
 int psdoom_all_users_enabled(void)
@@ -141,6 +151,12 @@ void psdoom_opt_toggle_labels(int choice)
 {
     (void) choice;
     psdoom_show_labels = !psdoom_show_labels;
+}
+
+void psdoom_opt_toggle_pid(int choice)
+{
+    (void) choice;
+    psdoom_show_pid = !psdoom_show_pid;
 }
 
 void psdoom_opt_cycle_labelrange(int choice)

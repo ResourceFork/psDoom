@@ -548,11 +548,18 @@ void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
         y = PSD_LABEL_MAX_Y;
     }
 
-    snprintf(buf, sizeof(buf), "%d", pid);
-    PSD_DrawHUString(x, y, buf);
+    /* PID is opt-in (off by default to keep the courtyard readable). When it's
+     * shown it takes the top row and the name drops below; otherwise the name
+     * sits on the top row by itself. */
+    if (psdoom_pid_enabled())
+    {
+        snprintf(buf, sizeof(buf), "%d", pid);
+        PSD_DrawHUString(x, y, buf);
+        y += PSD_LABEL_LINE_H;
+    }
 
     if (name != NULL)
     {
-        PSD_DrawHUString(x, y + PSD_LABEL_LINE_H, name);
+        PSD_DrawHUString(x, y, name);
     }
 }

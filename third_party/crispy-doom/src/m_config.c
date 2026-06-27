@@ -2590,6 +2590,7 @@ static default_t extra_defaults_list[] =
     CONFIG_VARIABLE_INT(psdoom_classify_by),
     CONFIG_VARIABLE_INT(psdoom_all_users),
     CONFIG_VARIABLE_INT(psdoom_show_labels),
+    CONFIG_VARIABLE_INT(psdoom_show_pid),
     CONFIG_VARIABLE_INT(psdoom_label_range),
 
     //!

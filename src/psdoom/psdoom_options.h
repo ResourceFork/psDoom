@@ -58,6 +58,7 @@ extern int psdoom_monster_cap;    /* live-monster cap (5..35) */
 extern int psdoom_classify_by;    /* PSD_CLASSIFY_*           */
 extern int psdoom_all_users;      /* 0 = our uid only         */
 extern int psdoom_show_labels;    /* 0 / 1                    */
+extern int psdoom_show_pid;       /* 0 / 1 (off: name only)   */
 extern int psdoom_label_range;    /* PSD_LABELS_*             */
 
 /* Apply -psdoom-* command-line overrides. Call once at startup, after the
@@ -68,6 +69,7 @@ void psdoom_options_parse_args(void);
 int psdoom_should_kill(void);       /* send SIGTERM when a monster dies?      */
 int psdoom_should_renice(void);     /* renice on a non-fatal hit?             */
 int psdoom_labels_enabled(void);
+int psdoom_pid_enabled(void);       /* show the PID line in a label?          */
 int psdoom_all_users_enabled(void);
 int psdoom_label_min_scale(void);   /* 320-space scale gate for labels        */
 
@@ -78,6 +80,7 @@ void psdoom_opt_adjust_monstercap(int choice);   /* slider: clamp 5..35 */
 void psdoom_opt_cycle_classifyby(int choice);
 void psdoom_opt_toggle_allusers(int choice);
 void psdoom_opt_toggle_labels(int choice);
+void psdoom_opt_toggle_pid(int choice);
 void psdoom_opt_cycle_labelrange(int choice);
 
 #ifdef __cplusplus

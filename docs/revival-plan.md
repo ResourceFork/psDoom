@@ -76,9 +76,10 @@ proc_macos        ->   proc_select         ->   psdoom
     `psdoom_init`, `psdoom_sync`, `psdoom_wound(mobj)`, `psdoom_kill(mobj)`,
     `psdoom_draw_label(...)`.
   - `psdoom_options.{h,c}` — user-tunable settings (kill policy live/renice-only/simulate,
-    target-all-users, show-labels, label distance, classify-by memory/CPU, max-live-monsters),
-    the policy getters the game asks (`psdoom_should_kill` etc.), and `-psdoom-*` CLI parsing.
-    Engine-free; the ints are bound to the config file (d_main.c) for persistence.
+    target-all-users, show-labels, show-pid, label distance, classify-by memory/CPU,
+    max-live-monsters), the policy getters the game asks (`psdoom_should_kill` etc.), and
+    `-psdoom-*` CLI parsing. Engine-free; the ints are bound to the config file (d_main.c) for
+    persistence.
   - `psdoom_menu.{h,c}` — the in-game psDoom options page: its own menu definition, drawing and
     toggle wiring, fully isolated from the engine's menus. `m_menu.c` holds only a one-line
     "psDoom" entry in the Options menu (`M_PsDoom`) as the doorway.
@@ -125,9 +126,12 @@ proc_macos        ->   proc_select         ->   psdoom
   - `proc_macos` enumerates processes via `sysctl(KERN_PROC_ALL)`; `psdoom_sync` spawns a monster
     per current-UID process at the E1M1 courtyard (daemons -> demons, others -> shotgun guys);
     wound -> `setpriority` renice; kill -> `SIGTERM`. Verified on E1M1 (~35 process-monsters).
-  - Process labels: each process-monster's PID and name are drawn above its sprite
-    (`psdoom_draw_label` in `src/psdoom/psdoom.c`, HUD font; renderer carries `psd_pid`/`psd_name`
-    on the `vissprite_t`). A scale gate skips distant sprites; placement/scale are tunable
+  - Process labels: each process-monster's name (and, optionally, its PID) is drawn above its
+    sprite (`psdoom_draw_label` in `src/psdoom/psdoom.c`, HUD font; renderer carries
+    `psd_pid`/`psd_name` on the `vissprite_t`). The PID is hidden by default (a "Show PID in label"
+    option / `-psdoom-showpid` turns it on) to keep a crowded courtyard readable -- with it off the
+    name occupies the single top row; with it on the PID takes the top row and the name drops
+    below. A scale gate skips distant sprites; placement/scale are tunable
     (`PSD_LABEL_MIN_SCALE`). Labels respect wall occlusion (drawn only if the sprite actually
     rendered a pixel, via `psd_col_drawn` in `R_DrawMaskedColumn`) and are offset by the 3D view
     window origin (`viewwindowx`/`viewwindowy`) so they stay aligned at reduced screen sizes.

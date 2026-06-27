@@ -453,6 +453,7 @@ void D_BindVariables(void)
     M_BindIntVariable("psdoom_classify_by",     &psdoom_classify_by);
     M_BindIntVariable("psdoom_all_users",       &psdoom_all_users);
     M_BindIntVariable("psdoom_show_labels",     &psdoom_show_labels);
+    M_BindIntVariable("psdoom_show_pid",        &psdoom_show_pid);
     M_BindIntVariable("psdoom_label_range",     &psdoom_label_range);
 
     // [crispy] bind "crispness" config variables
