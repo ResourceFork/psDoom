@@ -167,7 +167,7 @@ proc_macos        ->   proc_select         ->   psdoom
     process-monster is remembered for the level (`psd_killed`, by pid+name), so it doesn't
     respawn on the next sync -- without this, a "killed" process in renice-only/simulate mode
     (still running) would just reappear a second later. The set clears on level restart.
-  - Live-monster cap: a menu slider (`psdoom_monster_cap`, 5..35, default 24, persisted): 30+
+  - Live-monster cap: a menu slider (`psdoom_monster_cap`, 5..35, default 10, persisted): 30+
     monsters made the E1M1 courtyard/hallways impassable, so `psdoom_sync` only spawns up to N
     *live* process-monsters at once (corpses don't count -- they're non-solid). The candidate
     pool (`PSD_CANDIDATE_CAP`, 64) stays relevance-ordered, so the cap keeps the most relevant

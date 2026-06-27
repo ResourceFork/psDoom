@@ -11,7 +11,7 @@
 int psdoom_kill_policy = PSD_KILL_RENICE;   /* SAFE default: renice, never kill
                                              * (opt into real kills via the menu
                                              * or the -psdoom-live flag)       */
-int psdoom_monster_cap = 24;                /* live-monster cap; menu slider   */
+int psdoom_monster_cap = 10;                /* live-monster cap; menu slider   */
 int psdoom_all_users   = 0;                 /* default: our own processes     */
 int psdoom_show_labels = 1;                 /* default: labels on             */
 int psdoom_label_range = PSD_LABELS_NORMAL;
