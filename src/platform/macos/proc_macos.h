@@ -17,6 +17,7 @@ typedef struct
     unsigned int       uid;
     int                is_daemon;          /* 1 if it has no controlling tty  */
     unsigned long long footprint;          /* resident memory, bytes (0 if n/a) */
+    int                cpu_percent;        /* recent CPU load; 100 = one core  */
     char               name[PSD_PROC_NAME_MAX]; /* short process name          */
 } psd_proc_t;
 

@@ -43,10 +43,19 @@ enum
 #define PSD_MONSTER_CAP_MIN 5
 #define PSD_MONSTER_CAP_MAX 35
 
+/* Which process metric drives monster toughness. */
+enum
+{
+    PSD_CLASSIFY_MEM = 0,  /* memory footprint (default)                      */
+    PSD_CLASSIFY_CPU,      /* recent CPU load                                 */
+    PSD_CLASSIFY_NUM
+};
+
 /* Persisted settings (bound to the config file in d_main.c; changed in the
  * psDoom menu). Plain ints for M_BindIntVariable. */
 extern int psdoom_kill_policy;    /* PSD_KILL_*               */
 extern int psdoom_monster_cap;    /* live-monster cap (5..35) */
+extern int psdoom_classify_by;    /* PSD_CLASSIFY_*           */
 extern int psdoom_all_users;      /* 0 = our uid only         */
 extern int psdoom_show_labels;    /* 0 / 1                    */
 extern int psdoom_label_range;    /* PSD_LABELS_*             */
@@ -66,6 +75,7 @@ int psdoom_label_min_scale(void);   /* 320-space scale gate for labels        */
  * cycle handlers, choice 1 advances, anything else goes back. */
 void psdoom_opt_cycle_killpolicy(int choice);
 void psdoom_opt_adjust_monstercap(int choice);   /* slider: clamp 5..35 */
+void psdoom_opt_cycle_classifyby(int choice);
 void psdoom_opt_toggle_allusers(int choice);
 void psdoom_opt_toggle_labels(int choice);
 void psdoom_opt_cycle_labelrange(int choice);

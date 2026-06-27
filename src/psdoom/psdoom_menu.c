@@ -28,6 +28,7 @@ enum
 {
     psd_row_killpolicy,
     psd_row_monstercap,
+    psd_row_classify,
     psd_row_allusers,
     psd_row_showlabels,
     psd_row_labelrange,
@@ -49,6 +50,12 @@ static const char *const psd_labelrange_names[PSD_LABELRANGE_NUM] =
     "all",
 };
 
+static const char *const psd_classify_names[PSD_CLASSIFY_NUM] =
+{
+    "memory",
+    "CPU load",
+};
+
 static void M_DrawPsDoom(void);
 
 /* The engine's Options menu; we return to it on "back". */
@@ -59,6 +66,7 @@ static menuitem_t PsDoomMenu[] =
     /* status 3 = left/right/enter cycles, no mouse-x (Crispy convention). */
     {3, "", psdoom_opt_cycle_killpolicy,  'k'},
     {3, "", psdoom_opt_adjust_monstercap, 'm'},
+    {3, "", psdoom_opt_cycle_classifyby,  'c'},
     {3, "", psdoom_opt_toggle_allusers,   'a'},
     {3, "", psdoom_opt_toggle_labels,     'l'},
     {3, "", psdoom_opt_cycle_labelrange,  'd'},
@@ -114,6 +122,9 @@ static void M_DrawPsDoom(void)
         snprintf(numbuf, sizeof(numbuf), "%d", psdoom_monster_cap);
         PSD_Row(psd_row_monstercap, "Max live monsters", numbuf, 1, 1);
     }
+
+    PSD_Row(psd_row_classify, "Monster size by",
+            psd_classify_names[psdoom_classify_by], 1, 1);
 
     PSD_Row(psd_row_allusers, "Target all users' processes",
             psdoom_all_users ? "on" : "off", 1, psdoom_all_users);

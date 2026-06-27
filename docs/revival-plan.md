@@ -71,13 +71,14 @@ proc_macos        ->   proc_select         ->   psdoom
     (interactive/tty processes score highest; a tunable noise-substring list sinks system
     helpers) so the most relevant processes survive truncation.
   - `psdoom.c` / `psdoom.h` — the monster creator. Consumes `proc_select`'s collection and
-    reconciles monsters (spawn/retire), draws labels, classifies by memory footprint, and maps
-    wound->renice / kill->SIGTERM. Engine-facing API: `psdoom_init`, `psdoom_sync`,
-    `psdoom_wound(mobj)`, `psdoom_kill(mobj)`, `psdoom_draw_label(...)`.
+    reconciles monsters (spawn/retire), draws labels, classifies by memory footprint or CPU load
+    (per the "Classify by" option), and maps wound->renice / kill->SIGTERM. Engine-facing API:
+    `psdoom_init`, `psdoom_sync`, `psdoom_wound(mobj)`, `psdoom_kill(mobj)`,
+    `psdoom_draw_label(...)`.
   - `psdoom_options.{h,c}` — user-tunable settings (kill policy live/renice-only/simulate,
-    target-all-users, show-labels, label distance), the policy getters the game asks
-    (`psdoom_should_kill` etc.), and `-psdoom-*` CLI parsing. Engine-free; the ints are bound to
-    the config file (d_main.c) for persistence.
+    target-all-users, show-labels, label distance, classify-by memory/CPU, max-live-monsters),
+    the policy getters the game asks (`psdoom_should_kill` etc.), and `-psdoom-*` CLI parsing.
+    Engine-free; the ints are bound to the config file (d_main.c) for persistence.
   - `psdoom_menu.{h,c}` — the in-game psDoom options page: its own menu definition, drawing and
     toggle wiring, fully isolated from the engine's menus. `m_menu.c` holds only a one-line
     "psDoom" entry in the Options menu (`M_PsDoom`) as the doorway.
@@ -178,11 +179,30 @@ proc_macos        ->   proc_select         ->   psdoom
     So the most-relevant processes reliably appear (no more losing monsters to pid collisions),
     and the wider grid spacing (56, was 40) fits Baron-sized monsters so the big memory-hogs
     actually spawn. Monsters wander once active, so this only sets the initial position.
+  - Selectable classifier (memory / CPU load): a "Classify by" option (psDoom menu + persisted +
+    `-psdoom-cpu`) chooses whether a process's monster *type* is sized by its memory footprint
+    (default) or its CPU load. CPU load is a true rate -- the backend reads cumulative CPU time
+    (`proc_pid_rusage`) and divides the delta by the monotonic-clock interval between syncs, so
+    100% = one full core busy for the whole interval (a multi-threaded hog can exceed 100). The
+    CPU sampler is primed in `psdoom_init` so CPU mode works from the first spawn rather than
+    reporting every process idle. A separate CPU-tier table
+    (5/25/60/120/250/500% -> Zombieman..Cyberdemon) mirrors the memory ladder; both share the
+    WAD-aware degrade. Unit note: on Apple Silicon `proc_pid_rusage` reports CPU time in mach
+    absolute-time units (~41.67 ns each, timebase 125/3), not nanoseconds, so the backend
+    converts via `mach_timebase_info` before comparing against the `clock_gettime` wall clock
+    (a no-op on Intel's 1/1 timebase). Without this a fully-pegged process read ~2% instead of
+    ~100%.
+    Limitations: classification happens once, at spawn time -- a monster doesn't re-grade if its
+    process's CPU later spikes or idles (a process that's busy when first seen keeps that monster
+    type for its life). The CPU tier thresholds are calibrated for 100 = one core and are tunable.
+    Ranking is still memory-based, so the candidate pool surfaces notable + interactive processes,
+    which CPU mode then sizes by live load.
 - **Next:**
-  1. CPU load as a second toughness/behavior signal. Memory drives the monster *type* because it's
-     stable (CPU% would make types flap frame to frame); CPU is better suited to dynamic behavior
-     (e.g. a high-CPU process is more aggressive/faster). Needs delta sampling between syncs
-     (cumulative CPU time alone just favors long-lived processes), plus a small per-pid history.
+  1. CPU-driven *behavior* and live re-classification. The classifier above sizes the monster
+     *type* once at spawn; the dynamic-behavior idea is still open -- e.g. a high-CPU process is
+     more aggressive/faster, and monsters re-grade as their process's load changes. (The earlier
+     concern that CPU would make *types* flap frame-to-frame is sidestepped by classifying only at
+     spawn; live re-grading would need hysteresis to avoid that flapping.)
   2. Larger arena / custom WAD: the courtyard (~11x7 cells at 56) tops out short of the slider's
      max of 35 on busy maps, and a Cyberdemon (radius 40) needs more elbow room than 56 spacing
      gives. A dedicated pen (as the original psDoom shipped) would lift both limits.

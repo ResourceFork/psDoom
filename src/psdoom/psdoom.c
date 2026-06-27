@@ -200,26 +200,42 @@ static int PSD_LiveMonsterCount(void)
 }
 
 /*
- * Map a process to a monster by its memory footprint: heavier process -> tougher
- * monster. The ladder is grounded (no floating types) so the courtyard grid can
- * place them, and ordered by Doom HP: Zombieman(20) -> Shotgun Guy(30) ->
- * Imp(60) -> Pinky(150) -> Hell Knight(500) -> Baron(1000) -> Cyberdemon(4000).
- * A process keeps getting wounded (reniced) until it dies, so a heavier process
- * is literally harder to kill -- exactly the intent. Thresholds are tunable.
+ * Monster toughness ladder. A heavier / busier process -> a tougher monster.
+ * The ladder is grounded (no floating types) so the courtyard grid can place
+ * them, ordered by Doom HP: Zombieman(20) -> Shotgun Guy(30) -> Imp(60) ->
+ * Pinky(150) -> Hell Knight(500) -> Baron(1000) -> Cyberdemon(4000). The
+ * classifier uses the memory ladder or the CPU ladder per the "Classify by"
+ * option; a process keeps getting wounded (reniced) until it dies, so a tougher
+ * monster is literally harder to kill. Thresholds are tunable.
  */
-static const struct
+typedef struct
 {
-    unsigned long long max_bytes;   /* upper bound (exclusive) for this tier */
+    unsigned long long max;   /* upper bound (exclusive) for this tier */
     mobjtype_t         type;
-} psd_monster_tiers[] =
+} psd_tier_t;
+
+/* By memory footprint (bytes). */
+static const psd_tier_t psd_mem_tiers[] =
 {
-    {   16ULL << 20, MT_POSSESSED },  /* <  16 MB : Zombieman    */
-    {   64ULL << 20, MT_SHOTGUY  },   /* <  64 MB : Shotgun Guy  */
-    {  192ULL << 20, MT_TROOP    },   /* < 192 MB : Imp          */
-    {  512ULL << 20, MT_SERGEANT },   /* < 512 MB : Pinky Demon  */
-    { 1536ULL << 20, MT_KNIGHT   },   /* < 1.5 GB : Hell Knight  */
-    { 4096ULL << 20, MT_BRUISER  },   /* < 4   GB : Baron of Hell*/
-    { ~0ULL,         MT_CYBORG   },   /* >= 4  GB : Cyberdemon   */
+    {   16ULL << 20, MT_POSSESSED },  /* <  16 MB : Zombieman     */
+    {   64ULL << 20, MT_SHOTGUY  },   /* <  64 MB : Shotgun Guy   */
+    {  192ULL << 20, MT_TROOP    },   /* < 192 MB : Imp           */
+    {  512ULL << 20, MT_SERGEANT },   /* < 512 MB : Pinky Demon   */
+    { 1536ULL << 20, MT_KNIGHT   },   /* < 1.5 GB : Hell Knight   */
+    { 4096ULL << 20, MT_BRUISER  },   /* < 4   GB : Baron of Hell */
+    { ~0ULL,         MT_CYBORG   },   /* >= 4  GB : Cyberdemon    */
+};
+
+/* By CPU load (percent of one core; 100 = one full core, >100 multi-core). */
+static const psd_tier_t psd_cpu_tiers[] =
+{
+    {     5, MT_POSSESSED },  /* <   5% : Zombieman (idle)     */
+    {    25, MT_SHOTGUY  },   /* <  25% : Shotgun Guy          */
+    {    60, MT_TROOP    },   /* <  60% : Imp                  */
+    {   120, MT_SERGEANT },   /* < 120% : Pinky Demon (~1 core)*/
+    {   250, MT_KNIGHT   },   /* < 250% : Hell Knight          */
+    {   500, MT_BRUISER  },   /* < 500% : Baron of Hell        */
+    { ~0ULL, MT_CYBORG   },   /* >=500% : Cyberdemon           */
 };
 
 /* True if monster `type`'s sprite is present in the loaded WAD. Spawning a
@@ -234,35 +250,45 @@ static boolean PSD_MonsterDrawable(mobjtype_t type)
     return spr >= 0 && spr < numsprites && sprites[spr].numframes > 0;
 }
 
-static mobjtype_t PSD_ClassifyMonster(const psd_proc_t *p)
+/* Pick the toughest tier `metric` earns, then degrade to the first lighter
+ * tier whose sprite the loaded WAD actually has. The shareware IWAD lacks Hell
+ * Knight / Cyberdemon sprites, and spawning an undrawable monster is fatal
+ * (R_ProjectSprite I_Error), so a heavy/busy process caps at Baron there and
+ * uses the full ladder on a complete WAD. Zombieman (the last fallback) exists
+ * in every Doom IWAD. */
+static mobjtype_t PSD_ClassifyByTiers(unsigned long long metric,
+                                      const psd_tier_t *tiers, int ntiers)
 {
-    const int ntiers = (int) (sizeof(psd_monster_tiers) / sizeof(psd_monster_tiers[0]));
     int ideal = ntiers - 1;
     int i;
 
-    /* Toughest tier this footprint earns. */
     for (i = 0; i < ntiers; i++)
     {
-        if (p->footprint < psd_monster_tiers[i].max_bytes)
+        if (metric < tiers[i].max)
         {
             ideal = i;
             break;
         }
     }
-
-    /* Degrade to the first lighter tier whose sprite the loaded WAD actually
-     * has. The shareware IWAD lacks Hell Knight / Cyberdemon sprites, and
-     * spawning an undrawable monster is fatal (R_ProjectSprite I_Error), so a
-     * heavy process caps at Baron there and uses the full ladder on a complete
-     * WAD. Zombieman (the last fallback) exists in every Doom IWAD. */
     for (i = ideal; i > 0; i--)
     {
-        if (PSD_MonsterDrawable(psd_monster_tiers[i].type))
+        if (PSD_MonsterDrawable(tiers[i].type))
         {
-            return psd_monster_tiers[i].type;
+            return tiers[i].type;
         }
     }
-    return psd_monster_tiers[0].type;
+    return tiers[0].type;
+}
+
+static mobjtype_t PSD_ClassifyMonster(const psd_proc_t *p)
+{
+    if (psdoom_classify_by == PSD_CLASSIFY_CPU)
+    {
+        return PSD_ClassifyByTiers((unsigned long long) p->cpu_percent,
+            psd_cpu_tiers, (int) (sizeof(psd_cpu_tiers) / sizeof(psd_cpu_tiers[0])));
+    }
+    return PSD_ClassifyByTiers(p->footprint,
+        psd_mem_tiers, (int) (sizeof(psd_mem_tiers) / sizeof(psd_mem_tiers[0])));
 }
 
 /* Courtyard placement grid. Origin is the original psDoom's E1M1 "hidden
@@ -337,6 +363,10 @@ void psdoom_init(void)
     psd_killed_count   = 0;
     psd_last_leveltime = 0;
     psd_enabled        = true;
+
+    /* Prime the CPU-load sampler so "classify by CPU" has a baseline from the
+     * first sync instead of reporting every process idle. */
+    (void) psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
 
     fprintf(stderr, "psDoom: process management active (uid %u, pid %d)\n",
             proc_macos_current_uid(), (int) getpid());
