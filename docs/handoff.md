@@ -8,8 +8,8 @@
 > **Current location:** `docs/handoff.md` in the dedicated **psDoom** repo (`~/Source/psDoom`).
 > **Status:** Decisions resolved and engine bootstrapped — revived on **Crispy Doom 7.1** as a
 > native macOS `.app` that builds and runs (stock engine so far; the psDoom process layer is next).
-> This file is the origin/history record; the current technical plan lives in
-> [`revival-plan.md`](revival-plan.md).
+> This file is the origin/history record; the architecture and features live in
+> [`architecture.md`](architecture.md).
 
 ---
 

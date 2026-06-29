@@ -15,5 +15,5 @@ Our code for the psDoom revival. The vendored Doom engine it builds on lives sep
 Engine-free policy (triage + backend plumbing) is unit-tested off-machine in
 [`../tests/`](../tests/) against the fake backend (`ctest --test-dir build`).
 
-See [`../docs/revival-plan.md`](../docs/revival-plan.md) for the engine hook points, module API,
+See [`../docs/architecture.md`](../docs/architecture.md) for the engine hook points, module API,
 and build; and [`../docs/handoff.md`](../docs/handoff.md) for project background and history.

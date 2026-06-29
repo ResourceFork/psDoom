@@ -93,7 +93,7 @@ src/app/macos/             the .app launcher
 src/psdoom/                process<->monster logic        (in progress)
 src/platform/macos/        native libproc/renice/kill     (in progress)
 CMakeLists.txt             single build: engine + psDoom.app
-docs/                      revival-plan.md, handoff.md, original/ (recovered v1.0 archive)
+docs/                      architecture.md, handoff.md, original/ (recovered v1.0 archive)
 wads/                      runtime IWAD (gitignored, not GPL)
 ```
 
@@ -114,8 +114,8 @@ Or generate an Xcode project from the same build and Run the `psDoom` scheme:
 cmake -G Xcode -S . -B build-xcode && open build-xcode/psDoom.xcodeproj
 ```
 
-See [`docs/revival-plan.md`](docs/revival-plan.md) for build details and the
-engine integration plan.
+See [`docs/architecture.md`](docs/architecture.md) for the architecture, engine
+integration, and build.
 
 ## Status
 
