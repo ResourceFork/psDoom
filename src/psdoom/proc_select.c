@@ -7,7 +7,7 @@
  */
 
 #include "proc_select.h"
-#include "proc_macos.h"
+#include "proc_backend.h"
 #include "psdoom_options.h"   /* psdoom_all_users_enabled() */
 
 #include <stdlib.h>   /* qsort         */
@@ -35,6 +35,7 @@
 /* ------------------------------------------------------------------- state */
 
 static psd_proc_t   select_raw[PSD_RAW_MAX];   /* raw snapshot scratch        */
+static int          select_raw_count;          /* size of the last raw snapshot */
 static psd_proc_t   select_work[PSD_RAW_MAX];  /* survivors, pre-sort scratch */
 
 static unsigned int select_uid;
@@ -205,7 +206,7 @@ static int select_cmp(const void *a, const void *b)
 
 void psd_select_init(void)
 {
-    select_uid      = proc_macos_current_uid();
+    select_uid      = proc_backend()->current_uid();
     select_self_pid = (int) getpid();
 }
 
@@ -254,9 +255,30 @@ int psd_select_triage(const psd_proc_t *raw, int n_raw,
 
 int psd_select_collect(psd_proc_t *out, int max)
 {
-    int n_raw = proc_macos_list(select_raw, PSD_RAW_MAX);
+    int n_raw = proc_backend()->list(select_raw, PSD_RAW_MAX);
+
+    select_raw_count = n_raw;   /* remember for psd_select_child_count() */
 
     return psd_select_triage(select_raw, n_raw,
                              select_uid, select_self_pid,
                              psdoom_all_users_enabled(), out, max);
+}
+
+int psd_select_child_count(int pid)
+{
+    int count = 0;
+    int i;
+
+    if (pid <= 0)
+    {
+        return 0;
+    }
+    for (i = 0; i < select_raw_count; i++)
+    {
+        if (select_raw[i].ppid == pid)
+        {
+            count++;
+        }
+    }
+    return count;
 }

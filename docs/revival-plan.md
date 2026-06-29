@@ -202,16 +202,127 @@ proc_macos        ->   proc_select         ->   psdoom
     Ranking is still memory-based, so the candidate pool surfaces notable + interactive processes,
     which CPU mode then sizes by live load.
 - **Next:**
-  1. CPU-driven *behavior* and live re-classification. The classifier above sizes the monster
-     *type* once at spawn; the dynamic-behavior idea is still open -- e.g. a high-CPU process is
-     more aggressive/faster, and monsters re-grade as their process's load changes. (The earlier
-     concern that CPU would make *types* flap frame-to-frame is sidestepped by classifying only at
-     spawn; live re-grading would need hysteresis to avoid that flapping.)
-  2. Larger arena / custom WAD: the courtyard (~11x7 cells at 56) tops out short of the slider's
+
+  The three features below are specified in detail in the "Planned features" section
+  that follows; the remaining items are tracked here.
+
+  1. **Platform backend interface + fake backend** (foundation; see below).
+  2. **Live re-classification with hysteresis + morph fog** (see below).
+  3. **Fork-bomb swarms** (see below).
+  4. Larger arena / custom WAD: the courtyard (~11x7 cells at 56) tops out short of the slider's
      max of 35 on busy maps, and a Cyberdemon (radius 40) needs more elbow room than 56 spacing
      gives. A dedicated pen (as the original psDoom shipped) would lift both limits.
-  3. Safety polish: a kill confirmation / undo grace period (all-users mode and a non-lethal
+  5. Safety polish: a kill confirmation / undo grace period (all-users mode and a non-lethal
      "safe" kill policy now exist via the psDoom options menu / `-psdoom-*` flags).
+
+## Planned features
+
+Three features build on the existing three-layer pipeline
+(`proc_macos -> proc_select -> psdoom`). They are ordered: the backend interface is the
+foundation that makes the other two testable without depending on whatever happens to be
+running on the machine.
+
+### 1. Platform backend interface + fake backend
+
+**Why:** the OS layer is already a four-operation contract
+(`proc_macos_list` / `proc_macos_current_uid` / `proc_macos_renice` / `proc_macos_kill`).
+Lifting it behind a vtable unlocks (a) a deterministic *fake* backend so the pure triage and
+classification policy can be unit-tested off-machine, and (b) a future Linux backend
+(`/proc`, `setpriority`, `kill`) with zero changes above the interface.
+
+**Design:**
+
+- `src/platform/proc_types.h` -- backend-neutral `psd_proc_t` + `PSD_PROC_NAME_MAX` (moved out
+  of `proc_macos.h`, which now `#include`s it).
+- `src/platform/proc_backend.h` -- the vtable and accessor:
+  ```c
+  typedef struct {
+      int          (*list)(psd_proc_t *out, int max);
+      unsigned int (*current_uid)(void);
+      void         (*renice)(int pid, int nice_delta);
+      int          (*kill)(int pid);
+  } proc_backend_t;
+  const proc_backend_t *proc_backend(void);        /* current backend      */
+  void                  proc_backend_set(const proc_backend_t *b); /* override */
+  ```
+- `src/platform/proc_backend.c` -- holds the current backend pointer; defaults to
+  `proc_macos_backend` on Apple. `proc_backend_set` lets a test (or a future replay backend)
+  swap it.
+- `proc_macos.c` -- unchanged logic; exports `const proc_backend_t proc_macos_backend`.
+- `proc_select.c` / `psdoom.c` -- call `proc_backend()->list(...)` etc. instead of the
+  `proc_macos_*` names (mechanical rename).
+- `src/platform/proc_fake.c` -- serves a scripted array of snapshots (one per `list()` call)
+  and logs `renice`/`kill` for assertions. Drives a small host test
+  (`tests/`, its own CMake target, *not* linked into the engine or the `.app`).
+
+**Diff impact:** none in the vendored engine -- a pure `src/` refactor + new test target.
+
+### 2. Live re-classification with hysteresis + morph fog
+
+**Why:** `psd_proc_t` already carries a *live* `footprint` and `cpu_percent` (a true rate)
+recomputed every `list()` call, but `PSD_ClassifyMonster` runs only once, in `PSD_SpawnMonster`,
+so a process that later spikes or idles keeps its original monster type for life. Re-grading the
+live monster makes a runaway process visibly *grow angrier*.
+
+**Design (all in `psdoom.c`, keyed by `psd_pid` -- no new engine fields):**
+
+- Per-monster hysteresis side table `psd_grade_t { int pid; mobjtype_t pending; int streak; }`,
+  compacted each sync against the live set (bounded by the candidate cap).
+- Each sync, for every live process-monster present in the curated set:
+  `desired = PSD_ClassifyMonster(p)`. If `desired == mo->type`, clear the streak. Otherwise
+  count consecutive syncs voting for the same `desired`, and commit the morph once the streak
+  crosses a hold threshold. **Asymmetric holds** -- promote fast
+  (`PSD_REGRADE_UP_HOLD`, ~2 syncs), demote slow (`PSD_REGRADE_DOWN_HOLD`, ~5 syncs), compared
+  by `mobjinfo[].spawnhealth` -- so spikes show immediately but brief dips don't shrink a
+  monster. This is what defeats the frame-to-frame flapping the original CPU-classify concern
+  flagged.
+- **Morph** (`PSD_MorphMonster`): target type is routed through `PSD_ClassifyByTiers`, so it is
+  always WAD-drawable (shareware caps at Baron). Swap `type`/`info`/`radius`/`height`/`flags`
+  (re-clear `MF_COUNTKILL`), scale `health` proportionally to the new `spawnhealth` (so a
+  half-dead Imp doesn't morph to a full-HP Baron), and `P_SetMobjState` to the new type's
+  see-state so it keeps chasing. A radius *increase* is gated by `P_CheckPosition` at the
+  current spot; if it would clip a wall/thing the morph is deferred (streak kept) and retried
+  next sync -- the same guard `PSD_SpawnMonster` already uses.
+- **Morph fog:** spawn `MT_TFOG` at the monster's position on a successful morph (gated by
+  `PSD_MonsterDrawable(MT_TFOG)` so it's skipped if the WAD lacks the sprite), and play
+  `sfx_telept` if available, so the change reads as a deliberate teleport-in rather than a
+  glitchy sprite pop.
+
+Re-classification honors the existing "Classify by" option automatically (it calls
+`PSD_ClassifyMonster`): dynamic in CPU mode, slow-moving in memory mode.
+
+**Diff impact:** none in the vendored engine -- reuses `P_SpawnMobj` / `P_SetMobjState` /
+`P_CheckPosition`, already called.
+
+### 3. Fork-bomb swarms
+
+**Why:** `ppid` is already in every `psd_proc_t`, so the parent/child graph is available each
+sync. A process whose live child count climbs fast (a `fork()` storm) is exactly a fork bomb;
+representing that burst as a swarm of Lost Souls around the offending parent's monster is both
+thematic and genuinely informative.
+
+**Design:**
+
+- **Detection** runs on the *raw* snapshot (children are filtered out of the curated set by
+  relevance), so `proc_select` gains a small accessor returning per-ppid child counts for the
+  last raw snapshot (or `psdoom_sync` computes it just after `proc_backend()->list()`). A burst
+  is `child_count[pid] - prev_child_count[pid] >= PSD_FORK_BURST` (e.g. +5 in one sync). The
+  prev-count and a per-parent spawn cooldown are plain pid-keyed primitive tables (no mobj
+  pointers, so nothing can dangle).
+- **Swarm:** spawn up to `min(burst, PSD_SWARM_PER_BURST)` Lost Souls near the parent monster,
+  capped overall by `PSD_MAX_SWARM_LIVE`. The swarm type is `MT_SKULL`, degraded via
+  `PSD_MonsterDrawable` (the shareware IWAD is Episode 1 only and has no Lost Soul sprite, so it
+  falls back to a drawable grunt there).
+- **Safety / lifetime:** souls are spawned **inert** -- tagged `psd_pid = PSD_SWARM_PID` (-1) so
+  every process path ignores them: `psdoom_wound`/`psdoom_kill` already gate on `psd_pid > 1` /
+  `<= 1`, and the reconcile loop / live-count / label draw are tightened to `psd_pid > 0`. A soul
+  therefore never signals or renices anything; it is a cosmetic threat the player clears by
+  shooting. `psdoom_kill` gains one early branch to decrement a live-soul counter when a tagged
+  soul dies, so the global cap self-corrects. Per-parent cooldown + per-burst cap + global
+  ceiling together bound accumulation.
+
+**Diff impact:** none in the vendored engine -- Lost Souls already exist; detection is pure
+`src/` logic, scriptable against the fake backend.
 
 > Monster variety note: the bundled shareware `DOOM1.WAD` only has Episode 1 monster sprites, so
 > the classifier caps at Baron of Hell. Point psDoom at a registered Doom or Doom II IWAD to get

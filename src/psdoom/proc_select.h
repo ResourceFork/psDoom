@@ -13,13 +13,13 @@
  * how to rank, how many to show) can be reasoned about -- and tested -- in
  * isolation from both the OS and the renderer.
  *
- * The process object is `psd_proc_t` (see proc_macos.h).
+ * The process object is `psd_proc_t` (see proc_types.h).
  */
 
 #ifndef PSDOOM_PROC_SELECT_H
 #define PSDOOM_PROC_SELECT_H
 
-#include "proc_macos.h"   /* psd_proc_t */
+#include "proc_types.h"   /* psd_proc_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +41,15 @@ void psd_select_init(void);
  * is ranked so the most relevant processes survive the truncation to `max`.
  */
 int psd_select_collect(psd_proc_t *out, int max);
+
+/*
+ * Number of processes in the last acquired raw snapshot whose parent pid is
+ * `pid`. Lets the game spot a fork burst (a parent whose live child count
+ * jumps between syncs). The raw snapshot is the *unfiltered* list, so children
+ * that triage would drop are still counted. Valid after psd_select_collect();
+ * returns 0 before the first call.
+ */
+int psd_select_child_count(int pid);
 
 /*
  * Pure triage core: filter, rank and truncate an already-acquired snapshot.

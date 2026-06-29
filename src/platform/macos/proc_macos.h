@@ -8,18 +8,7 @@
 #ifndef PSDOOM_PROC_MACOS_H
 #define PSDOOM_PROC_MACOS_H
 
-#define PSD_PROC_NAME_MAX 32
-
-typedef struct
-{
-    int                pid;
-    int                ppid;               /* parent pid (for safety filter)  */
-    unsigned int       uid;
-    int                is_daemon;          /* 1 if it has no controlling tty  */
-    unsigned long long footprint;          /* resident memory, bytes (0 if n/a) */
-    int                cpu_percent;        /* recent CPU load; 100 = one core  */
-    char               name[PSD_PROC_NAME_MAX]; /* short process name          */
-} psd_proc_t;
+#include "proc_types.h"   /* psd_proc_t, PSD_PROC_NAME_MAX */
 
 #ifdef __cplusplus
 extern "C" {

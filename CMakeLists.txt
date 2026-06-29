@@ -41,9 +41,11 @@ target_sources(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_options.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_menu.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
 target_include_directories(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src/doom")
@@ -118,3 +120,26 @@ foreach(_eng
         set_target_properties(${_eng} PROPERTIES XCODE_GENERATE_SCHEME OFF)
     endif()
 endforeach()
+
+#
+# Host tests for the engine-free policy layers (triage + backend plumbing).
+# Built against the fake backend, with no engine or OS process dependency
+# (PSD_NO_NATIVE_BACKEND drops the native default). EXCLUDE_FROM_ALL so the
+# default build / the .app are unaffected; build + run explicitly with:
+#
+#   cmake --build build --target psdoom_tests
+#   ctest --test-dir build --output-on-failure
+#
+enable_testing()
+
+add_executable(psdoom_tests EXCLUDE_FROM_ALL
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/proc_select_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_fake.c")
+target_compile_definitions(psdoom_tests PRIVATE PSD_NO_NATIVE_BACKEND)
+target_include_directories(psdoom_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+
+add_test(NAME psdoom_tests COMMAND psdoom_tests)

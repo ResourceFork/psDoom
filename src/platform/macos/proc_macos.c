@@ -8,6 +8,7 @@
  */
 
 #include "proc_macos.h"
+#include "proc_backend.h"   /* proc_backend_t (vtable registration) */
 
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -240,3 +241,12 @@ int proc_macos_kill(int pid)
 
     return (kill(pid, SIGTERM) == 0) ? 1 : 0;
 }
+
+/* The native macOS backend, registered as the default in proc_backend.c. */
+const proc_backend_t proc_macos_backend =
+{
+    proc_macos_list,
+    proc_macos_current_uid,
+    proc_macos_renice,
+    proc_macos_kill,
+};
