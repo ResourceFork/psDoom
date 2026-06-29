@@ -1,8 +1,9 @@
 # psDoom on Crispy Doom — revival plan
 
 How the psDoom process-management layer attaches to the vendored Crispy Doom engine, and how the
-macOS app is built. The engine is bootstrapped and the `.app` builds/runs **stock** Crispy Doom;
-no engine code has been modified for psDoom yet.
+macOS app is built. The `.app` builds and runs on the vendored engine, which carries only a thin
+set of psDoom hooks -- a few `mobj_t` fields plus one-line call-sites, all recorded in
+[`../third_party/README.md`](../third_party/README.md); the rest of psDoom lives in `src/`.
 
 ## Repository layout
 
@@ -201,26 +202,50 @@ proc_macos        ->   proc_select         ->   psdoom
     type for its life). The CPU tier thresholds are calibrated for 100 = one core and are tunable.
     Ranking is still memory-based, so the candidate pool surfaces notable + interactive processes,
     which CPU mode then sizes by live load.
+  - Platform backend interface + fake backend: the OS layer is now a four-op vtable
+    (`proc_backend_t`: list / current_uid / renice / kill) in `src/platform/proc_backend.{c,h}`
+    over a backend-neutral `psd_proc_t` (`proc_types.h`). `proc_macos.c` registers
+    `proc_macos_backend`; `proc_select` / `psdoom` call through `proc_backend()`. A scriptable
+    in-memory `proc_fake` backend + an off-machine `ctest` target (`tests/`) exercise the pure
+    triage and the backend plumbing. Unlocks a future Linux backend with no changes above the
+    interface. (No vendored-engine edits.)
+  - Live re-classification (hysteresis + morph fog): each sync a process-monster re-grades to the
+    tier its *current* footprint/CPU earns, gated by an asymmetric hold (promote ~2 syncs, demote
+    ~5, compared by `spawnhealth`) so it never flaps. `PSD_MorphMonster` swaps type/size, scales
+    health to preserve the damage fraction, defers a size increase that would clip
+    (`P_CheckPosition`), re-enters the see-state, and pops an `MT_TFOG` flash + teleport cue.
+    Keyed by pid in a side table -- no engine field added.
+  - Fork-bomb swarms: `psd_select_child_count()` exposes per-parent child counts from the raw
+    snapshot; a child-count burst spawns a capped swarm of inert Lost Souls (tagged with a
+    `psd_pid` sentinel so no process path ever acts on them) around the offending monster,
+    degraded to a drawable type on the shareware WAD. A per-parent cooldown + per-burst cap +
+    global live ceiling bound accumulation.
+  - External-script backend: `src/platform/proc_script.{c,h}` implements the vtable by shelling
+    out to user commands -- `PSDOOM_POLL_CMD` (stdout enumerated as TAB-separated `key=value`)
+    and `PSDOOM_RESPOND_CMD` (exec'd directly as `<verb> <id> [key=value...]`), with a poll
+    timeout so the tick never blocks and a double-forked responder so it never blocks or leaks
+    zombies. Installed from the environment in `psdoom_init`, else the native backend stays. Wire
+    contract in [`script-backend.md`](script-backend.md); reference + example scripts in
+    [`../scripts/`](../scripts/) and [`../examples/`](../examples/).
 - **Next:**
 
-  The three features below are specified in detail in the "Planned features" section
-  that follows; the remaining items are tracked here.
-
-  1. **Platform backend interface + fake backend** (foundation; see below).
-  2. **Live re-classification with hysteresis + morph fog** (see below).
-  3. **Fork-bomb swarms** (see below).
-  4. Larger arena / custom WAD: the courtyard (~11x7 cells at 56) tops out short of the slider's
+  1. Larger arena / custom WAD: the courtyard (~11x7 cells at 56) tops out short of the slider's
      max of 35 on busy maps, and a Cyberdemon (radius 40) needs more elbow room than 56 spacing
      gives. A dedicated pen (as the original psDoom shipped) would lift both limits.
-  5. Safety polish: a kill confirmation / undo grace period (all-users mode and a non-lethal
+  2. Safety polish: a kill confirmation / undo grace period (all-users mode and a non-lethal
      "safe" kill policy now exist via the psDoom options menu / `-psdoom-*` flags).
 
-## Planned features
+  (The platform backend interface, live re-classification + morph fog, fork-bomb swarms and the
+  external-script backend that were listed here previously are now **implemented** -- see **Done**
+  above; their design notes are retained below.)
 
-Three features build on the existing three-layer pipeline
-(`proc_macos -> proc_select -> psdoom`). They are ordered: the backend interface is the
-foundation that makes the other two testable without depending on whatever happens to be
-running on the machine.
+## Implemented features -- design notes
+
+The four features below are **implemented** (see the **Done** list above for the summary, and
+[`script-backend.md`](script-backend.md) for the script backend's wire contract). They are kept
+here as design notes -- the rationale, the approach, and the engine-diff impact. They build on
+the existing three-layer pipeline (`proc_macos -> proc_select -> psdoom`); the backend interface
+is the foundation the others (and the external-script backend) plug into.
 
 ### 1. Platform backend interface + fake backend
 
@@ -323,6 +348,35 @@ thematic and genuinely informative.
 
 **Diff impact:** none in the vendored engine -- Lost Souls already exist; detection is pure
 `src/` logic, scriptable against the fake backend.
+
+### 4. External-script backend
+
+**Why:** with the backend behind a vtable (feature 1), the OS isn't the only thing psDoom can
+represent. A backend that shells out to user-supplied commands lets anyone wire psDoom to
+arbitrary systems -- containers, queues, build jobs, pull requests -- by writing a poll script
+and a response script. Because `weight`/`load`/`parent` map onto the existing classifier,
+re-classification and fork swarms (features 2-3) work for those entities for free.
+
+**Design** (`src/platform/proc_script.{c,h}`, no engine edits):
+
+- A fourth `proc_backend_t` implementation. `list()` runs `PSDOOM_POLL_CMD` (via the shell, so
+  pipelines work), captures stdout with a timeout so a slow script never freezes the game tick,
+  and parses it; `renice`/`kill` run `PSDOOM_RESPOND_CMD` *directly* (no shell -- entity
+  labels/ids can't be interpreted as syntax), double-forked so they neither block nor leak
+  zombies. `psdoom_init` installs it when `PSDOOM_POLL_CMD` is set, else the native backend
+  stays.
+- The pure parser (`psd_script_parse`) is engine/OS-free and unit-tested; the host test also
+  drives a real poll/respond subprocess round-trip through the installed backend.
+- **The wire contract is documented authoritatively in
+  [`script-backend.md`](script-backend.md)** -- poll stdout is tab-separated `key=value`
+  (`id`/`parent`/`label`/`weight`/`load`/`flags`, unknown keys ignored for forward
+  compatibility); responses are `<verb> <id> [key=value...]` with `verb` extensible.
+- **Safety:** the native protected-process filter is process-specific and does not apply to
+  arbitrary entities, so in script mode the script owns what is safe to enumerate and act on.
+  Responses are exec'd without a shell to keep hostile labels inert.
+
+**Diff impact:** none in the vendored engine -- one new backend module + the env-driven install
+call in `psdoom_init`.
 
 > Monster variety note: the bundled shareware `DOOM1.WAD` only has Episode 1 monster sprites, so
 > the classifier caps at Baron of Hell. Point psDoom at a registered Doom or Doom II IWAD to get

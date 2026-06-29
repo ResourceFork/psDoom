@@ -13,9 +13,13 @@
 #include "proc_select.h"
 #include "proc_backend.h"
 #include "proc_fake.h"
+#include "proc_script.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 /* ---- stub for the one option getter proc_select references --------------- */
 static int stub_all_users;
@@ -190,6 +194,153 @@ static void test_child_count(void)
     CHECK(psd_select_child_count(0)   == 0);   /* guard                   */
 }
 
+/* ---- script backend: contract parser + a real subprocess round-trip ------ */
+
+/* The poll parser (docs/script-backend.md): tab-separated key=value, comments
+ * and blanks skipped, unknown keys ignored, id>1 required, last-wins, spaces
+ * preserved in values. */
+static void test_script_parse(void)
+{
+    const char *buf =
+        "#!psdoom v1\n"
+        "# a comment\n"
+        "\n"
+        "id=4123\tlabel=web frontend\tweight=734003200\tload=140\tparent=4000\n"
+        "id=4124\tweight=64\tflags=1\textra=ignored\n"  /* unknown key ignored */
+        "label=orphan\tweight=10\n"                       /* no id -> skipped    */
+        "id=1\tlabel=reserved\n"                           /* id reserved -> skip */
+        "id=5000\tload=10\tload=20\n";                     /* repeated: last wins */
+    psd_proc_t out[16];
+    int n = psd_script_parse(buf, out, 16);
+
+    CHECK(n == 3);
+
+    CHECK(out[0].pid == 4123);
+    CHECK(out[0].ppid == 4000);
+    CHECK(out[0].footprint == 734003200ULL);
+    CHECK(out[0].cpu_percent == 140);
+    CHECK(strcmp(out[0].name, "web frontend") == 0);   /* spaces preserved */
+    CHECK(out[0].is_daemon == 0);
+
+    CHECK(out[1].pid == 4124);
+    CHECK(out[1].ppid == 0);            /* default        */
+    CHECK(out[1].is_daemon == 1);       /* flags bit 0    */
+    CHECK(out[1].name[0] == '\0');      /* default label  */
+
+    CHECK(out[2].pid == 5000);
+    CHECK(out[2].cpu_percent == 20);    /* last value won */
+}
+
+static void test_script_parse_truncates(void)
+{
+    const char *buf = "id=10\nid=11\nid=12\n";
+    psd_proc_t out[2];
+    int n = psd_script_parse(buf, out, 2);
+
+    CHECK(n == 2);
+    CHECK(out[0].pid == 10);
+    CHECK(out[1].pid == 11);
+}
+
+static void write_executable(const char *path, const char *content)
+{
+    FILE *f = fopen(path, "w");
+    if (f != NULL)
+    {
+        fputs(content, f);
+        fclose(f);
+    }
+    chmod(path, 0755);
+}
+
+static int file_contains(const char *path, const char *needle)
+{
+    char  buf[8192];
+    FILE *f = fopen(path, "r");
+    size_t n;
+
+    if (f == NULL)
+    {
+        return 0;
+    }
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    return strstr(buf, needle) != NULL;
+}
+
+/* The response command is async (double-forked); wait briefly for its side
+ * effect to land. */
+static int wait_for_contains(const char *path, const char *needle, int timeout_ms)
+{
+    int waited = 0;
+    while (waited < timeout_ms)
+    {
+        if (file_contains(path, needle))
+        {
+            return 1;
+        }
+        usleep(10000);
+        waited += 10;
+    }
+    return file_contains(path, needle);
+}
+
+/* End-to-end through the installed script backend: a real poll subprocess feeds
+ * psd_select_collect, and a real respond subprocess records the verb/id/extras
+ * psDoom hands it -- exercising the documented contract over actual fork/exec. */
+static void test_script_backend_roundtrip(void)
+{
+    const char *td = getenv("TMPDIR");
+    char poll[512];
+    char respond[512];
+    char result[512];
+    char respond_content[700];
+    psd_proc_t out[16];
+    int n;
+
+    if (td == NULL || td[0] == '\0')
+    {
+        td = "/tmp";
+    }
+    snprintf(poll,    sizeof(poll),    "%s/psd_poll_%d.sh",   td, (int) getpid());
+    snprintf(respond, sizeof(respond), "%s/psd_resp_%d.sh",   td, (int) getpid());
+    snprintf(result,  sizeof(result),  "%s/psd_result_%d.txt", td, (int) getpid());
+    unlink(result);
+
+    write_executable(poll,
+        "#!/bin/sh\n"
+        "printf 'id=4123\\tlabel=web frontend\\tweight=734003200\\tload=140\\tparent=4000\\n'\n"
+        "printf 'id=4124\\tweight=64\\tflags=1\\n'\n"
+        "printf 'id=4000\\tlabel=supervisor\\tflags=1\\n'\n");
+
+    snprintf(respond_content, sizeof(respond_content),
+             "#!/bin/sh\necho \"$@\" >> '%s'\n", result);
+    write_executable(respond, respond_content);
+
+    proc_script_install(poll, respond, 1000);
+    stub_all_users = 0;
+    psd_select_init();   /* picks up uid via the script backend */
+
+    n = psd_select_collect(out, 16);
+    CHECK(n == 3);                       /* all three poll entities survive */
+    CHECK(index_of(out, n, 4123) >= 0);
+    CHECK(index_of(out, n, 4124) >= 0);
+    CHECK(index_of(out, n, 4000) >= 0);
+
+    /* kill -> respond `kill 4124` (no label: that entity emitted none). */
+    (void) proc_backend()->kill(4124);
+    CHECK(wait_for_contains(result, "kill 4124", 3000));
+
+    /* wound -> respond `wound 4123 amount=4 label=web frontend`. */
+    proc_backend()->renice(4123, 4);
+    CHECK(wait_for_contains(result, "wound 4123 amount=4", 3000));
+
+    unlink(poll);
+    unlink(respond);
+    unlink(result);
+}
+
 int main(void)
 {
     test_triage_filters_and_ranking();
@@ -197,6 +348,9 @@ int main(void)
     test_triage_truncation();
     test_collect_and_action_log();
     test_child_count();
+    test_script_parse();
+    test_script_parse_truncates();
+    test_script_backend_roundtrip();
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);
     return checks_failed == 0 ? 0 : 1;

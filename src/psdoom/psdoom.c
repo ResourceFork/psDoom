@@ -26,6 +26,7 @@
 
 #include "psdoom.h"
 #include "proc_backend.h"    /* current uid, renice, kill (via vtable) */
+#include "proc_script.h"     /* optional external-script backend (env-driven) */
 #include "proc_select.h"    /* curated process collection */
 #include "psdoom_options.h" /* user-tunable settings (menu / CLI / config) */
 
@@ -732,6 +733,10 @@ static void PSD_DetectForkBombs(int n)
 
 void psdoom_init(void)
 {
+    /* If PSDOOM_POLL_CMD is set, swap the native OS backend for the external
+     * script backend before anything reads the process list or the uid. */
+    proc_script_install_from_env();
+
     psd_select_init();
     psdoom_options_parse_args();   /* let -psdoom-* flags override the config */
     psd_next_sync      = 0;
