@@ -41,6 +41,7 @@
 #include "i_system.h"
 #include "i_timer.h"
 #include "i_video.h"
+#include "i_video_window.h"
 #include "m_argv.h"
 #include "m_config.h"
 #include "m_misc.h"
@@ -146,7 +147,7 @@ static int max_scaling_buffer_pixels = 16000000;
 
 // Run in full screen mode?  (int type for config code)
 
-int fullscreen = true;
+int fullscreen = false;
 
 // Aspect ratio correction mode
 
@@ -363,6 +364,19 @@ static void AdjustWindowSize(void)
     }
 }
 
+static boolean WindowIsFullscreen(void)
+{
+    return (SDL_GetWindowFlags(screen) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+static void SyncFullscreenState(void)
+{
+    if (!screensaver_mode)
+    {
+        fullscreen = WindowIsFullscreen();
+    }
+}
+
 static void HandleWindowEvent(SDL_WindowEvent *event)
 {
     int i;
@@ -379,6 +393,7 @@ static void HandleWindowEvent(SDL_WindowEvent *event)
             palette_to_set = true;
             break;
 
+        case SDL_WINDOWEVENT_SIZE_CHANGED:
         case SDL_WINDOWEVENT_RESIZED:
             need_resize = true;
             last_resize_time = SDL_GetTicks();
@@ -425,38 +440,80 @@ static void HandleWindowEvent(SDL_WindowEvent *event)
         default:
             break;
     }
-}
 
-static boolean ToggleFullScreenKeyShortcut(SDL_Keysym *sym)
-{
-    Uint16 flags = (KMOD_LALT | KMOD_RALT);
-#if defined(__MACOSX__)
-    flags |= (KMOD_LGUI | KMOD_RGUI);
-#endif
-    return (sym->scancode == SDL_SCANCODE_RETURN || 
-            sym->scancode == SDL_SCANCODE_KP_ENTER) && (sym->mod & flags) != 0;
+    // SDL2 has no dedicated fullscreen window event. Keep the configuration
+    // synchronized whenever SDL reports a state change for our window.
+    SyncFullscreenState();
 }
 
 static void I_ToggleFullScreen(void)
 {
-    unsigned int flags = 0;
+    SDL_DisplayMode closest_mode, desired_mode;
+    Uint32 target_flags;
+    boolean is_fullscreen;
+    int display;
 
-    // TODO: Consider implementing fullscreen toggle for SDL_WINDOW_FULLSCREEN
-    // (mode-changing) setup. This is hard because we have to shut down and
-    // restart again.
-    if (fullscreen_width != 0 || fullscreen_height != 0)
+    is_fullscreen = WindowIsFullscreen();
+    target_flags = 0;
+
+    if (!is_fullscreen)
     {
+        SDL_GetWindowSize(screen, &window_width, &window_height);
+
+        if (fullscreen_width == 0 && fullscreen_height == 0)
+        {
+            target_flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
+        }
+        else
+        {
+            display = SDL_GetWindowDisplayIndex(screen);
+
+            if (display < 0)
+            {
+                fprintf(stderr,
+                        "I_ToggleFullScreen: Failed to get display: %s\n",
+                        SDL_GetError());
+                SyncFullscreenState();
+                return;
+            }
+
+            memset(&desired_mode, 0, sizeof(desired_mode));
+            desired_mode.w = fullscreen_width;
+            desired_mode.h = fullscreen_height;
+
+            if (SDL_GetClosestDisplayMode(display, &desired_mode,
+                                          &closest_mode) == NULL)
+            {
+                fprintf(stderr,
+                        "I_ToggleFullScreen: Failed to find display mode: %s\n",
+                        SDL_GetError());
+                SyncFullscreenState();
+                return;
+            }
+
+            if (SDL_SetWindowDisplayMode(screen, &closest_mode) != 0)
+            {
+                fprintf(stderr,
+                        "I_ToggleFullScreen: Failed to set display mode: %s\n",
+                        SDL_GetError());
+                SyncFullscreenState();
+                return;
+            }
+
+            target_flags = SDL_WINDOW_FULLSCREEN;
+        }
+    }
+
+    if (SDL_SetWindowFullscreen(screen, target_flags) != 0)
+    {
+        fprintf(stderr,
+                "I_ToggleFullScreen: Failed to change fullscreen state: %s\n",
+                SDL_GetError());
+        SyncFullscreenState();
         return;
     }
 
-    fullscreen = !fullscreen;
-
-    if (fullscreen)
-    {
-        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-    }
-
-    SDL_SetWindowFullscreen(screen, flags);
+    fullscreen = !is_fullscreen;
 
     if (!fullscreen)
     {
@@ -476,9 +533,12 @@ void I_GetEvent(void)
         switch (sdlevent.type)
         {
             case SDL_KEYDOWN:
-                if (ToggleFullScreenKeyShortcut(&sdlevent.key.keysym))
+                if (I_IsFullScreenKeyShortcut(&sdlevent.key))
                 {
-                    I_ToggleFullScreen();
+                    if (I_ToggleFullScreenKeyShortcut(&sdlevent.key))
+                    {
+                        I_ToggleFullScreen();
+                    }
                     break;
                 }
                 // deliberate fall-though
@@ -1237,8 +1297,7 @@ void I_GraphicsCheckCommandLine(void)
 
     nograbmouse_override = M_ParmExists("-nograbmouse");
 
-    // default to fullscreen mode, allow override with command line
-    // nofullscreen because we love prboom
+    // Allow explicit command-line arguments to override the configured mode.
 
     //!
     // @category video 
@@ -1437,7 +1496,7 @@ void I_GetWindowPosition(int *x, int *y, int w, int h)
     // in fullscreen mode, the window "position" still matters, because
     // we use it to control which display we run fullscreen on.
 
-    if (fullscreen)
+    if (fullscreen || screensaver_mode)
     {
         CenterWindow(x, y, w, h);
         return;
@@ -1483,7 +1542,7 @@ static void SetVideoMode(void)
     // retina displays, especially when using small window sizes.
     window_flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 
-    if (fullscreen)
+    if (fullscreen || screensaver_mode)
     {
         if (fullscreen_width == 0 && fullscreen_height == 0)
         {
@@ -1530,6 +1589,7 @@ static void SetVideoMode(void)
 
         I_InitWindowTitle();
         I_InitWindowIcon();
+        SyncFullscreenState();
     }
 
     // The SDL_RENDERER_TARGETTEXTURE flag is required to render the
@@ -1815,12 +1875,8 @@ void I_InitGraphics(void)
         I_Error("Failed to initialize video: %s", SDL_GetError());
     }
 
-    // When in screensaver mode, run full screen and auto detect
-    // screen dimensions (don't change video mode)
-    if (screensaver_mode)
-    {
-        fullscreen = true;
-    }
+    // Screensaver mode is applied by SetVideoMode without changing the saved
+    // fullscreen preference.
 
     // [crispy] run-time variable high-resolution rendering
     I_GetScreenDimensions();

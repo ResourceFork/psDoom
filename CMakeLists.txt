@@ -123,12 +123,10 @@ foreach(_eng
 endforeach()
 
 #
-# Host tests for the engine-free policy layers (triage + backend plumbing).
-# Built against the fake backend, with no engine or OS process dependency
-# (PSD_NO_NATIVE_BACKEND drops the native default). EXCLUDE_FROM_ALL so the
-# default build / the .app are unaffected; build + run explicitly with:
+# Host tests for engine-free policy layers and SDL keyboard predicates.
+# Build and run explicitly with:
 #
-#   cmake --build build --target psdoom_tests
+#   cmake --build build --target psdoom_tests psdoom_window_state_tests
 #   ctest --test-dir build --output-on-failure
 #
 enable_testing()
@@ -145,3 +143,13 @@ target_include_directories(psdoom_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
 
 add_test(NAME psdoom_tests COMMAND psdoom_tests)
+
+if(NOT DEFINED EMSCRIPTEN)
+    add_executable(psdoom_window_state_tests EXCLUDE_FROM_ALL
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/window_state_test.c")
+    target_include_directories(psdoom_window_state_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src")
+    target_link_libraries(psdoom_window_state_tests PRIVATE CrispyDoom::SDL2)
+
+    add_test(NAME psdoom_window_state_tests COMMAND psdoom_window_state_tests)
+endif()
