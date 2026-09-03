@@ -1,9 +1,9 @@
 # psDoom — architecture & features
 
 psDoom turns the processes running on your machine into Doom monsters: each process is a monster
-in the E1M1 courtyard, wounding it renices the process, and killing it signals it. This document
-describes how the process-management layer attaches to the vendored Crispy Doom engine, the
-modules it is built from, and the features it ships. For the project's origin and history, see
+in the one-time intro arena, wounding it renices the process, and killing it signals it. This
+document describes how the process-management layer attaches to the vendored Crispy Doom engine,
+the modules it is built from, and the features it ships. For the project's origin and history, see
 [`handoff.md`](handoff.md).
 
 The `.app` builds and runs on the vendored engine, which carries only a thin set of psDoom hooks
@@ -13,17 +13,18 @@ The `.app` builds and runs on the vendored engine, which carries only a thin set
 ## Repository layout
 
 ```
-third_party/crispy-doom/   vendored engine, kept pristine (provenance: third_party/README.md)
+third_party/crispy-doom/   vendored engine (provenance and local hooks: third_party/README.md)
 src/app/macos/             the .app launcher (launcher_main.c + Info.plist.in)
 src/psdoom/                process<->monster game logic + triage
 src/platform/              backend interface + script/fake backends (proc_backend/proc_script/proc_fake)
 src/platform/macos/        native sysctl/renice/kill backend
+tools/                     deterministic arena generator + independent WAD validator
 scripts/                   reference backend scripts (process poller + responder)
 examples/                  example script backends (demo, docker)
 tests/                     off-machine host tests (triage + backend plumbing)
-CMakeLists.txt             single build: engine + psDoom.app bundle
+CMakeLists.txt             single build: engine + generated arena + psDoom.app bundle
 docs/                      architecture.md (this), script-backend.md, handoff.md, original/ (archive)
-wads/                      runtime IWAD (gitignored, not GPL)
+wads/                      user-supplied runtime IWAD (gitignored, not GPL)
 ```
 
 ## Architecture
@@ -74,31 +75,53 @@ vendored `third_party/crispy-doom/` tree stays byte-identical to upstream. Only 
 change land in the vendored tree, and each is recorded in `third_party/README.md`:
 
 1. a few `mobj_t` fields,
-2. thin hook *call-sites* (one-liners into our module),
+2. thin hook _call-sites_ (one-liners into our module),
 3. (if unavoidable) minimal build glue.
 
 ## Engine integration (hook points)
 
 Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
 
-| Concern | File : symbol (line) | Hook |
-|---|---|---|
-| Per-monster state | `p_mobj.h` : `mobj_t` struct (211–300) | add fields `pid_t psd_pid; const char *psd_name;` before `} mobj_t;` |
-| Spawn → process | `p_mobj.c` : `P_SpawnMapThing` (965) / `P_SpawnMobj` (745) | associate `MF_COUNTKILL` monsters with a process, or spawn-on-demand from the process list |
-| Wound → renice | `p_inter.c` : `P_DamageMobj` (852) | if target is a process-monster and survives, `psdoom_wound(target)` → `setpriority` |
-| Kill → kill | `p_inter.c` : `P_KillMobj` (728), called at line 971 | if target is a process-monster, `psdoom_kill(target)` → `kill(pid)` |
-| Periodic sync | `p_tick.c` : `P_Ticker` (131) | throttled `psdoom_sync()` (~once/second) near `leveltime++`: add monsters for new procs, retire dead ones |
-| Labels over monsters | `r_things.c` : `R_ProjectSprite` (558) / `R_DrawVisSprite` (469) | copy `psd_pid`/`psd_name` onto the `vissprite_t`, then `psdoom_draw_label(...)` draws them above the sprite (HUD font `hu_font[]` via `V_DrawPatch`; `M_WriteText` is static in Crispy) |
-| One-time init | `d_main.c` : `D_DoomMain` (1449) | `psdoom_init()`: open backend, load config, default current-UID + allow/deny |
+| Concern                | File : symbol                                           | Hook                                                                                                    |
+| ---------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Per-monster state      | `p_mobj.h` : `mobj_t`                                   | add `psd_pid` and `psd_name` fields                                                                     |
+| Spawn → process        | `p_mobj.c` : `P_SpawnMapThing`, `P_SpawnMobj`           | associate `MF_COUNTKILL` monsters with a process, or spawn on demand                                    |
+| Wound → renice         | `p_inter.c` : `P_DamageMobj`                            | call `psdoom_wound(target)` for a surviving process-monster                                             |
+| Kill → kill            | `p_inter.c` : `P_KillMobj`                              | call `psdoom_kill(target)` for a process-monster                                                        |
+| Periodic sync          | `p_tick.c` : `P_Ticker`                                 | call self-throttled `psdoom_sync()`; it performs no collection outside active `PSDINTRO`                |
+| Labels                 | `r_things.c` : `R_ProjectSprite`, `R_DrawVisSprite`     | carry process identity to rendered sprites and draw labels                                              |
+| Startup trust and demo | `d_main.c` : `D_DoomMain`, `D_StartPsDoomDemo`          | verify the actual bundle resource, enter READY, preserve normal overrides, and begin stock `DEMO1`      |
+| New Game lifecycle     | `m_menu.c`, `g_game.c` : skill callbacks, `G_DoNewGame` | completed normal/Nightmare selection requests the intro; `G_DoNewGame` consumes the request into ACTIVE |
+| Intro lookup and exit  | `p_setup.c`, `g_game.c` : `P_SetupLevel`, `G_ExitLevel` | load `PSDINTRO` only when ACTIVE, then clear it and defer unmodified IWAD `E1M1`                        |
+| Save restoration       | `g_game.c`, `g_game.h` : `G_DoLoadGame`                 | derive ACTIVE from the saved map WAD owner before base geometry loads                                   |
 
 ## Features
 
 - **Engine & build.** Engine vendored (`third_party/crispy-doom`, Crispy 7.1); single CMake build
   producing a double-clickable `psDoom.app`; Xcode project generated from the same CMake.
-- **Process → monster.** `psdoom_sync` spawns a monster per current-UID process at the E1M1
-  courtyard; wound → `setpriority` renice; kill → `SIGTERM`. Killing a process-monster is
-  remembered for the level (`psd_killed`, by pid+name) so it doesn't respawn on the next sync —
-  essential when the kill policy leaves the real process running. The set clears on level restart.
+- **Generated octagonal arena.** `tools/generate_octagonal_arena.py` emits a deterministic classic
+  Doom-format PWAD under the distinct `PSDINTRO` marker; it does not replace a numbered campaign
+  map. The lower floor remains centered at `(2080, -3432)` around a fully clear 11-by-7 process
+  spawn grid. Four 16-unit stair rings lead to an elevated walkway with eight freestanding 32×32
+  closed pillars, each centered in a playable 128×128 landing. Nineteen restrained,
+  shareware-compatible pickups sit outside the process grid. A solid 40-unit perimeter rail and
+  zero-height `F_SKY1` horizon render an open sky void. The north exit is an enclosed 48×72 cavity
+  with exactly one 32×72 `SW1EXIT` surface. The validator checks geometry, BSP, blockmap, all 77
+  process cells, ring connectivity, pillar separation, pickup zones, exit dimensions, stock
+  `E1M1`/`E1M2`, and optional IWAD resources.
+- **One-time intro lifecycle.** A no-map-arguments launch verifies the bundled resource, enters
+  READY, and immediately plays stock `DEMO1` on IWAD E1M5. Process synchronization does not
+  enumerate or reconcile processes during demos. Completing the regular New Game episode/skill
+  flow requests the intro; the deferred New Game action consumes that request into ACTIVE and
+  loads `PSDINTRO`. Its exit clears intro state and starts unmodified IWAD `E1M1`; normal
+  `E1M1` → `E1M2` progression then resumes. Explicit map, demo, save, recording, and response
+  controls bypass the intro. Save loading derives map ownership before base geometry is loaded,
+  so IWAD campaign saves cannot restore onto `PSDINTRO`.
+- **Process → monster.** `psdoom_sync` makes its first process snapshot only after `PSDINTRO`
+  becomes ACTIVE, uses that snapshot as the CPU-rate baseline, then spawns a monster per current-UID
+  process on the intro's clear grid; wound → `setpriority` renice; kill → `SIGTERM`. Killing a
+  process-monster is remembered for the level (`psd_killed`, by pid+name) so it does not respawn on
+  the next sync when the kill policy leaves the real process running. The set clears on level restart.
 - **Process labels.** Each process-monster's name (and, optionally, its PID) is drawn above its
   sprite using the HUD font; the renderer carries `psd_pid`/`psd_name` on the `vissprite_t`. PID
   is hidden by default to keep a crowded courtyard readable. Distant sprites are skipped; labels
@@ -114,14 +137,14 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   Baron → Cyberdemon; tunable). A heavier monster takes more hits, and each non-fatal hit renices,
   so a hog is literally harder to kill. WAD-aware: it checks each type's sprite is loaded and
   degrades to a drawable type otherwise, so the shareware IWAD caps at Baron instead of crashing.
-- **Selectable classifier (memory / CPU).** A "Classify by" option chooses whether monster *type*
+- **Selectable classifier (memory / CPU).** A "Classify by" option chooses whether monster _type_
   is sized by memory footprint (default) or CPU load. CPU load is a true rate — cumulative CPU
   time delta over the monotonic-clock interval between syncs (100% = one full core; multi-threaded
   hogs exceed 100). A separate CPU-tier table mirrors the memory ladder. (Apple Silicon note:
   `proc_pid_rusage` reports CPU time in mach absolute-time units, converted via
   `mach_timebase_info` before comparison.)
 - **Live re-classification (hysteresis + morph fog).** Each sync a monster re-grades to the tier
-  its *current* footprint/CPU earns, gated by an asymmetric hold (promote ~2 syncs, demote ~5, by
+  its _current_ footprint/CPU earns, gated by an asymmetric hold (promote ~2 syncs, demote ~5, by
   `spawnhealth`) so it never flaps. `PSD_MorphMonster` swaps type/size, scales health to preserve
   the damage fraction, defers a size increase that would clip (`P_CheckPosition`), and pops an
   `MT_TFOG` flash + teleport cue. (See [design notes](#2-live-re-classification-with-hysteresis--morph-fog).)
@@ -132,7 +155,7 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
 - **Backends behind a vtable.** The OS layer is a four-op interface (`proc_backend_t`) with a
   native macOS implementation, a scriptable fake (for tests), and an external-script backend.
   (See [design notes](#1-platform-backend-interface--fake-backend).)
-- **External-script backend.** Setting `PSDOOM_POLL_CMD` wires psDoom to *anything* you can
+- **External-script backend.** Setting `PSDOOM_POLL_CMD` wires psDoom to _anything_ you can
   enumerate from a script — containers, queues, build jobs — not just OS processes; `weight`/
   `load`/`parent` map onto the existing classifier, so classification, re-classification and
   swarms all work for those entities. Contract: [`script-backend.md`](script-backend.md);
@@ -144,9 +167,9 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   persist in the config file and can be overridden with `-psdoom-safe` / `-psdoom-simulate` /
   `-psdoom-live` / `-psdoom-allusers` / `-psdoom-nolabels` / `-psdoom-cpu`. Default policy is
   **renice-only** (safe); real killing is opt-in (the menu shows live mode in red).
-- **Live-monster cap & placement.** `psdoom_sync` spawns up to N *live* process-monsters
+- **Live-monster cap & placement.** `psdoom_sync` spawns up to N _live_ process-monsters
   (corpses don't count) so the courtyard stays passable; the candidate pool stays relevance-
-  ordered so the cap keeps the most relevant on screen. Monsters spawn into the first *free*
+  ordered so the cap keeps the most relevant on screen. Monsters spawn into the first _free_
   courtyard cell (grid-search via `P_CheckPosition`), so the most-relevant processes reliably
   appear and big monsters get room; they wander once active.
 
@@ -160,7 +183,7 @@ external-script backend) plug into.
 
 **Why:** the OS layer is a four-operation contract
 (`proc_macos_list` / `proc_macos_current_uid` / `proc_macos_renice` / `proc_macos_kill`).
-Lifting it behind a vtable unlocks (a) a deterministic *fake* backend so the pure triage and
+Lifting it behind a vtable unlocks (a) a deterministic _fake_ backend so the pure triage and
 classification policy can be unit-tested off-machine, and (b) a future Linux backend
 (`/proc`, `setpriority`, `kill`) with zero changes above the interface.
 
@@ -184,17 +207,17 @@ classification policy can be unit-tested off-machine, and (b) a future Linux bac
 - `proc_macos.c` — exports `const proc_backend_t proc_macos_backend`; `proc_select.c` / `psdoom.c`
   call `proc_backend()->list(...)` etc.
 - `src/platform/proc_fake.c` — serves a scripted array of snapshots (one per `list()` call) and
-  logs `renice`/`kill` for assertions. Drives a host test (`tests/`, its own CMake target, *not*
+  logs `renice`/`kill` for assertions. Drives a host test (`tests/`, its own CMake target, _not_
   linked into the engine or the `.app`).
 
 **Diff impact:** none in the vendored engine — a pure `src/` refactor + new test target.
 
 ### 2. Live re-classification with hysteresis + morph fog
 
-**Why:** `psd_proc_t` already carries a *live* `footprint` and `cpu_percent` recomputed every
+**Why:** `psd_proc_t` already carries a _live_ `footprint` and `cpu_percent` recomputed every
 `list()` call, but classification originally ran only once, at spawn, so a process that later
 spiked or idled kept its original monster type. Re-grading the live monster makes a runaway
-process visibly *grow angrier*.
+process visibly _grow angrier_.
 
 **Design (all in `psdoom.c`, keyed by `psd_pid` — no new engine fields):**
 
@@ -209,7 +232,7 @@ process visibly *grow angrier*.
 - **Morph** (`PSD_MorphMonster`): target type routed through `PSD_ClassifyByTiers` (always
   WAD-drawable). Swap `type`/`info`/`radius`/`height`/`flags` (re-clear `MF_COUNTKILL`), scale
   `health` to the new `spawnhealth` (a half-dead Imp doesn't become a full-HP Baron), and
-  `P_SetMobjState` to the see-state. A radius *increase* is gated by `P_CheckPosition`; if it
+  `P_SetMobjState` to the see-state. A radius _increase_ is gated by `P_CheckPosition`; if it
   would clip, the morph is deferred (streak kept) and retried next sync.
 - **Morph fog:** spawn `MT_TFOG` + play `sfx_telept` on a successful morph (gated by
   `PSD_MonsterDrawable(MT_TFOG)`), so the change reads as a deliberate teleport-in.
@@ -228,7 +251,7 @@ both thematic and informative.
 
 **Design:**
 
-- **Detection** runs on the *raw* snapshot (children are filtered out of the curated set):
+- **Detection** runs on the _raw_ snapshot (children are filtered out of the curated set):
   `proc_select` exposes `psd_select_child_count(pid)` over the last raw snapshot. A burst is
   `child_count - prev >= PSD_FORK_BURST` (e.g. +5 in one sync). Prev-counts and a per-parent
   cooldown are plain pid-keyed tables (no mobj pointers, so nothing can dangle).
@@ -255,7 +278,7 @@ classifier, re-classification and fork swarms work for those entities for free.
 
 - `list()` runs `PSDOOM_POLL_CMD` (via the shell, so pipelines work), captures stdout with a
   timeout so a slow script never freezes the game tick, and parses it; `renice`/`kill` run
-  `PSDOOM_RESPOND_CMD` *directly* (no shell — entity labels/ids can't be interpreted as syntax),
+  `PSDOOM_RESPOND_CMD` _directly_ (no shell — entity labels/ids can't be interpreted as syntax),
   double-forked so they neither block nor leak zombies. `psdoom_init` installs it when
   `PSDOOM_POLL_CMD` is set, else the native backend stays.
 - The pure parser (`psd_script_parse`) is engine/OS-free and unit-tested; the host test also
@@ -281,6 +304,24 @@ cmake --build build -j
 open build/psDoom.app
 ```
 
+CMake runs the Python generator and validator before linking the app, writes
+`build/generated/psdoom-arena.wad`, and copies the validated result into the
+bundle. The generated WAD is a file-level link dependency of the launcher, so
+incremental regeneration reruns bundle assembly instead of leaving a stale
+resource. The generator and both validator modes can also be run directly:
+
+```bash
+python3 tools/generate_octagonal_arena.py --output /tmp/psdoom-arena.wad
+python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad
+python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad --iwad wads/DOOM1.WAD
+```
+
+The `--iwad` check is optional and verifies every referenced texture/flat plus
+`SKY1`, `F_SKY1`, the exit-switch pair, and stock `E1M1`/`E1M2`. CMake generates
+and validates a temporary file before atomically publishing the declared WAD
+output. Generation and structural validation require Python 3.10 or newer and
+have no third-party Python or WAD-tool dependencies.
+
 Xcode project, generated from the same CMake:
 
 ```bash
@@ -297,16 +338,26 @@ ctest --test-dir build --output-on-failure
 
 - **Dependencies** (Homebrew): `sdl2 sdl2_mixer libsamplerate libpng fluid-synth` (`sdl2_net`
   disabled — no netplay).
-- Verified: produces a Mach-O arm64 `psDoom.app` that boots to "DOOM Shareware" on Apple Silicon.
+- Verified: produces a Mach-O arm64 `psDoom.app` that loads the classic-BSP arena on Apple Silicon.
 
 ## Packaging (macOS .app)
 
 - The bundle's executable is a small compiled launcher (`src/app/macos/launcher_main.c`) — a real
   Mach-O, so the bundle is signable. It `exec()`s `Contents/MacOS/crispy-doom`.
-- **IWAD discovery:** at build time, if `wads/DOOM1.WAD` exists it is copied into the app's
-  `Resources/`. At launch the launcher sets `DOOMWADPATH` (unless the caller already set
-  `DOOMWADDIR`/`DOOMWADPATH`) to search, in order: the app's `Contents/Resources/`, then
-  `~/Library/Application Support/psDoom/`.
+- **Arena resource:** the generated classic Doom PWAD is copied to
+  `Contents/Resources/psdoom-arena.wad`. With no explicit map/demo/save controls, the launcher
+  injects the arena and a launcher-only marker. The engine grants the shareware exception only when
+  that marker accompanies the actual bundle resource, `PSDINTRO` belongs to it, and no additional
+  PWAD is loaded; caller-provided marker copies are discarded. A verified normal launch plays the
+  stock `DEMO1` attract demo first. Only the completed New Game skill flow changes READY to PENDING,
+  then the deferred New Game action makes the intro ACTIVE. `-file`, `-merge`, `-warp`, `-episode`,
+  demos, saves, recording, test controls, and response files suppress injection and retain normal
+  Crispy behavior. The intro exit schedules stock IWAD `E1M1`, clears intro-only process
+  synchronization, and leaves later progression unchanged.
+- **IWAD discovery:** at build time, if the user-supplied, gitignored `wads/DOOM1.WAD` exists it
+  is copied unchanged into `Resources/`. At launch the launcher sets `DOOMWADPATH` (unless the
+  caller already set `DOOMWADDIR`/`DOOMWADPATH`) to search, in order: the app's
+  `Contents/Resources/`, then `~/Library/Application Support/psDoom/`.
 - **Distribution follow-ups** (not needed to run locally; future home: `packaging/macos/`):
   - Bundle the Homebrew dylibs (SDL2 / SDL2_mixer / libsamplerate / libpng / FluidSynth) into
     `Contents/Frameworks` and rewrite install names (`install_name_tool` / `dylibbundler`).
@@ -327,9 +378,9 @@ ctest --test-dir build --output-on-failure
 
 ## Roadmap
 
-1. **Larger arena / custom WAD.** The courtyard (~11×7 cells at 56) tops out short of the slider's
-   max of 35 on busy maps, and a Cyberdemon (radius 40) needs more elbow room than 56 spacing
-   gives. A dedicated pen (as the original psDoom shipped) would lift both limits.
+1. **Larger arena / custom WAD — complete.** The generated one-time intro keeps the process grid
+   in a broad lower arena and adds a complete elevated circulation ring with room for the
+   35-monster cap.
 2. **Safety polish.** A kill confirmation / undo grace period (all-users mode and a non-lethal
    "safe" kill policy already exist via the psDoom options menu / `-psdoom-*` flags).
 

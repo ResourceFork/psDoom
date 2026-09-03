@@ -2,11 +2,9 @@
  * psDoom.app launcher
  *
  * This compiled launcher is the bundle's CFBundleExecutable. It locates a Doom
- * IWAD and exec()s the engine binary that lives beside it in Contents/MacOS.
- *
- * NOTE: it currently launches the *stock* vendored Crispy Doom engine. The
- * psDoom process-management behaviour (process->monster, wound->renice,
- * kill->kill, labels) is not implemented yet.
+ * IWAD, loads the bundled introduction resource when appropriate, and exec()s
+ * the psDoom engine binary that lives beside it in Contents/MacOS. The engine
+ * presents stock DEMO1 first and activates the intro only through New Game.
  */
 
 #include <errno.h>
@@ -17,7 +15,35 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
+
+#define PSDOOM_BUNDLED_ARENA_ARG "-psdoom-bundled-arena"
+
+static int is_map_override(const char *argument)
+{
+    static const char *const overrides[] = {
+        "-file", "-merge", "-nwtmerge", "-af", "-as", "-aa",
+        "-warp", "-episode", "-loadgame", "-playdemo", "-timedemo",
+        "-record", "-testcontrols", "-response"
+    };
+    size_t i;
+
+    if (argument[0] == '@')
+    {
+        return 1;
+    }
+
+    for (i = 0; i < sizeof(overrides) / sizeof(overrides[0]); i++)
+    {
+        if (strcasecmp(argument, overrides[i]) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -55,6 +81,10 @@ int main(int argc, char **argv)
     char engine[PATH_MAX];
     snprintf(engine, sizeof(engine), "%s/crispy-doom", macos_dir);
 
+    char arena[PATH_MAX];
+    snprintf(arena, sizeof(arena), "%s/Resources/psdoom-arena.wad",
+             contents_dir);
+
     /*
      * IWAD search path: the bundle's Resources/ dir, then the per-user support
      * dir. Only set if the caller hasn't already chosen one, so command-line use
@@ -79,11 +109,24 @@ int main(int argc, char **argv)
         setenv("DOOMWADPATH", wadpath, 1);
     }
 
+    /* Explicit map, demo, save, response, or PWAD controls suppress the intro. */
+    int has_map_override = 0;
+    for (int i = 1; i < argc; i++)
+    {
+        if (is_map_override(argv[i]))
+        {
+            has_map_override = 1;
+            break;
+        }
+    }
+    int inject_arena = !has_map_override && access(arena, R_OK) == 0;
+
     /*
-     * Build the child argv: engine path + passthrough of our own args, dropping
-     * the legacy -psn_ Process Serial Number argument some launch paths add.
+     * Build the child argv: engine path, optional trusted arena, then pass
+     * through caller arguments. Caller-provided copies of the launcher-only
+     * trust marker are always discarded.
      */
-    char **child_argv = calloc((size_t)argc + 1, sizeof(char *));
+    char **child_argv = calloc((size_t)argc + 4, sizeof(char *));
     if (child_argv == NULL)
     {
         fprintf(stderr, "psDoom: out of memory\n");
@@ -92,9 +135,16 @@ int main(int argc, char **argv)
 
     int n = 0;
     child_argv[n++] = engine;
+    if (inject_arena)
+    {
+        child_argv[n++] = "-file";
+        child_argv[n++] = arena;
+        child_argv[n++] = PSDOOM_BUNDLED_ARENA_ARG;
+    }
     for (int i = 1; i < argc; i++)
     {
-        if (strncmp(argv[i], "-psn_", 5) == 0)
+        if (strncmp(argv[i], "-psn_", 5) == 0
+            || strcasecmp(argv[i], PSDOOM_BUNDLED_ARENA_ARG) == 0)
         {
             continue;
         }

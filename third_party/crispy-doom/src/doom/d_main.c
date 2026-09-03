@@ -21,6 +21,7 @@
 
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -787,6 +788,18 @@ void D_StartTitle (void)
     D_AdvanceDemo ();
 }
 
+/* A verified bundled arena starts with the stock attract demo, not a forced
+ * map load. DEMO1 ends into the regular CREDIT -> DEMO2 cycle because its
+ * sequence number is already one. */
+static void D_StartPsDoomDemo(void)
+{
+    gameaction = ga_nothing;
+    automapactive = false;
+    psdoom_end_intro();
+    demosequence = 1;
+    G_DeferedPlayDemo(DEH_String("demo1"));
+}
+
 // Strings for dehacked replacements of the startup banner
 //
 // These are from the original source: some of them are perhaps
@@ -1454,6 +1467,68 @@ static void G_CheckDemoStatusAtExit (void)
 
 static const char *const loadparms[] = {"-file", "-merge", NULL};
 
+#define PSDOOM_BUNDLED_ARENA_ARG "-psdoom-bundled-arena"
+
+/* The shareware exception is valid only for the arena physically bundled next
+ * to this engine. The loaded WAD set must contain exactly the IWAD and that
+ * resource, and PSDINTRO must come from the resource itself. */
+static boolean D_IsBundledPsDoomArena(void)
+{
+    char engine_path[PATH_MAX];
+    char expected_path[PATH_MAX];
+    char arena_path[PATH_MAX];
+    char loaded_path[PATH_MAX];
+    char wad_path[PATH_MAX];
+    char **wad_names;
+    char *separator;
+    int marker;
+
+    if (!M_ParmExists(PSDOOM_BUNDLED_ARENA_ARG)
+        || realpath(myargv[0], engine_path) == NULL)
+    {
+        return false;
+    }
+
+    separator = strrchr(engine_path, '/');
+    if (separator == NULL)
+    {
+        return false;
+    }
+    *separator = '\0';
+    separator = strrchr(engine_path, '/');
+    if (separator == NULL)
+    {
+        return false;
+    }
+    *separator = '\0';
+
+    if (snprintf(expected_path, sizeof(expected_path),
+                 "%s/Resources/psdoom-arena.wad", engine_path)
+        >= (int) sizeof(expected_path)
+        || realpath(expected_path, arena_path) == NULL)
+    {
+        return false;
+    }
+
+    marker = W_CheckNumForName("PSDINTRO");
+    if (marker < 0 || W_IsIWADLump(lumpinfo[marker])
+        || realpath(lumpinfo[marker]->wad_file->path, loaded_path) == NULL
+        || strcmp(arena_path, loaded_path) != 0)
+    {
+        return false;
+    }
+
+    wad_names = W_GetWADFileNames();
+    if (wad_names == NULL || wad_names[0] == NULL || wad_names[1] == NULL
+        || wad_names[2] != NULL || realpath(wad_names[1], wad_path) == NULL
+        || strcmp(arena_path, wad_path) != 0)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 //
 // D_DoomMain
 //
@@ -1462,6 +1537,7 @@ void D_DoomMain (void)
     int p;
     char file[256];
     char demolumpname[9] = {0};
+    boolean bundled_psdoom_arena = false;
 
     // [crispy] unconditionally initialize DEH tables
     DEH_Init();
@@ -1827,6 +1903,13 @@ void D_DoomMain (void)
 
     // Load PWAD files.
     modifiedgame = W_ParseCommandLine();
+    bundled_psdoom_arena = D_IsBundledPsDoomArena();
+    psdoom_set_intro_available(bundled_psdoom_arena);
+
+    if (bundled_psdoom_arena)
+    {
+        fprintf(stderr, "psDoom intro: verified bundled PSDINTRO arena\n");
+    }
 
     //!
     // @arg <file>
@@ -2092,7 +2175,8 @@ void D_DoomMain (void)
     savegamedir = M_GetSaveGameDir(D_SaveGameIWADName(gamemission, gamevariant));
 
     // Check for -file in shareware
-    if (modifiedgame && (gamevariant != freedoom))
+    if (modifiedgame && (gamevariant != freedoom)
+        && !bundled_psdoom_arena)
     {
 	// These are the lumps that will be checked in IWAD,
 	// if any one is not present, execution will be aborted.
@@ -2450,6 +2534,8 @@ void D_DoomMain (void)
     {
 	if (autostart || netgame)
 	    G_InitNew (startskill, startepisode, startmap);
+	else if (psdoom_intro_available())
+	    D_StartPsDoomDemo();
 	else
 	    D_StartTitle ();                // start up intro loop
     }

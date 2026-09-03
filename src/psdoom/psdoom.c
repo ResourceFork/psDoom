@@ -1,13 +1,12 @@
 /*
  * psDoom -- process-management layer (the "monster creator").
  *
- * Each process the player should see is represented by a monster spawned in the
- * E1M1 "hidden courtyard" (coordinates taken from the original psDoom). Which
- * processes those are -- ownership, safety exclusions, relevance ranking and
- * truncation -- is decided entirely by the isolated proc_select layer; this
- * file just turns the curated collection it returns into monsters and keeps
- * them reconciled with the live set. Wounding a process-monster renices its
- * process; killing it sends SIGTERM.
+ * Each selected process is represented by a monster spawned on the custom
+ * intro arena's clear 11-by-7 grid. Which processes those are -- ownership,
+ * safety exclusions, relevance ranking and truncation -- is decided entirely
+ * by the isolated proc_select layer; this file turns the curated collection it
+ * returns into monsters and keeps them reconciled with the live set. Wounding
+ * a process-monster renices its process; killing it sends SIGTERM.
  *
  *     proc_macos  ->  proc_select  ->  psdoom (here)
  *     (read OS)       (triage)         (spawn/reconcile/wound/kill/label)
@@ -18,10 +17,8 @@
  *   psdoom_wound  <- P_DamageMobj (survival path)
  *   psdoom_kill   <- P_KillMobj
  *
- * Known limitation: the E1M1 courtyard only fits a few dozen monsters, so on a
- * machine with hundreds of processes most collide and are retried each sync
- * (cheap, but they don't all appear). The original shipped custom WADs with
- * large pens to solve this; that's future work.
+ * The custom intro arena provides 77 deterministic spawn cells; the live
+ * monster cap keeps the process visualization playable on busy systems.
  */
 
 #include "psdoom.h"
@@ -30,15 +27,18 @@
 #include "proc_select.h"    /* curated process collection */
 #include "psdoom_options.h" /* user-tunable settings (menu / CLI / config) */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <ctype.h>
 
 #include "doomtype.h"
 #include "doomdef.h"
+#include "d_main.h"
 #include "d_mode.h"
 #include "doomstat.h"
+#include "g_game.h"
+#include "m_argv.h"
 #include "info.h"
 #include "tables.h"
 #include "p_local.h"
@@ -103,6 +103,13 @@
 /* ------------------------------------------------------------------- state */
 
 static boolean    psd_enabled;
+static boolean    psd_intro_available;
+static boolean    psd_intro_pending;
+static boolean    psd_intro_active;
+static boolean    psd_first_active_collection;
+static int        psd_intro_smoke_stage;
+static int        psd_collect_count;
+static int        psd_backend_action_count;
 static int        psd_next_sync;               /* leveltime gate              */
 static psd_proc_t psd_selected[PSD_CANDIDATE_CAP]; /* curated set, reused each sync */
 
@@ -151,14 +158,11 @@ static int        psd_swarm_live;   /* live inert souls (death-decremented) */
 
 /* ------------------------------------------------------------------ helpers */
 
-/* The original spawns process-monsters only on Doom 1 E1M1 (and Doom 2
- * MAP01). We support E1M1 for now. */
+/* Process synchronization belongs only to the one-time custom intro. Stock
+ * campaign maps, including IWAD E1M1, must remain ordinary Doom levels. */
 static boolean PSD_OnSpawnLevel(void)
 {
-    return gamestate == GS_LEVEL
-        && gamemission == doom
-        && gameepisode == 1
-        && gamemap == 1;
+    return gamestate == GS_LEVEL && psd_intro_active;
 }
 
 /* True if `pid` is in this sync's curated collection. */
@@ -343,11 +347,10 @@ static mobjtype_t PSD_ClassifyMonster(const psd_proc_t *p)
         psd_mem_tiers, (int) (sizeof(psd_mem_tiers) / sizeof(psd_mem_tiers[0])));
 }
 
-/* Courtyard placement grid. Origin is the original psDoom's E1M1 "hidden
- * courtyard"; the cell spacing is wide enough to fit a Baron (radius 24) so the
- * big memory-hog monsters actually spawn, and the grid stays within the
- * courtyard footprint. Monsters wander once active, so this only sets the
- * initial spawn position. */
+/* Custom-arena placement grid. Cell spacing is wide enough to fit a Baron
+ * (radius 24); the generator and validator reserve every cell from static map
+ * things and blocking geometry. Monsters wander once active, so this only sets
+ * the initial spawn position. */
 #define PSD_COURT_X   1800
 #define PSD_COURT_Y  (-3600)
 #define PSD_CELL        56
@@ -731,6 +734,55 @@ static void PSD_DetectForkBombs(int n)
 
 /* ---------------------------------------------------------------- public API */
 
+void psdoom_set_intro_available(int available)
+{
+    psd_intro_available = available != 0;
+    if (!psd_intro_available)
+    {
+        psd_intro_pending = false;
+        psd_intro_active = false;
+    }
+}
+
+int psdoom_intro_available(void)
+{
+    return psd_intro_available;
+}
+
+void psdoom_request_intro(void)
+{
+    if (psd_intro_available)
+    {
+        psd_intro_pending = true;
+    }
+}
+
+void psdoom_prepare_new_game(void)
+{
+    psd_intro_active = psd_intro_available && psd_intro_pending;
+    psd_intro_pending = false;
+    psd_first_active_collection = psd_intro_active;
+}
+
+void psdoom_end_intro(void)
+{
+    psd_intro_pending = false;
+    psd_intro_active = false;
+    psd_first_active_collection = false;
+}
+
+void psdoom_restore_intro(int active)
+{
+    psd_intro_pending = false;
+    psd_intro_active = active != 0 && psd_intro_available;
+    psd_first_active_collection = psd_intro_active;
+}
+
+int psdoom_intro_active(void)
+{
+    return psd_intro_active;
+}
+
 void psdoom_init(void)
 {
     /* If PSDOOM_POLL_CMD is set, swap the native OS backend for the external
@@ -746,10 +798,10 @@ void psdoom_init(void)
     psd_swarm_live     = 0;
     psd_last_leveltime = 0;
     psd_enabled        = true;
-
-    /* Prime the CPU-load sampler so "classify by CPU" has a baseline from the
-     * first sync instead of reporting every process idle. */
-    (void) psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
+    psd_first_active_collection = false;
+    psd_collect_count = 0;
+    psd_backend_action_count = 0;
+    psd_intro_smoke_stage = M_ParmExists("-psdoom-intro-smoke") ? 1 : 0;
 
     fprintf(stderr, "psDoom: process management active (uid %u, pid %d)\n",
             proc_backend()->current_uid(), (int) getpid());
@@ -765,6 +817,57 @@ void psdoom_sync(void)
     int spawned = 0;
     int removed = 0;
 
+    if (psd_intro_smoke_stage == 1 && gamestate == GS_LEVEL
+        && demoplayback && gameepisode == 1 && gamemap == 5
+        && !psd_intro_active && leveltime >= 1)
+    {
+        if (psd_collect_count != 0 || psd_backend_action_count != 0)
+        {
+            fprintf(stderr,
+                    "psDoom intro smoke: DEMO1 performed forbidden process work (collections=%d actions=%d)\n",
+                    psd_collect_count, psd_backend_action_count);
+            psd_intro_smoke_stage = 99;
+            return;
+        }
+        fprintf(stderr,
+                "psDoom intro smoke: stock DEMO1 E1M5 active; intro inactive; process collections=0 backend actions=0\n");
+        psd_intro_smoke_stage = 2;
+        G_DeferedPsDoomNewGame(sk_medium, 1, 1);
+        return;
+    }
+
+    if (psd_intro_smoke_stage == 2 && PSD_OnSpawnLevel() && leveltime >= 1)
+    {
+        fprintf(stderr,
+                "psDoom intro smoke: custom arena active; process synchronization=on\n");
+        psd_intro_smoke_stage = 3;
+        G_ExitLevel();
+        return;
+    }
+
+    if (psd_intro_smoke_stage == 3 && gamestate == GS_LEVEL
+        && !psd_intro_active && gameepisode == 1 && gamemap == 1
+        && leveltime >= 1)
+    {
+        fprintf(stderr,
+                "psDoom intro smoke: stock E1M1 active; process synchronization=off\n");
+        psd_intro_smoke_stage = 4;
+        G_SaveGame(7, "PSDOOM INTRO SMOKE");
+        return;
+    }
+
+    if (psd_intro_smoke_stage == 4 && !sendsave
+        && gameaction == ga_nothing && gamestate == GS_LEVEL
+        && !psd_intro_active && gameepisode == 1 && gamemap == 1
+        && leveltime >= 1)
+    {
+        fprintf(stderr,
+                "psDoom intro smoke: menu-path campaign save restored on IWAD E1M1; process synchronization=off\n");
+        psd_intro_smoke_stage = 5;
+        G_ExitLevel();
+        return;
+    }
+
     if (!psd_enabled || !PSD_OnSpawnLevel())
     {
         return;
@@ -779,6 +882,7 @@ void psdoom_sync(void)
         psd_fork_count   = 0;
         psd_swarm_live   = 0;
         psd_next_sync    = 0;
+        psd_first_active_collection = true;
     }
     psd_last_leveltime = leveltime;
 
@@ -789,8 +893,20 @@ void psdoom_sync(void)
     }
     psd_next_sync = leveltime + PSD_SYNC_INTERVAL;
 
+    /* The first active snapshot is a CPU-rate baseline. Do not enumerate
+     * processes during the title demo; begin only after PSDINTRO is active. */
+    if (psd_first_active_collection)
+    {
+        (void) psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
+        psd_collect_count++;
+        psd_first_active_collection = false;
+        psd_next_sync = leveltime + PSD_SYNC_INTERVAL;
+        return;
+    }
+
     /* Ask the triage layer for the curated, ranked, truncated collection. */
     n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
+    psd_collect_count++;
 
     /* 1) Retire monsters no longer in the curated set (process exited, or it
      *    dropped below the relevance cut). */
@@ -849,6 +965,7 @@ void psdoom_wound(struct mobj_s *target)
 
     if (mo != NULL && mo->psd_pid > 1 && psdoom_should_renice())
     {
+        psd_backend_action_count++;
         proc_backend()->renice(mo->psd_pid, PSD_WOUND_NICE);
     }
 }
@@ -881,6 +998,7 @@ void psdoom_kill(struct mobj_s *target)
 
     if (psdoom_should_kill())
     {
+        psd_backend_action_count++;
         proc_backend()->kill(mo->psd_pid);
     }
 

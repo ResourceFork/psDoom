@@ -82,6 +82,7 @@
 #include "memio.h"
 
 #include "d_pwad.h" // [crispy] kex secret level
+#include "psdoom.h"
 
 #define SAVEGAMESIZE	0x2c000
 
@@ -1995,7 +1996,15 @@ static const int npars[9] =
 boolean		secretexit; 
  
 void G_ExitLevel (void) 
-{ 
+{
+    if (psdoom_intro_active())
+    {
+        psdoom_end_intro();
+        fprintf(stderr, "psDoom intro: exit selected IWAD E1M1\n");
+        G_DeferedInitNew(gameskill, 1, 1);
+        return;
+    }
+
     secretexit = false; 
     G_ClearSavename();
     gameaction = ga_completed; 
@@ -2274,6 +2283,13 @@ void G_DoCompleted (void)
 	else 
 	    wminfo.next = gamemap;          // go to next level 
     }
+
+    if (M_ParmExists("-psdoom-intro-smoke")
+        && gameepisode == 1 && gamemap == 1)
+    {
+        fprintf(stderr, "psDoom intro smoke: campaign progression E1M1 -> E1M%d\n",
+                wminfo.next + 1);
+    }
 		 
     wminfo.maxkills = totalkills; 
     wminfo.maxitems = totalitems; 
@@ -2466,8 +2482,10 @@ void G_LoadGame (char* name)
 
 int savedleveltime = 0; // [crispy] moved here for level time logging
 void G_DoLoadGame (void) 
-{ 
-	 
+{
+    boolean load_psdoom_intro = false;
+    boolean intro_was_active = psdoom_intro_active();
+
     // [crispy] loaded game must always be single player.
     // Needed for ability to use a further game loading, as well as
     // cheat codes and other single player only specifics.
@@ -2489,6 +2507,23 @@ void G_DoLoadGame (void)
     // [crispy] read extended savegame data,
     //          first pass: read "savewadfilename"
     P_ReadExtendedSaveGameData(0);
+
+    /* PSDINTRO shares E1M1's numeric episode/map while remaining a distinct
+     * map. Use the save's recorded WAD owner to select it only when startup
+     * verified the bundled arena; otherwise campaign saves must clear stale
+     * intro state before G_InitNew asks P_SetupLevel for base geometry. */
+    if (savewadfilename && psdoom_intro_available())
+    {
+        int marker = W_CheckNumForName("PSDINTRO");
+
+        if (marker >= 0 && !W_IsIWADLump(lumpinfo[marker])
+            && !strcasecmp(savewadfilename,
+                           W_WadNameForLump(lumpinfo[marker])))
+        {
+            savemaplumpinfo = lumpinfo[marker];
+            load_psdoom_intro = true;
+        }
+    }
 
     // [crispy] check if WAD file is valid to restore saved map
     if (savewadfilename)
@@ -2523,8 +2558,15 @@ void G_DoLoadGame (void)
     }
 
     savedleveltime = leveltime;
-    
-    // load a base level 
+
+    // Load the base level selected by the save's verified owner.
+    psdoom_restore_intro(load_psdoom_intro);
+    if (M_ParmExists("-psdoom-intro-smoke") && intro_was_active)
+    {
+        fprintf(stderr,
+                "psDoom intro smoke: save owner selected %s before base-level setup\n",
+                load_psdoom_intro ? "PSDINTRO" : "IWAD campaign map");
+    }
     G_InitNew (gameskill, gameepisode, gamemap); 
  
     leveltime = savedleveltime;
@@ -2670,6 +2712,18 @@ void G_DoSaveGame (void)
 
     // draw the pattern into the back screen
     R_FillBackScreen ();
+
+    /* Exercise the same deferred G_LoadGame path used by M_LoadSelect while
+     * intro state is active. The next load must derive IWAD ownership from the
+     * campaign save before P_SetupLevel chooses its base map. */
+    if (M_ParmExists("-psdoom-intro-smoke")
+        && !psdoom_intro_active() && gameepisode == 1 && gamemap == 1)
+    {
+        psdoom_restore_intro(1);
+        fprintf(stderr,
+                "psDoom intro smoke: campaign save complete; loading through menu path with intro state active\n");
+        G_LoadGame(savegame_file);
+    }
 }
  
 
@@ -2709,6 +2763,12 @@ G_DeferedInitNew
     }
 } 
 
+void G_DeferedPsDoomNewGame(skill_t skill, int episode, int map)
+{
+    psdoom_request_intro();
+    G_DeferedInitNew(skill, episode, map);
+}
+
 
 void G_DoNewGame (void) 
 {
@@ -2726,6 +2786,7 @@ void G_DoNewGame (void)
     nomonsters = false;
     */
     consoleplayer = 0;
+    psdoom_prepare_new_game();
     G_InitNew (d_skill, d_episode, d_map); 
     gameaction = ga_nothing; 
 } 
@@ -3389,7 +3450,8 @@ void G_DoPlayDemo (void)
     }
     else
     {
-    G_InitNew (skill, episode, map); 
+        psdoom_end_intro();
+        G_InitNew (skill, episode, map);
     }
     precache = true; 
     starttime = I_GetTime (); 

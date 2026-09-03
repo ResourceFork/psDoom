@@ -21,6 +21,17 @@ struct mobj_s;
 extern "C" {
 #endif
 
+/* The bundled introduction advances explicitly through READY (available),
+ * PENDING (the player completed New Game selection), and ACTIVE (PSDINTRO is
+ * loading). Demo playback and ordinary campaign starts never activate it. */
+void psdoom_set_intro_available(int available);
+int psdoom_intro_available(void);
+void psdoom_request_intro(void);
+void psdoom_prepare_new_game(void);
+void psdoom_end_intro(void);
+void psdoom_restore_intro(int active);
+int psdoom_intro_active(void);
+
 /* One-time setup at startup: open the process backend, load the allow/deny
  * filter, default to the current UID's processes. */
 void psdoom_init(void);

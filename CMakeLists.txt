@@ -73,16 +73,53 @@ set_target_properties(psDoom PROPERTIES
     MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
 )
 
-add_dependencies(psDoom crispy-doom)
+# Generate and independently validate the arena in the build tree. Resource
+# validation is enabled when the locally supplied shareware IWAD is available;
+# source builds without it still receive full structural PWAD validation.
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+set(_PSD_ARENA_WAD "${CMAKE_CURRENT_BINARY_DIR}/generated/psdoom-arena.wad")
+set(_PSD_ARENA_WAD_TMP "${CMAKE_CURRENT_BINARY_DIR}/generated/psdoom-arena.wad.tmp")
+set(_PSD_ARENA_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_octagonal_arena.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_wad.py")
+set(_PSD_ARENA_VALIDATE_ARGS --wad "${_PSD_ARENA_WAD_TMP}")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD")
+    list(APPEND _PSD_ARENA_VALIDATE_ARGS
+        --iwad "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD")
+    list(APPEND _PSD_ARENA_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/wads/DOOM1.WAD")
+endif()
+
+add_custom_command(
+    OUTPUT "${_PSD_ARENA_WAD}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${_PSD_ARENA_WAD_TMP}"
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_octagonal_arena.py"
+        --output "${_PSD_ARENA_WAD_TMP}"
+    COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_wad.py"
+        ${_PSD_ARENA_VALIDATE_ARGS}
+    COMMAND ${CMAKE_COMMAND} -E rename
+        "${_PSD_ARENA_WAD_TMP}" "${_PSD_ARENA_WAD}"
+    DEPENDS ${_PSD_ARENA_DEPENDS}
+    COMMENT "Generating and validating the psDoom octagonal arena"
+    VERBATIM
+)
+add_custom_target(psdoom_arena_wad DEPENDS "${_PSD_ARENA_WAD}")
+
+add_dependencies(psDoom crispy-doom psdoom_arena_wad)
 
 # Assemble the bundle as a POST_BUILD step of the app target itself, so building
 # (or running) the psDoom target/scheme always yields a complete .app. The
 # earlier separate "embed" target wasn't built by the psDoom scheme, leaving the
 # engine out of the bundle in Xcode. LINK_DEPENDS makes the app relink -- and so
-# re-run this assembly -- whenever the engine binary changes, so engine-only
-# rebuilds don't leave a stale bundle (CMake's Xcode post-build phases already
-# run on every build).
-set_target_properties(psDoom PROPERTIES LINK_DEPENDS "$<TARGET_FILE:crispy-doom>")
+# re-run this assembly -- whenever either the engine binary or generated arena
+# changes. This file dependency prevents incremental builds from leaving a stale
+# bundled PWAD (CMake's Xcode post-build phases already run on every build).
+set_target_properties(psDoom PROPERTIES
+    LINK_DEPENDS "$<TARGET_FILE:crispy-doom>;${_PSD_ARENA_WAD}")
 
 set(_PSD_MACOS_DIR "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/MacOS")
 set(_PSD_RES_DIR   "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/Resources")
@@ -91,6 +128,8 @@ add_custom_command(TARGET psDoom POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_PSD_RES_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy
         "$<TARGET_FILE:crispy-doom>" "${_PSD_MACOS_DIR}/crispy-doom"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${_PSD_ARENA_WAD}" "${_PSD_RES_DIR}/psdoom-arena.wad"
     VERBATIM
 )
 

@@ -26,8 +26,8 @@ It's part novelty, part genuinely useful "interactive process management" demo.
 
 ## Lineage & attribution
 
-- **Original concept:** Dennis Chao — LISA 2000 paper *"Doom as an Interface for
-  Process Management."*
+- **Original concept:** Dennis Chao — LISA 2000 paper _"Doom as an Interface for
+  Process Management."_
 - **psDooM** (the SourceForge project): maintained by David Koppenhofer; based
   on XDoom (Udo Munk), itself based on id Software's GPL Doom source.
 - **This work:** the Mac OS X / X11 port of that lineage, originally hosted at
@@ -68,11 +68,11 @@ layer is the next step.
 **The OS contract is tiny.** Prior art (psdoom-ng) reduces the whole game↔OS
 integration to three operations:
 
-| Operation | Game event | Native macOS call |
-|---|---|---|
-| Enumerate | spawn monsters | `proc_listpids` / `proc_pidinfo` (`<libproc.h>`) or `sysctl` `KERN_PROC` |
-| Renice | wound a monster | `setpriority(PRIO_PROCESS, pid, niceValue)` |
-| Kill | monster death | `kill(pid, SIGTERM)`, escalate to `SIGKILL` |
+| Operation | Game event      | Native macOS call                                                        |
+| --------- | --------------- | ------------------------------------------------------------------------ |
+| Enumerate | spawn monsters  | `proc_listpids` / `proc_pidinfo` (`<libproc.h>`) or `sysctl` `KERN_PROC` |
+| Renice    | wound a monster | `setpriority(PRIO_PROCESS, pid, niceValue)`                              |
+| Kill      | monster death   | `kill(pid, SIGTERM)`, escalate to `SIGKILL`                              |
 
 **Things the revival has to design around:**
 
@@ -88,25 +88,52 @@ integration to three operations:
 ## Repository layout
 
 ```
-third_party/crispy-doom/   vendored Crispy Doom engine (pristine; see third_party/README.md)
+third_party/crispy-doom/   vendored Crispy Doom engine (see third_party/README.md)
 src/app/macos/             the .app launcher
 src/psdoom/                process<->monster logic        (in progress)
 src/platform/macos/        native libproc/renice/kill     (in progress)
-CMakeLists.txt             single build: engine + psDoom.app
+tools/                     deterministic arena generator and independent WAD validator
+CMakeLists.txt             single build: engine + generated arena + psDoom.app
 docs/                      architecture.md, handoff.md, original/ (recovered v1.0 archive)
-wads/                      runtime IWAD (gitignored, not GPL)
+wads/                      user-supplied runtime IWAD (gitignored, not GPL)
 ```
 
 ## Build & run
 
-Requires a Doom IWAD; a shareware `DOOM1.WAD` placed in `wads/` is bundled into
-the app automatically. Dependencies via Homebrew:
+Requires a user-supplied Doom IWAD. A shareware `DOOM1.WAD` placed in `wads/`
+is copied into the app automatically; it remains gitignored and is not part of
+psDoom. The build deterministically generates `psdoom-arena.wad`, validates it,
+and bundles it in the app. Dependencies via Homebrew:
 `brew install sdl2 sdl2_mixer libsamplerate libpng fluid-synth`.
 
 ```bash
-cmake -S . -B build && cmake --build build -j
+cmake -S . -B build
+cmake --build build -j
 open build/psDoom.app
 ```
+
+A normal app launch first presents the stock `DEMO1` attract demo on IWAD `E1M5`.
+Process management is inactive during every demo. Choose **New Game**, then use the
+normal episode, skill, and Nightmare-confirmation flow to load the one-time
+`PSDINTRO` arena. Its exit loads the original `E1M1` from the IWAD, after which
+campaign progression remains `E1M1` → `E1M2` and onward. Explicit map controls
+such as `-file`, `-merge`, `-warp`, demos, or save loading suppress the bundled
+intro. Existing `DOOMWADDIR` and `DOOMWADPATH` values continue to select the
+IWAD search location.
+
+The arena can also be generated and validated independently with Python 3.10
+or newer. Loading an IWAD campaign save from the running intro derives level
+ownership from the save before base geometry is set up, so the saved IWAD map
+is restored instead of `PSDINTRO`:
+
+```bash
+python3 tools/generate_octagonal_arena.py --output /tmp/psdoom-arena.wad
+python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad
+python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad --iwad wads/DOOM1.WAD
+```
+
+The final command additionally proves that every map texture and flat exists in
+the supplied IWAD. No external WAD tools or Python packages are required.
 
 Or generate an Xcode project from the same build and Run the `psDoom` scheme:
 
@@ -115,18 +142,20 @@ cmake -G Xcode -S . -B build-xcode && open build-xcode/psDoom.xcodeproj
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for the architecture, engine
-integration, and build.
+integration, arena format, and build.
 
 ## Status
 
-Engine bootstrapped: `psDoom.app` builds and runs **stock** Crispy Doom on Apple
-Silicon. The psDoom process-management layer (process→monster, wound→renice,
-kill→kill, labels) is the next step — see the revival plan above.
+The engine, process-management layer, and generated octagonal sky arena are
+integrated in `psDoom.app` on Apple Silicon. The distinct `PSDINTRO` level
+provides a clear 77-cell lower process arena, full elevated ring, eight
+freestanding pillar landings, restrained shareware pickups, sky horizon, and a
+reachable enclosed 32×72 exit into the IWAD's unmodified `E1M1`.
 
 ## References
 
 - Upstream psDooM: <http://psdoom.sourceforge.net/>
 - psdoom-ng (Chocolate Doom lineage):
   <https://github.com/orsonteodoro/psdoom-ng1>
-- Dennis Chao, *Doom as an Interface for Process Management* (LISA 2000)
+- Dennis Chao, _Doom as an Interface for Process Management_ (LISA 2000)
 - Internet Archive CDX API: <https://web.archive.org/cdx/search/cdx>

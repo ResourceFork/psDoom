@@ -43,6 +43,7 @@
 #include "s_musinfo.h" // [crispy] S_ParseMusInfo()
 
 #include "doomstat.h"
+#include "psdoom.h"
 
 #include "p_extnodes.h" // [crispy] support extended node formats
 
@@ -1131,10 +1132,18 @@ P_SetupLevel
 
     lumpnum = W_GetNumForName (lumpname);
 */
-    lumpnum = P_GetNumForMap (episode, map, true);
+    if (psdoom_intro_active())
+    {
+        lumpnum = W_GetNumForName("PSDINTRO");
+    }
+    else
+    {
+        lumpnum = P_GetNumForMap (episode, map, true);
+    }
 	
     maplumpinfo = lumpinfo[lumpnum];
     strncpy(lumpname, maplumpinfo->name, 8);
+    lumpname[8] = '\0';
 
     leveltime = 0;
     oldleveltime = 0;
@@ -1152,7 +1161,7 @@ P_SetupLevel
 	    nomonsters ? " -nomonsters" : "",
 	    NULL);
 
-	fprintf(stderr, "P_SetupLevel: %s (%s) %s%s %d:%02d:%02d/%d:%02d:%02d ",
+	fprintf(stderr, "P_SetupLevel: %.8s (%s) %s%s %d:%02d:%02d/%d:%02d:%02d ",
 	    maplumpinfo->name, W_WadNameForLump(maplumpinfo),
 	    skilltable[BETWEEN(0,5,(int) skill+1)], rfn_str,
 	    ltime/3600, (ltime%3600)/60, ltime%60,

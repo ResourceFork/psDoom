@@ -38,6 +38,10 @@ void G_InitNew (skill_t skill, int episode, int map);
 // but a warp test can start elsewhere
 void G_DeferedInitNew (skill_t skill, int episode, int map);
 
+/* Request the one-time psDoom intro through the same deferred new-game action
+ * used by the completed New Game menu flow. */
+void G_DeferedPsDoomNewGame (skill_t skill, int episode, int map);
+
 void G_DeferedPlayDemo (const char* demo);
 
 // Can be called by the startup code or M_Responder,
@@ -90,6 +94,7 @@ extern fixed_t forwardmove[2];
 extern fixed_t sidemove[2];
 
 extern boolean sendpause;
+extern boolean sendsave;
 
 
 #endif
