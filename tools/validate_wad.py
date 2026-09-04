@@ -568,11 +568,11 @@ def validate_map(path: Path, iwad: Path | None) -> dict[str, int]:
     player = [value for value in things if int(value[3]) == 1]
     require(len(player) == 1, "THINGS: expected exactly one player start")
     player = player[0]
-    require(player == (2080, -3100, 90, 1, 0x0007),
-            "THINGS: player 1 start differs from the clear north position")
+    require(player == (2080, -2632, 270, 1, 0x0007),
+            "THINGS: player 1 start differs from the north walkway position facing the arena")
     player_subsector = unique_subsector((int(player[0]), int(player[1])), "player start")
-    require(subsector_sectors[player_subsector] == 0,
-            "player start is not in the lower central arena")
+    require(subsector_sectors[player_subsector] == 5,
+            "player start is not on the elevated walkway")
     player_reachable = reachable_from(player_subsector, subsector_graph)
 
     stair_chains = [
@@ -609,10 +609,16 @@ def validate_map(path: Path, iwad: Path | None) -> dict[str, int]:
     landing_subsectors: list[int] = []
     for pillar_offset, (relative_x, relative_y) in enumerate(pillar_centers):
         pillar = 8 + pillar_offset
-        left = center_x + relative_x - 16
-        right = center_x + relative_x + 16
-        bottom = center_y + relative_y - 16
-        top = center_y + relative_y + 16
+        if abs(relative_y) > abs(relative_x):
+            half_width, half_height = 32, 16
+            tangential_span = 2 * (2 * half_width + half_height)
+        else:
+            half_width, half_height = 16, 32
+            tangential_span = 2 * (half_width + 2 * half_height)
+        left = center_x + relative_x - half_width
+        right = center_x + relative_x + half_width
+        bottom = center_y + relative_y - half_height
+        top = center_y + relative_y + half_height
         require(pillar_counts[pillar] >= 1, f"pillar sector {pillar}: no subsector")
         exposed: list[tuple[tuple[int, int], tuple[int, int]]] = []
         for line in linedefs:
@@ -638,7 +644,9 @@ def validate_map(path: Path, iwad: Path | None) -> dict[str, int]:
             elif start[0] == end[0] == right:
                 intervals["right"].append(tuple(sorted((start[1], end[1]))))
             else:
-                raise ValidationError(f"pillar sector {pillar}: non-square exposed segment {start}->{end}")
+                raise ValidationError(
+                    f"pillar sector {pillar}: non-rectangular exposed segment {start}->{end}"
+                )
         for face in ("bottom", "top"):
             cursor = left
             for interval_start, interval_end in sorted(intervals[face]):
@@ -653,11 +661,17 @@ def validate_map(path: Path, iwad: Path | None) -> dict[str, int]:
                         f"pillar sector {pillar}: {face} face is gapped or overlapping")
                 cursor = interval_end
             require(cursor == top, f"pillar sector {pillar}: incomplete {face} face")
+        require(right - left == 2 * half_width and top - bottom == 2 * half_height,
+                f"pillar sector {pillar}: incorrect cover dimensions")
+        require(tangential_span == 160,
+                f"pillar sector {pillar}: center-facing cover span is not widened")
+        require(64 - half_width >= 32 and 64 - half_height >= 32,
+                f"pillar sector {pillar}: landing clearance is too narrow")
         for dx, dy in ((40, 0), (-40, 0), (0, 40), (0, -40)):
             probe = (center_x + relative_x + dx, center_y + relative_y + dy)
             landing = unique_subsector(probe, f"pillar sector {pillar} landing ring")
             require(subsector_sectors[landing] == 5,
-                    f"pillar sector {pillar}: 48-unit landing ring is not playable floor 64")
+                    f"pillar sector {pillar}: playable landing perimeter is not floor 64")
             landing_subsectors.append(landing)
 
     for first_index, first in enumerate(pillar_centers):

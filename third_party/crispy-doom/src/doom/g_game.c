@@ -2385,7 +2385,15 @@ void G_DoCompleted (void)
     StatCopy(&wminfo);
     }
  
-    WI_Start (&wminfo); 
+    WI_Start (&wminfo);
+
+    /* Keep the lifecycle smoke bounded while exercising the real world-done
+     * path, including P_SetupLevel for the computed E1M2 destination. */
+    if (M_ParmExists("-psdoom-intro-smoke")
+        && gameepisode == 1 && gamemap == 1)
+    {
+        G_WorldDone();
+    }
 } 
 
 
@@ -2484,7 +2492,9 @@ int savedleveltime = 0; // [crispy] moved here for level time logging
 void G_DoLoadGame (void) 
 {
     boolean load_psdoom_intro = false;
-    boolean intro_was_active = psdoom_intro_active();
+
+    /* Preserve the running map's owner until every cancelable owner/header
+     * check accepts the save. Rejected loads must leave PSDINTRO active. */
 
     // [crispy] loaded game must always be single player.
     // Needed for ability to use a further game loading, as well as
@@ -2535,6 +2545,25 @@ void G_DoLoadGame (void)
         {
             M_ForceLoadGame();
             fclose(save_stream);
+
+            if (M_ParmExists("-psdoom-intro-smoke")
+                && psdoom_intro_active())
+            {
+                event_t menu_event;
+
+                memset(&menu_event, 0, sizeof(menu_event));
+                menu_event.type = ev_keydown;
+                menu_event.data1 = key_menu_abort;
+                if (!M_Responder(&menu_event) || !psdoom_intro_active())
+                {
+                    I_Error("psDoom intro smoke: rejected save corrupted PSDINTRO ownership");
+                }
+
+                menu_event.data1 = key_menu_activate;
+                (void) M_Responder(&menu_event);
+                fprintf(stderr,
+                        "psDoom intro smoke: incompatible-owner force-load prompt canceled with PSDINTRO ownership preserved\n");
+            }
             return;
         }
         else
@@ -2561,7 +2590,7 @@ void G_DoLoadGame (void)
 
     // Load the base level selected by the save's verified owner.
     psdoom_restore_intro(load_psdoom_intro);
-    if (M_ParmExists("-psdoom-intro-smoke") && intro_was_active)
+    if (M_ParmExists("-psdoom-intro-smoke"))
     {
         fprintf(stderr,
                 "psDoom intro smoke: save owner selected %s before base-level setup\n",
@@ -2713,10 +2742,18 @@ void G_DoSaveGame (void)
     // draw the pattern into the back screen
     R_FillBackScreen ();
 
-    /* Exercise the same deferred G_LoadGame path used by M_LoadSelect while
-     * intro state is active. The next load must derive IWAD ownership from the
-     * campaign save before P_SetupLevel chooses its base map. */
-    if (M_ParmExists("-psdoom-intro-smoke")
+    /* Exercise both owner paths through the same deferred G_LoadGame action
+     * used by M_LoadSelect. An intro save must restore PSDINTRO after state is
+     * cleared, while the later campaign save must restore the IWAD map. */
+    if (M_ParmExists("-psdoom-intro-smoke") && psdoom_intro_active()
+        && gameepisode == 1 && gamemap == 1)
+    {
+        psdoom_end_intro();
+        fprintf(stderr,
+                "psDoom intro smoke: intro save complete; loading through menu path with intro state inactive\n");
+        G_LoadGame(savegame_file);
+    }
+    else if (M_ParmExists("-psdoom-intro-smoke")
         && !psdoom_intro_active() && gameepisode == 1 && gamemap == 1)
     {
         psdoom_restore_intro(1);
@@ -3439,6 +3476,10 @@ void G_DoPlayDemo (void)
 	// [crispy] impossible to continue a multiplayer demo
 	demorecording = false;
     }
+
+    // A demo always owns its recorded map; it cannot inherit a pending or
+    // active psDoom introduction from an earlier player-controlled level.
+    psdoom_end_intro();
 
     // don't spend a lot of time in loadlevel 
     precache = false;

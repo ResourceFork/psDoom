@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800" role="img"
+  aria-labelledby="title description">
+  <title id="title">psDoom octagonal sky arena overhead schematic</title>
+  <desc id="description">A schematic top-down view of the lower arena, four stair rings, elevated walkway, widened cover
+    pillars, north exit, rail, and sky void.</desc>
+  <defs>
+    <pattern id="spawn-grid" width="10" height="10" patternUnits="userSpaceOnUse">
+      <circle cx="5" cy="5" r="2.5" fill="#d32f2f" opacity="0.7" />
+    </pattern>
+    <style>
+      .label {
+        font: 14px sans-serif;
+        fill: #17202a;
+        text-anchor: middle;
+      }
+
+      .small {
+        font: 11px sans-serif;
+        fill: #17202a;
+        text-anchor: middle;
+      }
+
+      .sky {
+        fill: #77bde8;
+      }
+
+      .void {
+        fill: #263238;
+        stroke: #101416;
+        stroke-width: 3;
+      }
+
+      .rail {
+        fill: #607d8b;
+        stroke: #263238;
+        stroke-width: 3;
+      }
+
+      .walk {
+        fill: #9e9d7b;
+        stroke: #575644;
+        stroke-width: 2;
+      }
+
+      .s1 {
+        fill: #736f55;
+        stroke: #4a4837;
+        stroke-width: 2;
+      }
+
+      .s2 {
+        fill: #817d60;
+        stroke: #4a4837;
+        stroke-width: 2;
+      }
+
+      .s3 {
+        fill: #918c6b;
+        stroke: #4a4837;
+        stroke-width: 2;
+      }
+
+      .s4 {
+        fill: #a09a75;
+        stroke: #4a4837;
+        stroke-width: 2;
+      }
+
+      .floor {
+        fill: #b9b18a;
+        stroke: #4a4837;
+        stroke-width: 2;
+      }
+
+      .pillar {
+        fill: #4e342e;
+        stroke: #24130f;
+        stroke-width: 3;
+      }
+
+      .cavity {
+        fill: #424242;
+        stroke: #111;
+        stroke-width: 3;
+      }
+    </style>
+  </defs>
+
+  <rect width="800" height="800" class="sky" />
+
+  <!-- Sky horizon and solid rail band. -->
+  <polygon class="void" points="220,40 580,40 760,220 760,580 580,760 220,760 40,580 40,220" />
+  <polygon class="sky" points="230,60 570,60 740,230 740,570 570,740 230,740 60,570 60,230" />
+  <polygon class="rail" points="230,60 570,60 740,230 740,570 570,740 230,740 60,570 60,230" />
+
+  <!-- Elevated walkway and four 16-unit stair rings. -->
+  <polygon class="walk" points="240,80 560,80 720,240 720,560 560,720 240,720 80,560 80,240" />
+  <polygon class="s4" points="300,200 500,200 600,300 600,500 500,600 300,600 200,500 200,300" />
+  <polygon class="s3" points="310,220 490,220 580,310 580,490 490,580 310,580 220,490 220,310" />
+  <polygon class="s2" points="320,240 480,240 560,320 560,480 480,560 320,560 240,480 240,320" />
+  <polygon class="s1" points="330,260 470,260 540,330 540,470 470,540 330,540 260,470 260,330" />
+  <polygon class="floor" points="340,280 460,280 520,340 520,460 460,520 340,520 280,460 280,340" />
+
+  <!-- Wide tangential cover pillars: 64x32 north/south; 32x64 east/west. -->
+  <rect class="pillar" x="295" y="224" width="46" height="22" rx="2" />
+  <rect class="pillar" x="459" y="224" width="46" height="22" rx="2" />
+  <rect class="pillar" x="553" y="295" width="22" height="46" rx="2" />
+  <rect class="pillar" x="553" y="459" width="22" height="46" rx="2" />
+  <rect class="pillar" x="459" y="554" width="46" height="22" rx="2" />
+  <rect class="pillar" x="295" y="554" width="46" height="22" rx="2" />
+  <rect class="pillar" x="225" y="459" width="22" height="46" rx="2" />
+  <rect class="pillar" x="225" y="295" width="22" height="46" rx="2" />
+
+  <!-- Enclosed north exit cavity and its switch. -->
+  <rect class="cavity" x="388" y="58" width="24" height="48" rx="2" />
+  <rect x="392" y="60" width="16" height="12" fill="#d8c84f" stroke="#111" stroke-width="2" />
+  <text class="small" x="400" y="52">EXIT SWITCH</text>
+
+  <!-- The 11-by-7 clear process-monster spawn grid. -->
+  <rect x="345" y="368" width="110" height="70" fill="url(#spawn-grid)" opacity="0.9" />
+
+  <!-- Player start on the north walkway, facing south toward the arena. -->
+  <path d="M400,144 l-9,-16 h18 z" fill="#1565c0" stroke="#082f60" stroke-width="2" />
+  <text class="small" x="400" y="165">PLAYER START — FACES CENTER</text>
+
+  <text class="label" x="400" y="470">LOWER ARENA</text>
+  <text class="small" x="400" y="494">77-cell process spawn grid</text>
+  <text class="label" x="400" y="178">ELEVATED WALKWAY / RING</text>
+  <text class="small" x="400" y="198">wide dark-brown rectangles are cover pillars</text>
+  <text class="label" x="400" y="790" fill="#fff">SKY / VOID BEYOND SOLID RAILING</text>
+</svg>

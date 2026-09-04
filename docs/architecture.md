@@ -102,8 +102,11 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
 - **Generated octagonal arena.** `tools/generate_octagonal_arena.py` emits a deterministic classic
   Doom-format PWAD under the distinct `PSDINTRO` marker; it does not replace a numbered campaign
   map. The lower floor remains centered at `(2080, -3432)` around a fully clear 11-by-7 process
-  spawn grid. Four 16-unit stair rings lead to an elevated walkway with eight freestanding 32×32
-  closed pillars, each centered in a playable 128×128 landing. Nineteen restrained,
+  spawn grid. The player begins on the clear north elevated walkway, facing south toward the lower
+  arena and process grid. Four 16-unit stair rings lead to an elevated walkway with eight freestanding cover
+  pillars: north/south-side pillars are 64×32 and east/west-side pillars are 32×64, keeping the
+  32-unit depth radial while widening the center-facing silhouette by two-thirds. Each remains
+  centered in a playable 128×128 landing with 32–48 units of perimeter clearance. Nineteen restrained,
   shareware-compatible pickups sit outside the process grid. A solid 40-unit perimeter rail and
   zero-height `F_SKY1` horizon render an open sky void. The north exit is an enclosed 48×72 cavity
   with exactly one 32×72 `SW1EXIT` surface. The validator checks geometry, BSP, blockmap, all 77

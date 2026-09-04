@@ -39,10 +39,13 @@
 #include "doomstat.h"
 #include "g_game.h"
 #include "m_argv.h"
+#include "m_misc.h"
 #include "info.h"
 #include "tables.h"
+#include "p_extsaveg.h"
 #include "p_local.h"
 #include "p_mobj.h"
+#include "p_saveg.h"
 #include "sounds.h"     /* sfx_telept (morph fog cue)            */
 #include "s_sound.h"    /* S_StartSound                          */
 
@@ -99,19 +102,26 @@
 #define PSD_LABEL_MAX_Y     (ORIGHEIGHT - 32 - 16)
 #define PSD_LABEL_LINE_H    8   /* vertical gap between the PID and name rows  */
 #define PSD_LABEL_SPACE_W   4   /* width of a space / unprintable glyph        */
+
 #ifndef PSD_BUILD_ID
 #define PSD_BUILD_ID "0.1.1-label-centering-v2"
 #endif
 
-
 /* ------------------------------------------------------------------- state */
 
-static boolean    psd_enabled;
-static boolean    psd_intro_available;
-static boolean    psd_intro_pending;
-static boolean    psd_intro_active;
-static boolean    psd_first_active_collection;
+typedef enum
+{
+    PSD_INTRO_UNAVAILABLE,
+    PSD_INTRO_READY,
+    PSD_INTRO_PENDING,
+    PSD_INTRO_ACTIVE,
+} psd_intro_state_t;
+
+static boolean           psd_enabled;
+static psd_intro_state_t psd_intro_state;
+static boolean           psd_first_active_collection;
 static int        psd_intro_smoke_stage;
+static int        psd_intro_smoke_campaign_collections;
 static int        psd_collect_count;
 static int        psd_backend_action_count;
 static int        psd_next_sync;               /* leveltime gate              */
@@ -166,7 +176,7 @@ static int        psd_swarm_live;   /* live inert souls (death-decremented) */
  * campaign maps, including IWAD E1M1, must remain ordinary Doom levels. */
 static boolean PSD_OnSpawnLevel(void)
 {
-    return gamestate == GS_LEVEL && psd_intro_active;
+    return gamestate == GS_LEVEL && psd_intro_state == PSD_INTRO_ACTIVE;
 }
 
 /* True if `pid` is in this sync's curated collection. */
@@ -740,51 +750,61 @@ static void PSD_DetectForkBombs(int n)
 
 void psdoom_set_intro_available(int available)
 {
-    psd_intro_available = available != 0;
-    if (!psd_intro_available)
-    {
-        psd_intro_pending = false;
-        psd_intro_active = false;
-    }
+    psd_intro_state = available ? PSD_INTRO_READY : PSD_INTRO_UNAVAILABLE;
+    psd_first_active_collection = false;
 }
 
 int psdoom_intro_available(void)
 {
-    return psd_intro_available;
+    return psd_intro_state != PSD_INTRO_UNAVAILABLE;
 }
 
 void psdoom_request_intro(void)
 {
-    if (psd_intro_available)
+    if (psd_intro_state == PSD_INTRO_READY)
     {
-        psd_intro_pending = true;
+        psd_intro_state = PSD_INTRO_PENDING;
     }
 }
 
 void psdoom_prepare_new_game(void)
 {
-    psd_intro_active = psd_intro_available && psd_intro_pending;
-    psd_intro_pending = false;
-    psd_first_active_collection = psd_intro_active;
+    if (psd_intro_state == PSD_INTRO_PENDING)
+    {
+        psd_intro_state = PSD_INTRO_ACTIVE;
+    }
+    else if (psd_intro_state != PSD_INTRO_UNAVAILABLE)
+    {
+        psd_intro_state = PSD_INTRO_READY;
+    }
+    psd_first_active_collection = psd_intro_state == PSD_INTRO_ACTIVE;
 }
 
 void psdoom_end_intro(void)
 {
-    psd_intro_pending = false;
-    psd_intro_active = false;
+    if (psd_intro_state != PSD_INTRO_UNAVAILABLE)
+    {
+        psd_intro_state = PSD_INTRO_READY;
+    }
     psd_first_active_collection = false;
 }
 
 void psdoom_restore_intro(int active)
 {
-    psd_intro_pending = false;
-    psd_intro_active = active != 0 && psd_intro_available;
-    psd_first_active_collection = psd_intro_active;
+    if (active && psd_intro_state != PSD_INTRO_UNAVAILABLE)
+    {
+        psd_intro_state = PSD_INTRO_ACTIVE;
+    }
+    else if (psd_intro_state != PSD_INTRO_UNAVAILABLE)
+    {
+        psd_intro_state = PSD_INTRO_READY;
+    }
+    psd_first_active_collection = psd_intro_state == PSD_INTRO_ACTIVE;
 }
 
 int psdoom_intro_active(void)
 {
-    return psd_intro_active;
+    return psd_intro_state == PSD_INTRO_ACTIVE;
 }
 
 void psdoom_init(void)
@@ -802,7 +822,7 @@ void psdoom_init(void)
     psd_swarm_live     = 0;
     psd_last_leveltime = 0;
     psd_enabled        = true;
-    psd_first_active_collection = false;
+    psd_first_active_collection = psdoom_intro_active();
     psd_collect_count = 0;
     psd_backend_action_count = 0;
     psd_intro_smoke_stage = M_ParmExists("-psdoom-intro-smoke") ? 1 : 0;
@@ -824,7 +844,7 @@ void psdoom_sync(void)
 
     if (psd_intro_smoke_stage == 1 && gamestate == GS_LEVEL
         && demoplayback && gameepisode == 1 && gamemap == 5
-        && !psd_intro_active && leveltime >= 1)
+        && !psdoom_intro_active() && leveltime >= 1)
     {
         if (psd_collect_count != 0 || psd_backend_action_count != 0)
         {
@@ -841,35 +861,99 @@ void psdoom_sync(void)
         return;
     }
 
-    if (psd_intro_smoke_stage == 2 && PSD_OnSpawnLevel() && leveltime >= 1)
+    if (psd_intro_smoke_stage == 2 && PSD_OnSpawnLevel()
+        && leveltime >= PSD_SYNC_INTERVAL + 1)
+    {
+        if (psd_collect_count == 0)
+        {
+            fprintf(stderr,
+                    "psDoom intro smoke: PSDINTRO did not synchronize processes\n");
+            psd_intro_smoke_stage = 99;
+            return;
+        }
+        fprintf(stderr,
+                "psDoom intro smoke: custom arena active; process synchronization=on; collections=%d\n",
+                psd_collect_count);
+        psd_intro_smoke_stage = 3;
+        G_SaveGame(6, "PSDOOM INTRO SMOKE");
+        return;
+    }
+
+    if (psd_intro_smoke_stage == 3 && !sendsave
+        && gameaction == ga_nothing && PSD_OnSpawnLevel() && leveltime >= 1)
     {
         fprintf(stderr,
-                "psDoom intro smoke: custom arena active; process synchronization=on\n");
-        psd_intro_smoke_stage = 3;
+                "psDoom intro smoke: intro-owned save restored on PSDINTRO; process synchronization=on\n");
+        savewadfilename = M_StringDuplicate("psdoom-smoke-missing.wad");
+        fprintf(stderr,
+                "psDoom intro smoke: attempting incompatible-owner save load while PSDINTRO is active\n");
+        psd_intro_smoke_stage = 4;
+        G_LoadGame(P_SaveGameFile(6));
+        return;
+    }
+
+    if (psd_intro_smoke_stage == 4 && gameaction == ga_nothing
+        && PSD_OnSpawnLevel() && leveltime >= 1)
+    {
+        psd_intro_smoke_campaign_collections = psd_collect_count;
+        fprintf(stderr,
+                "psDoom intro smoke: incompatible-owner save rejected and canceled; ownership=PSDINTRO; process synchronization=on; exit routing=IWAD E1M1\n");
+        psd_intro_smoke_stage = 5;
         G_ExitLevel();
         return;
     }
 
-    if (psd_intro_smoke_stage == 3 && gamestate == GS_LEVEL
-        && !psd_intro_active && gameepisode == 1 && gamemap == 1
+    if (psd_intro_smoke_stage == 5 && gamestate == GS_LEVEL
+        && !psdoom_intro_active() && gameepisode == 1 && gamemap == 1
         && leveltime >= 1)
     {
+        if (psd_collect_count != psd_intro_smoke_campaign_collections)
+        {
+            fprintf(stderr,
+                    "psDoom intro smoke: stock E1M1 performed forbidden process synchronization\n");
+            psd_intro_smoke_stage = 99;
+            return;
+        }
         fprintf(stderr,
                 "psDoom intro smoke: stock E1M1 active; process synchronization=off\n");
-        psd_intro_smoke_stage = 4;
+        psd_intro_smoke_stage = 6;
         G_SaveGame(7, "PSDOOM INTRO SMOKE");
         return;
     }
 
-    if (psd_intro_smoke_stage == 4 && !sendsave
+    if (psd_intro_smoke_stage == 6 && !sendsave
         && gameaction == ga_nothing && gamestate == GS_LEVEL
-        && !psd_intro_active && gameepisode == 1 && gamemap == 1
+        && !psdoom_intro_active() && gameepisode == 1 && gamemap == 1
         && leveltime >= 1)
     {
+        if (psd_collect_count != psd_intro_smoke_campaign_collections)
+        {
+            fprintf(stderr,
+                    "psDoom intro smoke: campaign save restore enabled process synchronization\n");
+            psd_intro_smoke_stage = 99;
+            return;
+        }
         fprintf(stderr,
                 "psDoom intro smoke: menu-path campaign save restored on IWAD E1M1; process synchronization=off\n");
-        psd_intro_smoke_stage = 5;
+        psd_intro_smoke_stage = 7;
         G_ExitLevel();
+        return;
+    }
+
+    if (psd_intro_smoke_stage == 7 && gamestate == GS_LEVEL
+        && !psdoom_intro_active() && gameepisode == 1 && gamemap == 2
+        && leveltime >= 1)
+    {
+        if (psd_collect_count != psd_intro_smoke_campaign_collections)
+        {
+            fprintf(stderr,
+                    "psDoom intro smoke: stock E1M2 performed forbidden process synchronization\n");
+            psd_intro_smoke_stage = 99;
+            return;
+        }
+        fprintf(stderr,
+                "psDoom intro smoke: stock E1M2 active; process synchronization=off\n");
+        psd_intro_smoke_stage = 8;
         return;
     }
 

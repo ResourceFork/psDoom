@@ -191,7 +191,22 @@ PILLAR_CENTERS = [
     (304, -608), (-304, -608), (-608, -304), (-608, 304),
 ]
 LANDINGS = [rectangle(x - 64, y - 64, x + 64, y + 64) for x, y in PILLAR_CENTERS]
-PILLARS = [rectangle(x - 16, y - 16, x + 16, y + 16) for x, y in PILLAR_CENTERS]
+
+
+def cover_pillar(x: int, y: int) -> list[Point]:
+    """Return a shallow pillar whose long axis follows the local ring tangent.
+
+    The north/south-side pillars are wider east-to-west; the east/west-side
+    pillars are wider north-to-south. Each remains 32 units deep radially,
+    fits its 128-unit landing, and presents a 67% wider silhouette to a player
+    looking outward from the arena center.
+    """
+    if abs(y) > abs(x):
+        return rectangle(x - 32, y - 16, x + 32, y + 16)
+    return rectangle(x - 16, y - 32, x + 16, y + 32)
+
+
+PILLARS = [cover_pillar(x, y) for x, y in PILLAR_CENTERS]
 EXIT_SHELL = rectangle(-48, 1024, 48, 1120)
 EXIT_CAVITY = [
     point(-24, 1024), point(-24, 1072), point(-16, 1088),
@@ -403,7 +418,7 @@ def things() -> list[Thing]:
         (-736, 160, 2007), (736, 160, 2007), (736, -160, 2012),
         (-736, -160, 2014),
     ]
-    values = [Thing(CENTER_X, CENTER_Y + 332, 90, 1, 0x0007)]
+    values = [Thing(CENTER_X, CENTER_Y + 800, 270, 1, 0x0007)]
     values.extend(
         Thing(CENTER_X + x, CENTER_Y + y, 0, kind, 0x0007)
         for x, y, kind in pickups
