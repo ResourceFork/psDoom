@@ -570,8 +570,9 @@ R_DrawVisSprite
     //  psd_col_top is the topmost drawn row, i.e. the *visible* sprite top.
     if (vis->psd_pid != 0 && psd_col_drawn)
     {
-	psdoom_draw_label(vis->x1, psd_col_top,
-			  vis->scale, vis->psd_pid, vis->psd_name);
+	psdoom_draw_label(vis->x1, vis->x2, psd_col_top,
+			  vis->scale, vis->psd_pid, vis->psd_name,
+			  vis->mobjflags);
     }
 }
 

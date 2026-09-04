@@ -49,23 +49,33 @@ void psdoom_wound(struct mobj_s *target);
 void psdoom_kill(struct mobj_s *target);
 
 /*
- * Draw a process-monster's PID and name just above its sprite. Called from the
- * renderer (R_DrawVisSprite) once per visible process-monster.
+ * Draw a process-monster's PID and name centered above its sprite. Called
+ * from the renderer (R_DrawVisSprite) once per visible process-monster.
  *
- *   x1_fb   : vissprite left edge, view-window-relative framebuffer pixels
+ *   x1_fb   : vissprite left edge, view-window-relative framebuffer
+ *             pixels
+ *   x2_fb   : vissprite right edge, view-window-relative framebuffer
+ *             pixels (used with x1_fb to find the sprite's inclusive-range
+ *             midpoint; each label row is centered there using its glyph
+ *             visual bounds, including patch left offsets)
  *   top_fb  : topmost rendered row of the sprite, view-window-relative
  *             framebuffer pixels (the visible sprite top)
  *   scale   : vissprite scale (larger = closer)
  *   pid     : process id to print (caller guarantees != 0)
  *   name    : process name (may be NULL)
+ *   mobjflags : the sprite's mobj flags word (vis->mobjflags); used to
+ *               suppress the label on corpses (MF_CORPSE) without
+ *               depending on live mo->health, since the vissprite may
+ *               outlive the mobj's gameplay-relevant state changes
  *
- * Coordinates are offset by the 3D view window origin and converted to
- * 320x200 logical space internally. Distant sprites are skipped to avoid
+ * Coordinates are offset by the 3D view window origin, converted to 320x200
+ * logical space, then translated back to the pre-V_DrawPatch coordinate space
+ * internally. Distant sprites are skipped to avoid
  * clutter. The caller only invokes this for sprites that actually rendered,
  * so labels never show through walls.
  */
-void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
-                       const char *name);
+void psdoom_draw_label(int x1_fb, int x2_fb, int top_fb, int scale, int pid,
+                       const char *name, int mobjflags);
 
 #ifdef __cplusplus
 }

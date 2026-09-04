@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 
 project(psDoom C)
 
+set(PSD_APP_VERSION "0.1.1")
+set(PSD_BUILD_ID "${PSD_APP_VERSION}-label-centering-v3")
+
 # Generate a shared Xcode scheme only for the psDoom app (must be set before the
 # targets are created). Keeps Xcode's "Run" pointed at the bundle (which locates
 # the WAD) instead of the bare engine binaries.
@@ -44,6 +47,7 @@ target_sources(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
+target_compile_definitions(doom PRIVATE PSD_BUILD_ID=\"${PSD_BUILD_ID}\")
 target_include_directories(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
@@ -69,8 +73,8 @@ set_target_properties(psDoom PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos/Info.plist.in"
     MACOSX_BUNDLE_BUNDLE_NAME "psDoom"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.resourcefork.psdoom"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0.1.0"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1.0"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PSD_APP_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PSD_APP_VERSION}"
 )
 
 # Generate and independently validate the arena in the build tree. Resource

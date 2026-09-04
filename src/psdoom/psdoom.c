@@ -99,6 +99,10 @@
 #define PSD_LABEL_MAX_Y     (ORIGHEIGHT - 32 - 16)
 #define PSD_LABEL_LINE_H    8   /* vertical gap between the PID and name rows  */
 #define PSD_LABEL_SPACE_W   4   /* width of a space / unprintable glyph        */
+#ifndef PSD_BUILD_ID
+#define PSD_BUILD_ID "0.1.1-label-centering-v2"
+#endif
+
 
 /* ------------------------------------------------------------------- state */
 
@@ -803,8 +807,9 @@ void psdoom_init(void)
     psd_backend_action_count = 0;
     psd_intro_smoke_stage = M_ParmExists("-psdoom-intro-smoke") ? 1 : 0;
 
-    fprintf(stderr, "psDoom: process management active (uid %u, pid %d)\n",
-            proc_backend()->current_uid(), (int) getpid());
+    fprintf(stderr,
+            "psDoom: process management active (build %s; uid %u, pid %d)\n",
+            PSD_BUILD_ID, proc_backend()->current_uid(), (int) getpid());
 }
 
 void psdoom_sync(void)
@@ -1040,11 +1045,82 @@ static void PSD_DrawHUString(int x, int y, const char *str)
     }
 }
 
-void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
-                       const char *name)
+/* Find the painted horizontal bounds of `str` relative to the starting pen.
+ * The pen follows PSD_DrawHUString exactly, but each glyph's visual left edge
+ * is shifted by its patch origin. Spaces and missing glyphs advance the pen
+ * without contributing painted pixels. */
+static void PSD_HUStringBounds(const char *str, int *left, int *right)
+{
+    const char *p;
+    int advance = 0;
+    boolean have_glyph = false;
+
+    for (p = str; *p != '\0'; p++)
+    {
+        int c = toupper((unsigned char) *p);
+        patch_t *glyph;
+        int glyph_left;
+        int glyph_right;
+
+        if (c == ' ')
+        {
+            advance += PSD_LABEL_SPACE_W;
+            continue;
+        }
+
+        c -= HU_FONTSTART;
+        if (c < 0 || c >= HU_FONTSIZE || hu_font[c] == NULL)
+        {
+            advance += PSD_LABEL_SPACE_W;
+            continue;
+        }
+
+        glyph = hu_font[c];
+        glyph_left = advance - SHORT(glyph->leftoffset);
+        glyph_right = glyph_left + SHORT(glyph->width);
+        if (!have_glyph || glyph_left < *left)
+        {
+            *left = glyph_left;
+        }
+        if (!have_glyph || glyph_right > *right)
+        {
+            *right = glyph_right;
+        }
+        have_glyph = true;
+        advance += SHORT(glyph->width);
+    }
+
+    /* A row with no painted glyph has no visual midpoint; retaining its pen
+     * extent keeps this helper well-defined without changing draw behavior. */
+    if (!have_glyph)
+    {
+        *left = 0;
+        *right = advance;
+    }
+}
+
+/* Center `str`'s painted bounds on the sprite's doubled edge midpoint. The
+ * input to V_DrawPatch is one WIDESCREENDELTA left of absolute logical screen
+ * coordinates because V_DrawPatch adds that offset before drawing. */
+static void PSD_DrawCenteredHUString(int sprite_center_twice, int y,
+                                     const char *str)
+{
+    int left;
+    int right;
+    int x;
+
+    PSD_HUStringBounds(str, &left, &right);
+    x = (sprite_center_twice - left - right) / 2 - WIDESCREENDELTA;
+    PSD_DrawHUString(x, y, str);
+}
+
+void psdoom_draw_label(int x1_fb, int x2_fb, int top_fb, int scale, int pid,
+                       const char *name, int mobjflags)
 {
     const int hires = crispy->hires;
-    int x;
+    int x1;
+    int x2;
+    int sprite_center_twice;
     int y;
     char buf[16];
 
@@ -1060,6 +1136,15 @@ void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
         return;
     }
 
+    /* Don't label corpses: the process is already gone (psdoom_kill ran
+     * when it died) and the count-down sprite looks better without a
+     * lingering PID overhead it. Gate on the vissprite's captured flags,
+     * not mo->health, since flags are stable at draw time. */
+    if (mobjflags & MF_CORPSE)
+    {
+        return;
+    }
+
     /* Skip distant sprites to keep the screen readable (gate from the
      * "Label draw distance" option). */
     if ((scale >> hires) < psdoom_label_min_scale())
@@ -1067,13 +1152,20 @@ void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
         return;
     }
 
-    /* The renderer's x1/top are relative to the 3D view window's top-left, in
-     * framebuffer pixels (320 << hires). Add the view-window origin to get
-     * absolute framebuffer coords, then fold back to the 320x200 logical space
-     * V_DrawPatch expects. Including viewwindowx/y keeps labels aligned when a
-     * smaller screen size / the status bar insets the 3D view. */
-    x = (x1_fb + viewwindowx) >> hires;
+    /* The renderer's x1/x2/top are relative to the 3D view window's top-left,
+     * in framebuffer pixels (320 << hires). Add the view-window origin to get
+     * absolute framebuffer coordinates, then fold back to 320x200 logical
+     * space. x1/x2 describe inclusive sprite pixels, so their doubled edge
+     * midpoint is x1 + x2 + 1. PSD_DrawCenteredHUString converts that absolute
+     * center back to V_DrawPatch's pre-widescreen coordinate space. */
+    x1 = (x1_fb + viewwindowx) >> hires;
+    x2 = (x2_fb + viewwindowx) >> hires;
+    sprite_center_twice = x1 + x2 + 1;
     y = (top_fb + viewwindowy) >> hires;
+
+    /* Move the top-of-visible-sprite y up one HUD label line before clamping
+     * so labels remain above sprites. */
+    y -= PSD_LABEL_LINE_H;
 
     if (y < 0)
     {
@@ -1090,12 +1182,12 @@ void psdoom_draw_label(int x1_fb, int top_fb, int scale, int pid,
     if (psdoom_pid_enabled())
     {
         snprintf(buf, sizeof(buf), "%d", pid);
-        PSD_DrawHUString(x, y, buf);
+        PSD_DrawCenteredHUString(sprite_center_twice, y, buf);
         y += PSD_LABEL_LINE_H;
     }
 
     if (name != NULL)
     {
-        PSD_DrawHUString(x, y, name);
+        PSD_DrawCenteredHUString(sprite_center_twice, y, name);
     }
 }
