@@ -209,6 +209,11 @@ static boolean noblit;
 
 static grabmouse_callback_t grabmouse_callback = NULL;
 
+// [psDoom] Callback reporting whether the menu is open, so full screen
+// can release the mouse for it. Unset in the other games.
+
+static grabmouse_callback_t menu_open_callback = NULL;
+
 // Does the window currently have focus?
 
 static boolean window_focused = true;
@@ -233,48 +238,33 @@ static int icon_h;
 
 static boolean MouseShouldBeGrabbed()
 {
-    // never grab the mouse when in screensaver mode
-   
-    if (screensaver_mode)
-        return false;
+    grab_inputs_t in;
 
-    // if the window doesn't have focus, never grab it
+    in.screensaver_mode = screensaver_mode;
+    in.window_focused = window_focused;
+    in.fullscreen = fullscreen;
+    in.mouse_enabled = usemouse && !nomouse;
+    in.grab_enabled = grabmouse && !nograbmouse_override;
 
-    if (!window_focused)
-        return false;
+    // Invoke the callbacks to determine whether the mouse should be
+    // grabbed. Both are sampled every frame, so they must be free of
+    // side effects.
 
-    // always grab the mouse when full screen (dont want to 
-    // see the mouse pointer)
+    in.game_wants_grab = grabmouse_callback != NULL ? grabmouse_callback()
+                                                    : true;
+    in.menu_open = menu_open_callback != NULL && menu_open_callback();
 
-    if (fullscreen)
-        return true;
-
-    // Don't grab the mouse if mouse input is disabled
-
-    if (!usemouse || nomouse)
-        return false;
-
-    // if we specify not to grab the mouse, never grab
-
-    if (nograbmouse_override || !grabmouse)
-        return false;
-
-    // Invoke the grabmouse callback function to determine whether
-    // the mouse should be grabbed
-
-    if (grabmouse_callback != NULL)
-    {
-        return grabmouse_callback();
-    }
-    else
-    {
-        return true;
-    }
+    return I_MouseShouldBeGrabbed(&in);
 }
 
 void I_SetGrabMouseCallback(grabmouse_callback_t func)
 {
     grabmouse_callback = func;
+}
+
+void I_SetMenuOpenCallback(grabmouse_callback_t func)
+{
+    menu_open_callback = func;
 }
 
 // Set the variable controlling FPS dots.
@@ -648,18 +638,24 @@ static void UpdateGrab(void)
     }
     else if (!grab && currently_grabbed)
     {
-        int screen_w, screen_h;
+        int screen_w, screen_h, warp_x, warp_y;
 
         SetShowCursor(true);
 
-        // When releasing the mouse from grab, warp the mouse cursor to
-        // the bottom-right of the screen. This is a minimally distracting
-        // place for it to appear - we may only have released the grab
-        // because we're at an end of level intermission screen, for
-        // example.
+        // When releasing the mouse from grab, warp the mouse cursor out
+        // of the way - we may only have released the grab because we're
+        // at an end of level intermission screen, for example. [psDoom]
+        // See I_GrabReleaseWarp() for where, and when not.
 
         SDL_GetWindowSize(screen, &screen_w, &screen_h);
-        SDL_WarpMouseInWindow(screen, screen_w - 16, screen_h - 16);
+
+        if (I_GrabReleaseWarp(currently_grabbed, grab, fullscreen,
+                              window_focused, screen_w, screen_h,
+                              &warp_x, &warp_y))
+        {
+            SDL_WarpMouseInWindow(screen, warp_x, warp_y);
+        }
+
         SDL_GetRelativeMouseState(NULL, NULL);
     }
 

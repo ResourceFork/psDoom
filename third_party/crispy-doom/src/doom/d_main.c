@@ -529,6 +529,14 @@ boolean D_GrabMouseCallback(void)
     return (gamestate == GS_LEVEL) && !demoplayback && !advancedemo;
 }
 
+// [psDoom] Full screen keeps the mouse grabbed outside gameplay, but the
+// open menu must release it and show the cursor.
+
+static boolean D_MenuOpenCallback(void)
+{
+    return menuactive;
+}
+
 //
 //  D_RunFrame
 //
@@ -617,6 +625,7 @@ void D_DoomLoop (void)
     I_SetWindowTitle(gamedescription);
     I_GraphicsCheckCommandLine();
     I_SetGrabMouseCallback(D_GrabMouseCallback);
+    I_SetMenuOpenCallback(D_MenuOpenCallback); // [psDoom]
     I_RegisterWindowIcon(doom_icon_data, doom_icon_w, doom_icon_h);
     I_InitGraphics();
     EnableLoadingDisk();
