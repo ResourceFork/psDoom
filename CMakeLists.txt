@@ -184,8 +184,21 @@ target_compile_definitions(psdoom_tests PRIVATE PSD_NO_NATIVE_BACKEND)
 target_include_directories(psdoom_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+if(APPLE)
+    # Linked only for read-only listing/lookup checks; the tests never call the
+    # native renice or kill.
+    target_sources(psdoom_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
+    target_include_directories(psdoom_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos")
+endif()
 
 add_test(NAME psdoom_tests COMMAND psdoom_tests)
+
+# Game code must act on processes only through the pid-reuse-checked wrappers.
+add_test(NAME psdoom_no_raw_backend_actions
+    COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/no_raw_backend_actions.cmake")
 
 if(NOT DEFINED EMSCRIPTEN)
     add_executable(psdoom_window_state_tests EXCLUDE_FROM_ALL

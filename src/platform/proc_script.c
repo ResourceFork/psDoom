@@ -408,6 +408,7 @@ static int script_list(psd_proc_t *out, int max)
 
     if (script_run_capture(script_poll_cmd, buf, sizeof(buf), script_timeout_ms) < 0)
     {
+        script_last_n = 0;   /* state unknown: nothing counts as live */
         return 0;
     }
 
@@ -445,12 +446,37 @@ static int script_kill(int pid)
     return 1;
 }
 
+/* Script entities can't be re-read without running the poll command (slow, and
+ * it would block the game tick), and the contract carries no start time. So
+ * "now" is the most recent poll: an id is live if that poll listed it.
+ * start_token is always 0, so identity is the id alone, as the contract
+ * defines (psd_proc_same skips the label). */
+static int script_lookup(int id, psd_proc_t *out)
+{
+    int i;
+
+    if (out == NULL)
+    {
+        return 0;
+    }
+    for (i = 0; i < script_last_n; i++)
+    {
+        if (script_last[i].pid == id)
+        {
+            *out = script_last[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static const proc_backend_t script_backend =
 {
     script_list,
     script_current_uid,
     script_renice,
     script_kill,
+    script_lookup,
 };
 
 /* ----------------------------------------------------------------- install */

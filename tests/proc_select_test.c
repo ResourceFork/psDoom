@@ -1,9 +1,11 @@
 /*
  * psDoom -- proc_select / backend host tests.
  *
- * Engine-free: links only proc_select, proc_backend and the fake backend, so
- * the triage policy and the backend plumbing are exercised deterministically
- * off-machine (no live process list, no Doom engine). proc_select calls one
+ * Engine-free: links proc_select, proc_backend, the fake and script backends
+ * and, on macOS, the native backend for READ-ONLY listing/lookup checks (it
+ * never renices or kills anything), so the triage policy, the pid-reuse guard
+ * and the backend plumbing are exercised deterministically off-machine (no
+ * Doom engine). proc_select calls one
  * option getter (psdoom_all_users_enabled); we stub it here rather than link
  * the engine-coupled options module.
  *
@@ -14,12 +16,16 @@
 #include "proc_backend.h"
 #include "proc_fake.h"
 #include "proc_script.h"
+#ifdef __APPLE__
+#include "proc_macos.h"   /* read-only listing/lookup check */
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>     /* waitpid (reap our own zombie child) */
 
 /* ---- stub for the one option getter proc_select references --------------- */
 static int stub_all_users;
@@ -269,6 +275,29 @@ static int file_contains(const char *path, const char *needle)
     return strstr(buf, needle) != NULL;
 }
 
+/* Number of times `needle` occurs in the file at `path`. */
+static int file_count(const char *path, const char *needle)
+{
+    char        buf[8192];
+    FILE       *f = fopen(path, "r");
+    size_t      n;
+    const char *s;
+    int         count = 0;
+
+    if (f == NULL)
+    {
+        return 0;
+    }
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    for (s = strstr(buf, needle); s != NULL; s = strstr(s + 1, needle))
+    {
+        count++;
+    }
+    return count;
+}
+
 /* The response command is async (double-forked); wait briefly for its side
  * effect to land. */
 static int wait_for_contains(const char *path, const char *needle, int timeout_ms)
@@ -336,10 +365,204 @@ static void test_script_backend_roundtrip(void)
     proc_backend()->renice(4123, 4);
     CHECK(wait_for_contains(result, "wound 4123 amount=4", 3000));
 
+    /* Checked actions in script mode: "now" is the latest poll. An id the poll
+     * no longer lists gets no response at all; the id alone is the identity
+     * (the contract's), so a label that differs does not block the action. */
+    CHECK(psd_proc_kill_checked(4999, 0, "") == PSD_ACT_GONE);
+    CHECK(psd_proc_renice_checked(4123, 0, "renamed", 4) == PSD_ACT_DONE);
+    CHECK(psd_proc_kill_checked(4000, 0, "supervisor") == PSD_ACT_DONE);
+    CHECK(wait_for_contains(result, "kill 4000", 3000));
+    {
+        int waited = 0;   /* the raw wound above, plus the checked one */
+        while (file_count(result, "wound 4123") < 2 && waited < 3000)
+        {
+            usleep(10000);
+            waited += 10;
+        }
+        CHECK(file_count(result, "wound 4123") == 2);
+    }
+    usleep(500000);   /* give any wrongly dispatched responder time to land */
+    CHECK(!file_contains(result, "4999"));
+
     unlink(poll);
     unlink(respond);
     unlink(result);
 }
+
+/* ---- pid-reuse guard: act only on the process the monster was spawned for -- */
+
+static psd_proc_t mkident(int pid, unsigned long long start, const char *name)
+{
+    psd_proc_t p = mkproc(pid, 1, 501, 0, 0, name);
+    p.start_token = start;
+    return p;
+}
+
+/* Install the fake and list one snapshot, as a sync would before the player
+ * wounds or kills the monster spawned from it. */
+static void list_one(const psd_proc_t *p)
+{
+    psd_proc_t out[4];
+
+    proc_fake_install(501);
+    stub_all_users = 0;
+    proc_fake_push_snapshot(p, 1);
+    psd_select_init();
+    (void) psd_select_collect(out, 4);
+}
+
+/* The normal path still acts: the pid is still the listed process. */
+static void test_guard_same_process_acts(void)
+{
+    psd_proc_t listed = mkident(300, 1000001ULL, "firefox");
+
+    list_one(&listed);
+    CHECK(psd_proc_renice_checked(300, 1000001ULL, "firefox", 4) == PSD_ACT_DONE);
+    CHECK(proc_fake_renice_count() == 1);
+    CHECK(proc_fake_last_renice_pid() == 300);
+    CHECK(proc_fake_last_renice_delta() == 4);
+    CHECK(psd_proc_kill_checked(300, 1000001ULL, "firefox") == PSD_ACT_DONE);
+    CHECK(proc_fake_kill_count() == 1);
+    CHECK(proc_fake_last_kill_pid() == 300);
+}
+
+/* The listed process exits and the OS hands its pid to an unrelated process
+ * before the player acts: no renice, no kill, and a distinct result. */
+static void test_guard_reused_pid_refused(void)
+{
+    psd_proc_t listed  = mkident(300, 1000001ULL, "firefox");
+    psd_proc_t reused  = mkident(300, 2000002ULL, "bash");     /* new process */
+    psd_proc_t samenam = mkident(300, 2000002ULL, "firefox");  /* relaunch    */
+    psd_proc_t execd   = mkident(300, 1000001ULL, "bash");     /* name moved  */
+
+    list_one(&listed);
+    proc_fake_set_live(&reused, 1);
+    CHECK(psd_proc_renice_checked(300, 1000001ULL, "firefox", 4) == PSD_ACT_REUSED);
+    CHECK(psd_proc_kill_checked(300, 1000001ULL, "firefox") == PSD_ACT_REUSED);
+
+    /* Same name, new start time: still a different process. */
+    proc_fake_set_live(&samenam, 1);
+    CHECK(psd_proc_renice_checked(300, 1000001ULL, "firefox", 4) == PSD_ACT_REUSED);
+    CHECK(psd_proc_kill_checked(300, 1000001ULL, "firefox") == PSD_ACT_REUSED);
+
+    /* Same start time, different name: not the process the label shows. */
+    proc_fake_set_live(&execd, 1);
+    CHECK(psd_proc_renice_checked(300, 1000001ULL, "firefox", 4) == PSD_ACT_REUSED);
+    CHECK(psd_proc_kill_checked(300, 1000001ULL, "firefox") == PSD_ACT_REUSED);
+
+    CHECK(proc_fake_renice_count() == 0);
+    CHECK(proc_fake_kill_count() == 0);
+}
+
+/* The listed process exits and nothing has its pid yet. */
+static void test_guard_vanished_pid_refused(void)
+{
+    psd_proc_t listed = mkident(300, 1000001ULL, "firefox");
+
+    list_one(&listed);
+    proc_fake_set_live(NULL, 0);
+    CHECK(psd_proc_renice_checked(300, 1000001ULL, "firefox", 4) == PSD_ACT_GONE);
+    CHECK(psd_proc_kill_checked(300, 1000001ULL, "firefox") == PSD_ACT_GONE);
+    CHECK(proc_fake_renice_count() == 0);
+    CHECK(proc_fake_kill_count() == 0);
+}
+
+/* pid <= 1 is refused outright, as before. */
+static void test_guard_reserved_pids_refused(void)
+{
+    psd_proc_t listed = mkident(300, 1000001ULL, "firefox");
+
+    list_one(&listed);
+    CHECK(psd_proc_renice_checked(1, 0, "launchd", 4) == PSD_ACT_REFUSED);
+    CHECK(psd_proc_kill_checked(0, 0, "kernel_task") == PSD_ACT_REFUSED);
+    CHECK(proc_fake_renice_count() == 0);
+    CHECK(proc_fake_kill_count() == 0);
+}
+
+/* A monster stores 15 bytes of the name, so identity compares that much. */
+static void test_identity_name_truncation(void)
+{
+    psd_proc_t cur = mkident(300, 7ULL, "com.example.verylongname");
+
+    CHECK(psd_proc_same(&cur, 300, 7ULL, "com.example.ver"));   /* 15 bytes */
+    CHECK(!psd_proc_same(&cur, 300, 7ULL, "com.example.ve"));   /* shorter  */
+    CHECK(!psd_proc_same(&cur, 301, 7ULL, "com.example.ver"));
+    CHECK(!psd_proc_same(&cur, 300, 8ULL, "com.example.ver"));
+    CHECK(!psd_proc_same(NULL, 300, 7ULL, "com.example.ver"));
+}
+
+/* Without a start token (script entities) the id alone is the identity, as the
+ * script contract defines; with one, the name must match too. */
+static void test_identity_without_start_token(void)
+{
+    psd_proc_t entity = mkident(4123, 0ULL, "web frontend");
+
+    CHECK(psd_proc_same(&entity, 4123, 0ULL, "web frontend"));
+    CHECK(psd_proc_same(&entity, 4123, 0ULL, "relabelled"));
+    CHECK(!psd_proc_same(&entity, 4124, 0ULL, "web frontend"));
+    CHECK(!psd_proc_same(&entity, 4123, 5ULL, "web frontend"));
+}
+
+#ifdef __APPLE__
+/* The native backend, exercised READ-ONLY: listing and lookup capture a start
+ * time that agrees between the two. Never renices or kills anything. */
+static void test_macos_start_token_readonly(void)
+{
+    static psd_proc_t all[8192];
+    psd_proc_t        cur;
+    int               self = (int) getpid();
+    int               n    = proc_macos_list(all, 8192);
+    int               i    = index_of(all, n, self);
+
+    CHECK(n > 0);
+    CHECK(i >= 0);
+    CHECK(proc_macos_lookup(self, &cur) == 1);
+    CHECK(cur.start_token != 0);
+    if (i >= 0)
+    {
+        CHECK(all[i].start_token == cur.start_token);
+        CHECK(psd_proc_same(&cur, self, all[i].start_token, all[i].name));
+    }
+    CHECK(proc_macos_lookup((int) getppid(), &cur) == 1);
+    CHECK(proc_macos_lookup(999999, &cur) == 0);   /* above macOS PID_MAX */
+    CHECK(proc_macos_lookup(-1, &cur) == 0);
+}
+
+/* list() and lookup() agree about an unreaped zombie (our own child, which
+ * exits at once and is reaped here; nothing is signalled): it is still the
+ * same process until reaped, then it is gone. */
+static void test_macos_zombie_readonly(void)
+{
+    static psd_proc_t all[8192];
+    psd_proc_t        cur;
+    pid_t             child = fork();
+    int               n;
+    int               i;
+
+    if (child == 0)
+    {
+        _exit(0);
+    }
+    CHECK(child > 0);
+    if (child <= 0)
+    {
+        return;
+    }
+    usleep(200000);   /* let it exit; we have not reaped it, so it is a zombie */
+
+    n = proc_macos_list(all, 8192);
+    i = index_of(all, n, (int) child);
+    CHECK(i >= 0);
+    CHECK(proc_macos_lookup((int) child, &cur) == 1);
+    if (i >= 0)
+    {
+        CHECK(psd_proc_same(&cur, (int) child, all[i].start_token, all[i].name));
+    }
+
+    waitpid(child, NULL, 0);
+    CHECK(proc_macos_lookup((int) child, &cur) == 0);
+}
+#endif
 
 int main(void)
 {
@@ -351,6 +574,16 @@ int main(void)
     test_script_parse();
     test_script_parse_truncates();
     test_script_backend_roundtrip();
+    test_guard_same_process_acts();
+    test_guard_reused_pid_refused();
+    test_guard_vanished_pid_refused();
+    test_guard_reserved_pids_refused();
+    test_identity_name_truncation();
+    test_identity_without_start_token();
+#ifdef __APPLE__
+    test_macos_start_token_readonly();
+    test_macos_zombie_readonly();
+#endif
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);
     return checks_failed == 0 ? 0 : 1;

@@ -104,6 +104,30 @@ static unsigned long long proc_macos_prev_cpu(int pid, int *found)
     return 0;
 }
 
+/* The kernel's record of when the process started (kp_proc.p_starttime), as
+ * microseconds since the epoch. A pid is reused only after its process has
+ * exited, and the new process gets a new start time, so (pid, start) names
+ * one process lifetime. */
+static unsigned long long proc_macos_start_token(const struct kinfo_proc *kp)
+{
+    return (unsigned long long) kp->kp_proc.p_starttime.tv_sec * 1000000ULL
+         + (unsigned long long) kp->kp_proc.p_starttime.tv_usec;
+}
+
+/* Fill the identity and ownership fields of `out` from `kp` (metrics are the
+ * caller's business). */
+static void proc_macos_fill(const struct kinfo_proc *kp, psd_proc_t *out)
+{
+    out->pid         = kp->kp_proc.p_pid;
+    out->start_token = proc_macos_start_token(kp);
+    out->ppid        = kp->kp_eproc.e_ppid;
+    out->uid         = (unsigned int) kp->kp_eproc.e_ucred.cr_uid;
+    out->is_daemon   = (kp->kp_eproc.e_tdev == NODEV) ? 1 : 0;
+
+    strncpy(out->name, kp->kp_proc.p_comm, PSD_PROC_NAME_MAX - 1);
+    out->name[PSD_PROC_NAME_MAX - 1] = '\0';
+}
+
 int proc_macos_list(psd_proc_t *out, int max)
 {
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
@@ -161,10 +185,7 @@ int proc_macos_list(psd_proc_t *out, int max)
             proc_macos_rusage(pid, &fp, &cpu);
             prev = proc_macos_prev_cpu(pid, &found);
 
-            out[count].pid       = pid;
-            out[count].ppid      = kp->kp_eproc.e_ppid;
-            out[count].uid       = (unsigned int) kp->kp_eproc.e_ucred.cr_uid;
-            out[count].is_daemon = (kp->kp_eproc.e_tdev == NODEV) ? 1 : 0;
+            proc_macos_fill(kp, &out[count]);
             out[count].footprint = fp;
 
             /* CPU load over the interval; guard the cold start (no prior
@@ -177,9 +198,6 @@ int proc_macos_list(psd_proc_t *out, int max)
             {
                 out[count].cpu_percent = 0;
             }
-
-            strncpy(out[count].name, kp->kp_proc.p_comm, PSD_PROC_NAME_MAX - 1);
-            out[count].name[PSD_PROC_NAME_MAX - 1] = '\0';
 
             if (newcount < PROC_HIST_MAX)
             {
@@ -198,6 +216,33 @@ int proc_macos_list(psd_proc_t *out, int max)
 
     free(procs);
     return count;
+}
+
+int proc_macos_lookup(int pid, psd_proc_t *out)
+{
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+
+    if (pid <= 0 || out == NULL)
+    {
+        return 0;
+    }
+
+    /* For a pid with no process, sysctl succeeds with len == 0. A zombie is
+     * reported like list() reports it: its pid cannot be reused until its
+     * parent reaps it, so it is still the same process (and signalling it is
+     * harmless). */
+    memset(&kp, 0, sizeof(kp));
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) < 0 || len < sizeof(kp)
+        || kp.kp_proc.p_pid != pid)
+    {
+        return 0;
+    }
+
+    memset(out, 0, sizeof(*out));
+    proc_macos_fill(&kp, out);
+    return 1;
 }
 
 unsigned int proc_macos_current_uid(void)
@@ -249,4 +294,5 @@ const proc_backend_t proc_macos_backend =
     proc_macos_current_uid,
     proc_macos_renice,
     proc_macos_kill,
+    proc_macos_lookup,
 };

@@ -24,7 +24,14 @@ void proc_fake_install(unsigned int uid);
  * list() call, in FIFO order. */
 void proc_fake_push_snapshot(const psd_proc_t *procs, int n);
 
-/* Forget queued snapshots and the action log (keeps the uid). */
+/* Replace what lookup() treats as the live processes with `procs[0..n)` (a
+ * deep copy; n == 0 means none is alive). Until called, lookup() answers from
+ * the last snapshot list() served. Models a process exiting, or its pid being
+ * reused, between a listing and an action. */
+void proc_fake_set_live(const psd_proc_t *procs, int n);
+
+/* Forget queued snapshots, the live override and the action log (keeps the
+ * uid). */
 void proc_fake_reset(void);
 
 /* Action log inspectors. */

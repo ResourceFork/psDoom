@@ -301,6 +301,7 @@ typedef struct mobj_s
     // monster that is not a process-monster).
     int			psd_pid;
     char		psd_name[16];
+    unsigned long long	psd_start;	// process start token (pid-reuse guard)
 } mobj_t;
 
 

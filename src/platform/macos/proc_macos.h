@@ -26,6 +26,12 @@ void         proc_macos_renice(int pid, int nice_delta);
 /* Ask `pid` to terminate (SIGTERM). Returns 1 on success, 0 on failure. */
 int          proc_macos_kill(int pid);
 
+/* Re-read one pid now (sysctl KERN_PROC_PID): fills identity and ownership
+ * (pid, start_token, ppid, uid, is_daemon, name; metrics 0) and returns 1, or
+ * returns 0 if no process has that pid. Agrees with proc_macos_list (an
+ * unreaped zombie is reported, as list() reports it). */
+int          proc_macos_lookup(int pid, psd_proc_t *out);
+
 #ifdef __cplusplus
 }
 #endif

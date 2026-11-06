@@ -20,6 +20,13 @@ static int             fake_snap_count;   /* queued snapshots          */
 static int             fake_snap_next;    /* next to serve             */
 static unsigned int    fake_uid;
 
+/* What lookup() sees as the processes alive "now": the last snapshot list()
+ * served, unless a test overrides it with proc_fake_set_live() to model a
+ * process exiting or its pid being reused between a listing and an action. */
+static const fake_snapshot_t *fake_last_served;
+static fake_snapshot_t        fake_live;
+static int                    fake_live_set;
+
 static int fake_renice_count;
 static int fake_kill_count;
 static int fake_last_renice_pid;
@@ -49,6 +56,7 @@ static int fake_list(psd_proc_t *out, int max)
     {
         s = &fake_snaps[fake_snap_count - 1];
     }
+    fake_last_served = s;
 
     n = (s->count < max) ? s->count : max;
     for (i = 0; i < n; i++)
@@ -77,12 +85,33 @@ static int fake_kill(int pid)
     return 1;
 }
 
+static int fake_lookup(int pid, psd_proc_t *out)
+{
+    const fake_snapshot_t *s = fake_live_set ? &fake_live : fake_last_served;
+    int i;
+
+    if (s == NULL || out == NULL)
+    {
+        return 0;
+    }
+    for (i = 0; i < s->count; i++)
+    {
+        if (s->procs[i].pid == pid)
+        {
+            *out = s->procs[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static const proc_backend_t fake_backend =
 {
     fake_list,
     fake_current_uid,
     fake_renice,
     fake_kill,
+    fake_lookup,
 };
 
 /* ----------------------------------------------------------------- public */
@@ -96,6 +125,9 @@ void proc_fake_reset(void)
     fake_last_renice_pid   = 0;
     fake_last_renice_delta = 0;
     fake_last_kill_pid     = 0;
+    fake_last_served       = NULL;
+    fake_live_set          = 0;
+    fake_live.count        = 0;
 }
 
 void proc_fake_install(unsigned int uid)
@@ -129,6 +161,26 @@ void proc_fake_push_snapshot(const psd_proc_t *procs, int n)
     {
         s->procs[i] = procs[i];
     }
+}
+
+void proc_fake_set_live(const psd_proc_t *procs, int n)
+{
+    int i;
+
+    if (n < 0 || procs == NULL)
+    {
+        n = 0;
+    }
+    if (n > FAKE_MAX_PROCS)
+    {
+        n = FAKE_MAX_PROCS;
+    }
+    fake_live.count = n;
+    for (i = 0; i < n; i++)
+    {
+        fake_live.procs[i] = procs[i];
+    }
+    fake_live_set = 1;
 }
 
 int proc_fake_renice_count(void)     { return fake_renice_count; }

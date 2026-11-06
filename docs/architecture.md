@@ -41,12 +41,15 @@ backend           ->   proc_select         ->   psdoom
 ### Modules
 
 - `src/platform/` — the OS-facing layer, behind a backend interface (no engine, no policy):
-  - `proc_backend.{h,c}` / `proc_types.h` — the four-operation backend **vtable**
-    (`list` / `current_uid` / `renice` / `kill`) over a backend-neutral `psd_proc_t`. The rest of
-    psDoom calls `proc_backend()->…`, so the OS is swappable.
+  - `proc_backend.{h,c}` / `proc_types.h` — the five-operation backend **vtable**
+    (`list` / `current_uid` / `renice` / `kill` / `lookup`) over a backend-neutral `psd_proc_t`.
+    The rest of psDoom calls `proc_backend()->…`, so the OS is swappable. The game acts only
+    through `psd_proc_renice_checked` / `psd_proc_kill_checked` (see the
+    [safety model](#safety-model)).
   - `macos/proc_macos.c` — the native backend: enumerate via `sysctl(KERN_PROC_ALL)` (pid, ppid,
-    uid, daemon flag, short name), memory/CPU via `proc_pid_rusage`, renice via `setpriority`,
-    kill via `kill(pid, SIGTERM)`. Registers `proc_macos_backend` (the default).
+    uid, daemon flag, short name, start time), memory/CPU via `proc_pid_rusage`, re-read one pid
+    via `sysctl(KERN_PROC_PID)`, renice via `setpriority`, kill via `kill(pid, SIGTERM)`.
+    Registers `proc_macos_backend` (the default).
   - `proc_script.{h,c}` — an external-script backend that shells out to user commands; see the
     [Script backend](#external-script-backend) feature and [`script-backend.md`](script-backend.md).
   - `proc_fake.{h,c}` — a scriptable in-memory backend for the off-machine tests.
@@ -84,7 +87,7 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
 
 | Concern                | File : symbol                                           | Hook                                                                                                    |
 | ---------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Per-monster state      | `p_mobj.h` : `mobj_t`                                   | add `psd_pid` and `psd_name` fields                                                                     |
+| Per-monster state      | `p_mobj.h` : `mobj_t`                                   | add `psd_pid`, `psd_name` and `psd_start` fields                                                        |
 | Spawn → process        | `p_mobj.c` : `P_SpawnMapThing`, `P_SpawnMobj`           | associate `MF_COUNTKILL` monsters with a process, or spawn on demand                                    |
 | Wound → renice         | `p_inter.c` : `P_DamageMobj`                            | call `psdoom_wound(target)` for a surviving process-monster                                             |
 | Kill → kill            | `p_inter.c` : `P_KillMobj`                              | call `psdoom_kill(target)` for a process-monster                                                        |
@@ -155,7 +158,7 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   swarm of inert Lost Souls around its monster, degraded to a drawable type on the shareware WAD.
   The souls are cosmetic threats the player clears by shooting; they never signal anything. (See
   [design notes](#3-fork-bomb-swarms).)
-- **Backends behind a vtable.** The OS layer is a four-op interface (`proc_backend_t`) with a
+- **Backends behind a vtable.** The OS layer is a five-op interface (`proc_backend_t`) with a
   native macOS implementation, a scriptable fake (for tests), and an external-script backend.
   (See [design notes](#1-platform-backend-interface--fake-backend).)
 - **External-script backend.** Setting `PSDOOM_POLL_CMD` wires psDoom to _anything_ you can
@@ -184,8 +187,9 @@ external-script backend) plug into.
 
 ### 1. Platform backend interface + fake backend
 
-**Why:** the OS layer is a four-operation contract
-(`proc_macos_list` / `proc_macos_current_uid` / `proc_macos_renice` / `proc_macos_kill`).
+**Why:** the OS layer is a five-operation contract
+(`proc_macos_list` / `proc_macos_current_uid` / `proc_macos_renice` / `proc_macos_kill` /
+`proc_macos_lookup`).
 Lifting it behind a vtable unlocks (a) a deterministic _fake_ backend so the pure triage and
 classification policy can be unit-tested off-machine, and (b) a future Linux backend
 (`/proc`, `setpriority`, `kill`) with zero changes above the interface.
@@ -200,6 +204,7 @@ classification policy can be unit-tested off-machine, and (b) a future Linux bac
       unsigned int (*current_uid)(void);
       void         (*renice)(int pid, int nice_delta);
       int          (*kill)(int pid);
+      int          (*lookup)(int pid, psd_proc_t *out); /* re-read one pid now */
   } proc_backend_t;
   const proc_backend_t *proc_backend(void);        /* current backend      */
   void                  proc_backend_set(const proc_backend_t *b); /* override */
@@ -210,7 +215,8 @@ classification policy can be unit-tested off-machine, and (b) a future Linux bac
 - `proc_macos.c` — exports `const proc_backend_t proc_macos_backend`; `proc_select.c` / `psdoom.c`
   call `proc_backend()->list(...)` etc.
 - `src/platform/proc_fake.c` — serves a scripted array of snapshots (one per `list()` call) and
-  logs `renice`/`kill` for assertions. Drives a host test (`tests/`, its own CMake target, _not_
+  logs `renice`/`kill` for assertions. `lookup()` answers from the last served snapshot, or from a
+  live set a test installs (`proc_fake_set_live`) to model a pid exiting or being reused. Drives a host test (`tests/`, its own CMake target, _not_
   linked into the engine or the `.app`).
 
 **Diff impact:** none in the vendored engine — a pure `src/` refactor + new test target.
@@ -375,6 +381,17 @@ ctest --test-dir build --output-on-failure
   `ppid` up from the game) never spawn as monsters, so a stray shot can't signal them.
 - **Kill policy** defaults to renice-only (recoverable); real killing (`SIGTERM`) is opt-in via
   the menu or `-psdoom-live`, with a simulate mode for no real effect at all.
+- **Pid-reuse guard:** a monster records its process's pid, start time and name. Each sync
+  retires a monster whose exact process (all three) is no longer listed, and immediately before
+  every renice or kill `psd_proc_*_checked` re-reads the pid (`lookup`) and acts only if all
+  three still match. On a mismatch nothing is signalled, the result is `PSD_ACT_REUSED` or
+  `PSD_ACT_GONE`, and the monster stops acting on processes and loses its label at once; it
+  can still fight until the next sync removes it. Remaining limit: a pid that exits and is
+  reused in the microseconds between the re-read and the action (`kill`, or `getpriority` +
+  `setpriority`); macOS assigns pids in sequence, so this needs a full pid wrap, and it has no
+  pid handle to close the window. Script entities carry no start time, so their identity stays
+  the `id` alone, as the contract defines; the re-read is the latest poll, so an id is acted on
+  only if that poll still lists it. The responder's own action is outside psDoom's control.
 - **Script mode** shifts safety to the script: the process-specific filter does not apply to
   arbitrary entities, and responses are exec'd without a shell so a hostile label stays inert.
   See [`script-backend.md`](script-backend.md#security-model).

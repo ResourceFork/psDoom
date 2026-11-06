@@ -78,6 +78,10 @@
  * threat the player clears by shooting. A per-parent cooldown, a per-burst cap
  * and a global live ceiling together bound how many can pile up. */
 #define PSD_SWARM_PID        (-1)  /* psd_pid tag for an inert swarm soul       */
+#define PSD_GONE_PID         (-2)  /* psd_pid tag: its process is gone or its pid
+                                    * was reused; acts on nothing and shows no
+                                    * label until the next sync removes it (see
+                                    * PSD_MarkGone)                             */
 #define PSD_FORK_BURST         5   /* child-count jump (per sync) that triggers */
 #define PSD_SWARM_PER_BURST    6   /* max souls spawned per detected burst      */
 #define PSD_MAX_SWARM_LIVE    24   /* global ceiling on live swarm souls        */
@@ -128,14 +132,23 @@ static int        psd_next_sync;               /* leveltime gate              */
 static psd_proc_t psd_selected[PSD_CANDIDATE_CAP]; /* curated set, reused each sync */
 
 /* Processes the player has killed on the current level. Remembered (by pid +
- * name, so a reused pid isn't wrongly suppressed) so psdoom_sync doesn't
- * respawn them -- essential when the kill policy doesn't actually terminate the
- * process, and the masking death-corpse may be retired. Cleared on level restart. */
+ * start token + name, so a reused pid isn't wrongly suppressed) so psdoom_sync
+ * doesn't respawn them -- essential when the kill policy doesn't actually
+ * terminate the process, and the masking death-corpse may be retired. Cleared
+ * on level restart. */
 typedef struct
 {
-    int  pid;
-    char name[16];
+    int                pid;
+    unsigned long long start;
+    char               name[16];
 } psd_killed_t;
+
+/* Identity names are compared over PSD_PROC_IDENT_NAME_LEN bytes; the monster
+ * and the killed list must be able to hold that many plus the terminator. */
+typedef char psd_check_ident_len_mobj[
+    (sizeof(((mobj_t *) 0)->psd_name) > PSD_PROC_IDENT_NAME_LEN) ? 1 : -1];
+typedef char psd_check_ident_len_killed[
+    (sizeof(((psd_killed_t *) 0)->name) > PSD_PROC_IDENT_NAME_LEN) ? 1 : -1];
 
 static psd_killed_t psd_killed[PSD_MAX_KILLED];
 static int          psd_killed_count;
@@ -179,7 +192,8 @@ static boolean PSD_OnSpawnLevel(void)
     return gamestate == GS_LEVEL && psd_intro_state == PSD_INTRO_ACTIVE;
 }
 
-/* True if `pid` is in this sync's curated collection. */
+/* True if `pid` is in this sync's curated collection. Used only for the
+ * pid-keyed bookkeeping tables; monsters use PSD_MonsterSelected. */
 static boolean PSD_InSelected(int pid, int n)
 {
     int i;
@@ -194,15 +208,67 @@ static boolean PSD_InSelected(int pid, int n)
     return false;
 }
 
-/* True if (pid, name) was killed this level. The name is compared with the same
- * truncation used when storing it, so it matches the mobj's psd_name. */
-static boolean PSD_IsKilled(int pid, const char *name)
+/* True if the process `mo` was spawned for -- the same pid, start token and
+ * name, not merely the same pid -- is in this sync's curated collection. A pid
+ * the OS has reused for another process does not count. */
+static boolean PSD_MonsterSelected(const mobj_t *mo, int n)
+{
+    int i;
+
+    for (i = 0; i < n; i++)
+    {
+        if (psd_proc_same(&psd_selected[i], mo->psd_pid, mo->psd_start,
+                          mo->psd_name))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Log a checked action that made no backend call. Process names and script
+ * labels are untrusted, so only printable ASCII reaches the terminal. */
+static void PSD_LogSkipped(const mobj_t *mo, psd_act_result_t r,
+                           const char *action)
+{
+    char safe[sizeof(mo->psd_name)];
+    int  i;
+
+    for (i = 0; i < (int) sizeof(safe) - 1 && mo->psd_name[i] != '\0'; i++)
+    {
+        unsigned char c = (unsigned char) mo->psd_name[i];
+        safe[i] = (c >= 0x20 && c < 0x7f) ? (char) c : '?';
+    }
+    safe[i] = '\0';
+
+    fprintf(stderr, "psDoom: %s skipped: pid %d (%s) %s\n",
+            action, mo->psd_pid, safe,
+            r == PSD_ACT_REUSED ? "now belongs to another process; retiring its monster"
+          : r == PSD_ACT_GONE   ? "has exited; retiring its monster"
+                                : "could not be verified");
+}
+
+/* A checked renice/kill found that `mo`'s process has exited or its pid now
+ * belongs to another process. At once the monster stops acting on processes
+ * and loses its label (it can still fight); the next sync removes it. It is
+ * not removed here because the engine is still using it inside
+ * P_DamageMobj / P_KillMobj. */
+static void PSD_MarkGone(mobj_t *mo, psd_act_result_t r, const char *action)
+{
+    PSD_LogSkipped(mo, r, action);
+    mo->psd_pid = PSD_GONE_PID;
+}
+
+/* True if (pid, start, name) was killed this level. The name is compared with
+ * the same truncation used when storing it, so it matches the mobj's psd_name.
+ * Script entities have start 0, so for them this stays (id, label). */
+static boolean PSD_IsKilled(int pid, unsigned long long start, const char *name)
 {
     int i;
 
     for (i = 0; i < psd_killed_count; i++)
     {
-        if (psd_killed[i].pid == pid
+        if (psd_killed[i].pid == pid && psd_killed[i].start == start
             && strncmp(psd_killed[i].name, name,
                        sizeof(psd_killed[i].name) - 1) == 0)
         {
@@ -212,16 +278,18 @@ static boolean PSD_IsKilled(int pid, const char *name)
     return false;
 }
 
-/* Remember that the monster for (pid, name) was killed, so psdoom_sync won't
- * respawn it this level. */
-static void PSD_MarkKilled(int pid, const char *name)
+/* Remember that the monster for (pid, start, name) was killed, so psdoom_sync
+ * won't respawn it this level. */
+static void PSD_MarkKilled(int pid, unsigned long long start, const char *name)
 {
-    if (pid <= 1 || psd_killed_count >= PSD_MAX_KILLED || PSD_IsKilled(pid, name))
+    if (pid <= 1 || psd_killed_count >= PSD_MAX_KILLED
+        || PSD_IsKilled(pid, start, name))
     {
         return;
     }
 
     psd_killed[psd_killed_count].pid = pid;
+    psd_killed[psd_killed_count].start = start;
     strncpy(psd_killed[psd_killed_count].name, name,
             sizeof(psd_killed[psd_killed_count].name) - 1);
     psd_killed[psd_killed_count].name[sizeof(psd_killed[psd_killed_count].name) - 1] = '\0';
@@ -410,6 +478,7 @@ static boolean PSD_SpawnMonster(const psd_proc_t *p)
 
                 mo->flags &= ~MF_COUNTKILL;   /* not part of the level kill % */
                 mo->psd_pid = p->pid;
+                mo->psd_start = p->start_token;
                 strncpy(mo->psd_name, p->name, sizeof(mo->psd_name) - 1);
                 mo->psd_name[sizeof(mo->psd_name) - 1] = '\0';
                 return true;
@@ -997,8 +1066,9 @@ void psdoom_sync(void)
     n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
     psd_collect_count++;
 
-    /* 1) Retire monsters no longer in the curated set (process exited, or it
-     *    dropped below the relevance cut). */
+    /* 1) Retire monsters no longer in the curated set (process exited, its pid
+     *    was reused, or it dropped below the relevance cut), and monsters a
+     *    checked action already found gone. */
     for (th = thinkercap.next; th != &thinkercap; th = next)
     {
         next = th->next;
@@ -1006,7 +1076,8 @@ void psdoom_sync(void)
         if (th->function.acp1 == (actionf_p1) P_MobjThinker)
         {
             mobj_t *mo = (mobj_t *) th;
-            if (mo->psd_pid > 0 && !PSD_InSelected(mo->psd_pid, n))
+            if (mo->psd_pid == PSD_GONE_PID
+                || (mo->psd_pid > 0 && !PSD_MonsterSelected(mo, n)))
             {
                 P_RemoveMobj(mo);
                 removed++;
@@ -1023,7 +1094,7 @@ void psdoom_sync(void)
     {
         const psd_proc_t *p = &psd_selected[i];
 
-        if (PSD_IsKilled(p->pid, p->name))
+        if (PSD_IsKilled(p->pid, p->start_token, p->name))
         {
             continue;
         }
@@ -1054,8 +1125,19 @@ void psdoom_wound(struct mobj_s *target)
 
     if (mo != NULL && mo->psd_pid > 1 && psdoom_should_renice())
     {
+        psd_act_result_t r;
+
         psd_backend_action_count++;
-        proc_backend()->renice(mo->psd_pid, PSD_WOUND_NICE);
+        r = psd_proc_renice_checked(mo->psd_pid, mo->psd_start, mo->psd_name,
+                                    PSD_WOUND_NICE);
+        if (r == PSD_ACT_GONE || r == PSD_ACT_REUSED)
+        {
+            PSD_MarkGone(mo, r, "renice");
+        }
+        else if (r == PSD_ACT_REFUSED)
+        {
+            PSD_LogSkipped(mo, r, "renice");
+        }
     }
 }
 
@@ -1087,13 +1169,26 @@ void psdoom_kill(struct mobj_s *target)
 
     if (psdoom_should_kill())
     {
+        psd_act_result_t r;
+
         psd_backend_action_count++;
-        proc_backend()->kill(mo->psd_pid);
+        r = psd_proc_kill_checked(mo->psd_pid, mo->psd_start, mo->psd_name);
+        if (r == PSD_ACT_GONE || r == PSD_ACT_REUSED)
+        {
+            /* Nothing was signalled, and the kill was not of the process now
+             * holding the pid, so don't remember it as killed. */
+            PSD_MarkGone(mo, r, "kill");
+            return;
+        }
+        if (r == PSD_ACT_REFUSED)
+        {
+            PSD_LogSkipped(mo, r, "kill");
+        }
     }
 
     /* Remember it so psdoom_sync won't respawn it -- crucial when the kill
      * policy leaves the real process running. */
-    PSD_MarkKilled(mo->psd_pid, mo->psd_name);
+    PSD_MarkKilled(mo->psd_pid, mo->psd_start, mo->psd_name);
 }
 
 /* --------------------------------------------------------------- label draw */
