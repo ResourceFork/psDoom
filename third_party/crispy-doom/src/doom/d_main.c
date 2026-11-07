@@ -1478,9 +1478,9 @@ static const char *const loadparms[] = {"-file", "-merge", NULL};
 
 #define PSDOOM_BUNDLED_ARENA_ARG "-psdoom-bundled-arena"
 
-/* The shareware exception is valid only for the arena physically bundled next
- * to this engine. The loaded WAD set must contain exactly the IWAD and that
- * resource, and PSDINTRO must come from the resource itself. */
+/* The intro is available only for the arena physically bundled next to this
+ * engine. The loaded WAD set must contain exactly the IWAD and that resource,
+ * and PSDINTRO must come from the resource itself. */
 static boolean D_IsBundledPsDoomArena(void)
 {
     char engine_path[PATH_MAX];
@@ -2184,8 +2184,7 @@ void D_DoomMain (void)
     savegamedir = M_GetSaveGameDir(D_SaveGameIWADName(gamemission, gamevariant));
 
     // Check for -file in shareware
-    if (modifiedgame && (gamevariant != freedoom)
-        && !bundled_psdoom_arena)
+    if (modifiedgame && (gamevariant != freedoom))
     {
 	// These are the lumps that will be checked in IWAD,
 	// if any one is not present, execution will be aborted.

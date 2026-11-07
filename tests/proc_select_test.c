@@ -11,7 +11,8 @@
  * tests spawn only their own poll and respond commands and never signal
  * anything. proc_select calls one
  * option getter (psdoom_all_users_enabled); we stub it here rather than link
- * the engine-coupled options module.
+ * the engine-coupled options module. The launcher's IWAD selection tests
+ * (iwad_select_test.c) run from the same binary.
  *
  * Returns 0 if every check passes, 1 otherwise.
  */
@@ -41,6 +42,8 @@
 /* ---- stub for the one option getter proc_select references --------------- */
 static int stub_all_users;
 int psdoom_all_users_enabled(void) { return stub_all_users; }
+
+void iwad_select_tests(int *checks_run, int *checks_failed); /* iwad_select_test.c */
 
 /* ---- tiny check harness -------------------------------------------------- */
 static int checks_run;
@@ -1145,6 +1148,7 @@ int main(int argc, char **argv)
     test_macos_zombie_readonly();
     test_macos_renice_refuses_reserved();
 #endif
+    iwad_select_tests(&checks_run, &checks_failed);
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);
     return checks_failed == 0 ? 0 : 1;

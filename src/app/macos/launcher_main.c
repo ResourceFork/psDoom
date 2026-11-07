@@ -1,10 +1,12 @@
 /*
  * psDoom.app launcher
  *
- * This compiled launcher is the bundle's CFBundleExecutable. It locates a Doom
- * IWAD, loads the bundled introduction resource when appropriate, and exec()s
- * the psDoom engine binary that lives beside it in Contents/MacOS. The engine
- * presents stock DEMO1 first and activates the intro only through New Game.
+ * This compiled launcher is the bundle's CFBundleExecutable. It selects a Doom
+ * IWAD (iwad_select.h: registered Doom, else the bundled Freedoom, never
+ * shareware), loads the bundled introduction resource when that IWAD supports
+ * it, and exec()s the psDoom engine binary that lives beside it in
+ * Contents/MacOS. The engine presents stock DEMO1 first and activates the
+ * intro only through New Game.
  */
 
 #include <errno.h>
@@ -17,6 +19,8 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+
+#include "iwad_select.h"
 
 #define PSDOOM_BUNDLED_ARENA_ARG "-psdoom-bundled-arena"
 
@@ -85,10 +89,42 @@ int main(int argc, char **argv)
     snprintf(arena, sizeof(arena), "%s/Resources/psdoom-arena.wad",
              contents_dir);
 
+    char resources_dir[PATH_MAX];
+    snprintf(resources_dir, sizeof(resources_dir), "%s/Resources",
+             contents_dir);
+
     /*
-     * IWAD search path: the bundle's Resources/ dir, then the per-user support
-     * dir. Only set if the caller hasn't already chosen one, so command-line use
-     * and DOOMWADDIR overrides keep working.
+     * Choose the IWAD from the caller's own environment, before this launcher
+     * adds a DOOMWADPATH of its own. The engine's -iwad check takes the first
+     * "-iwad <file>" pair, so the launcher looks at the same one.
+     */
+    const char *explicit_iwad = NULL;
+    for (int i = 1; i + 1 < argc; i++)
+    {
+        if (strcasecmp(argv[i], "-iwad") == 0)
+        {
+            explicit_iwad = argv[i + 1];
+            break;
+        }
+    }
+
+    psd_iwad_query_t query = {
+        .explicit_iwad = explicit_iwad,
+        .doomwaddir = getenv("DOOMWADDIR"),
+        .doomwadpath = getenv("DOOMWADPATH"),
+        .home = getenv("HOME"),
+        .resources_dir = resources_dir,
+        .probe = psd_iwad_probe_file,
+        .probe_ctx = NULL,
+    };
+    psd_iwad_choice_t iwad;
+    psd_iwad_select(&query, &iwad);
+
+    /*
+     * Search path for anything else the engine looks up by name (-file, a bare
+     * -iwad name): the bundle's Resources/ dir, then the per-user support dir.
+     * Only set if the caller hasn't already chosen one, so command-line use and
+     * DOOMWADDIR overrides keep working.
      */
     if (getenv("DOOMWADDIR") == NULL && getenv("DOOMWADPATH") == NULL)
     {
@@ -109,7 +145,11 @@ int main(int argc, char **argv)
         setenv("DOOMWADPATH", wadpath, 1);
     }
 
-    /* Explicit map, demo, save, response, or PWAD controls suppress the intro. */
+    /*
+     * Explicit map, demo, save, response, or PWAD controls suppress the intro,
+     * and so does an IWAD the arena is not for (shareware, Doom II, unknown):
+     * those run as stock Crispy Doom.
+     */
     int has_map_override = 0;
     for (int i = 1; i < argc; i++)
     {
@@ -119,14 +159,16 @@ int main(int argc, char **argv)
             break;
         }
     }
-    int inject_arena = !has_map_override && access(arena, R_OK) == 0;
+    int inject_arena = iwad.arena_ok && !has_map_override
+                       && access(arena, R_OK) == 0;
 
     /*
-     * Build the child argv: engine path, optional trusted arena, then pass
-     * through caller arguments. Caller-provided copies of the launcher-only
-     * trust marker are always discarded.
+     * Build the child argv: engine path, the selected IWAD unless the caller
+     * named one, optional trusted arena, then pass through caller arguments.
+     * Caller-provided copies of the launcher-only trust marker are always
+     * discarded.
      */
-    char **child_argv = calloc((size_t)argc + 4, sizeof(char *));
+    char **child_argv = calloc((size_t)argc + 6, sizeof(char *));
     if (child_argv == NULL)
     {
         fprintf(stderr, "psDoom: out of memory\n");
@@ -135,6 +177,11 @@ int main(int argc, char **argv)
 
     int n = 0;
     child_argv[n++] = engine;
+    if (iwad.pass_iwad)
+    {
+        child_argv[n++] = "-iwad";
+        child_argv[n++] = iwad.path;
+    }
     if (inject_arena)
     {
         child_argv[n++] = "-file";

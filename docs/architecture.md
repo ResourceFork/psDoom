@@ -24,7 +24,7 @@ examples/                  example script backends (demo, docker)
 tests/                     off-machine host tests (triage + backend plumbing)
 CMakeLists.txt             single build: engine + generated arena + psDoom.app bundle
 docs/                      architecture.md (this), script-backend.md, handoff.md, original/ (archive)
-wads/                      user-supplied runtime IWAD (gitignored, not GPL)
+wads/                      downloaded Freedoom IWAD + notices (gitignored; tools/fetch-freedoom.sh)
 ```
 
 ## Architecture
@@ -119,7 +119,7 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   process cells, ring connectivity, pillar separation, pickup zones, exit dimensions, stock
   `E1M1`/`E1M2`, and optional IWAD resources.
 - **One-time intro lifecycle.** A no-map-arguments launch verifies the bundled resource, enters
-  READY, and immediately plays stock `DEMO1` on IWAD E1M5. Process synchronization does not
+  READY, and immediately plays the IWAD's stock `DEMO1`. Process synchronization does not
   enumerate or reconcile processes during demos. Completing the regular New Game episode/skill
   flow requests the intro; the deferred New Game action consumes that request into ACTIVE and
   loads `PSDINTRO`. Its exit clears intro state and starts unmodified IWAD `E1M1`; normal
@@ -333,10 +333,19 @@ call in `psdoom_init`.
 Single top-level CMake project (out-of-source, keeps `third_party/` pristine):
 
 ```bash
+tools/fetch-freedoom.sh     # once: pinned Freedoom 0.13.0 into wads/
 cmake -S . -B build
 cmake --build build -j
 open build/psDoom.app
 ```
+
+`tools/fetch-freedoom.sh` downloads the official Freedoom 0.13.0 release over
+HTTPS, refuses it unless its SHA-256 matches `tools/freedoom.sha256`, and
+extracts only `freedoom1.wad`, `COPYING.txt`, `CREDITS.txt` and
+`CREDITS-MUSIC.txt` into `wads/`. Configure checks `wads/freedoom1.wad`
+against the same pin (and re-checks whenever it changes) and stops with a
+message naming the script when it is missing or different. Configure with
+`-DPSDOOM_BUNDLE_FREEDOOM=OFF` to build an app with no bundled IWAD.
 
 CMake runs the Python generator and validator before linking the app, writes
 `build/generated/psdoom-arena.wad`, and copies the validated result into the
@@ -347,13 +356,13 @@ resource. The generator and both validator modes can also be run directly:
 ```bash
 python3 tools/generate_octagonal_arena.py --output /tmp/psdoom-arena.wad
 python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad
-python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad --iwad wads/DOOM1.WAD
+python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad --iwad wads/freedoom1.wad
 ```
 
-The `--iwad` check is optional and verifies every referenced texture/flat plus
+The `--iwad` check verifies every referenced texture/flat plus
 `SKY1`, `F_SKY1`, the exit-switch pair, and stock `E1M1`/`E1M2`. CMake generates
 and validates a temporary file before atomically publishing the declared WAD
-output. Generation and structural validation require Python 3.10 or newer and
+output; the build runs it against the bundled `freedoom1.wad`. Generation and structural validation require Python 3.10 or newer and
 have no third-party Python or WAD-tool dependencies.
 
 Xcode project, generated from the same CMake:
@@ -380,18 +389,35 @@ ctest --test-dir build --output-on-failure
   Mach-O, so the bundle is signable. It `exec()`s `Contents/MacOS/crispy-doom`.
 - **Arena resource:** the generated classic Doom PWAD is copied to
   `Contents/Resources/psdoom-arena.wad`. With no explicit map/demo/save controls, the launcher
-  injects the arena and a launcher-only marker. The engine grants the shareware exception only when
-  that marker accompanies the actual bundle resource, `PSDINTRO` belongs to it, and no additional
-  PWAD is loaded; caller-provided marker copies are discarded. A verified normal launch plays the
+  injects the arena and a launcher-only marker, but only on an IWAD the arena supports (below).
+  The engine makes the intro available only when that marker accompanies the actual bundle
+  resource, `PSDINTRO` belongs to it, and no additional PWAD is loaded; caller-provided marker
+  copies are discarded. Crispy's stock `-file` lockout is unmodified: there is no shareware
+  exception, so the launcher never adds the arena to a shareware IWAD. A verified normal launch plays the
   stock `DEMO1` attract demo first. Only the completed New Game skill flow changes READY to PENDING,
   then the deferred New Game action makes the intro ACTIVE. `-file`, `-merge`, `-warp`, `-episode`,
   demos, saves, recording, test controls, and response files suppress injection and retain normal
   Crispy behavior. The intro exit schedules stock IWAD `E1M1`, clears intro-only process
   synchronization, and leaves later progression unchanged.
-- **IWAD discovery:** at build time, if the user-supplied, gitignored `wads/DOOM1.WAD` exists it
-  is copied unchanged into `Resources/`. At launch the launcher sets `DOOMWADPATH` (unless the
-  caller already set `DOOMWADDIR`/`DOOMWADPATH`) to search, in order: the app's
-  `Contents/Resources/`, then `~/Library/Application Support/psDoom/`.
+- **Bundled IWAD:** `wads/freedoom1.wad` (Freedoom 0.13.0, BSD-3-Clause) is copied into
+  `Resources/` with the `Freedoom-COPYING.txt`, `Freedoom-CREDITS.txt` and
+  `Freedoom-CREDITS-MUSIC.txt` notices its licence requires. A shareware `DOOM1.WAD` is no
+  longer bundled.
+- **IWAD selection:** the launcher chooses the IWAD itself (`src/app/macos/iwad_select.c`, an
+  engine-free function covered by the host tests) and passes it as `-iwad`:
+  1. a caller's `-iwad` is passed through untouched; the arena is added only when that file is
+     registered/Ultimate Doom or Freedoom Phase 1;
+  2. otherwise the first registered or Ultimate `DOOM.WAD` in `DOOMWADDIR`, each `DOOMWADPATH`
+     entry, then `~/Library/Application Support/psDoom/`;
+  3. otherwise `Resources/freedoom1.wad` (named even when missing, so the engine reports it
+     rather than searching on its own).
+
+  Files are classified by their lump directory with Crispy's own rules (`FREEDOOM` lump; `MAP01`;
+  `E4M1`/`E3M1` plus the lumps Crispy's registered check requires). Shareware and Doom
+  II-format IWADs are never chosen automatically and never get the arena: the arena validator
+  requires a stock `E1M1`, so it has not been validated on Doom II. The launcher still sets
+  `DOOMWADPATH` (unless the caller set `DOOMWADDIR`/`DOOMWADPATH`) to `Contents/Resources/`
+  then `~/Library/Application Support/psDoom/` for anything else the engine looks up by name.
 - **Distribution follow-ups** (not needed to run locally; future home: `packaging/macos/`):
   - Bundle the Homebrew dylibs (SDL2 / SDL2_mixer / libsamplerate / libpng / FluidSynth) into
     `Contents/Frameworks` and rewrite install names (`install_name_tool` / `dylibbundler`).
@@ -429,9 +455,9 @@ ctest --test-dir build --output-on-failure
 2. **Safety polish.** A kill confirmation / undo grace period (all-users mode and a non-lethal
    "safe" kill policy already exist via the psDoom options menu / `-psdoom-*` flags).
 
-> Monster variety note: the bundled shareware `DOOM1.WAD` only has Episode 1 monster sprites, so
-> the classifier caps at Baron of Hell. Point psDoom at a registered Doom or Doom II IWAD to get
-> Hell Knights and Cyberdemons for your heaviest processes.
+> Monster variety note: Freedoom Phase 1 and registered Doom have no Hell Knight sprite (a Doom II
+> monster), so that tier falls back to the next lighter drawable monster; every other tier,
+> including the Cyberdemon tier and the Lost Soul fork swarm, is drawn.
 
-> Runtime note: a Doom or Doom II WAD is required to launch (not committed — not GPL). A shareware
-> `DOOM1.WAD` in `wads/` is bundled automatically by the build.
+> Runtime note: no user IWAD is required. The build bundles Freedoom Phase 1, downloaded by
+> `tools/fetch-freedoom.sh` (never committed); a registered `DOOM.WAD` takes precedence.

@@ -19,51 +19,69 @@ memory; you can instead size them by recent CPU load.
 ![Overhead schematic of the psDoom octagonal sky arena](docs/octagonal-sky-arena-overview.svg)
 
 The octagonal sky arena is a one-time process-management level, not a
-replacement campaign map. psDoom starts by playing the stock Doom demo. Choose
+replacement campaign map. psDoom starts by playing the game's own demo. Choose
 **New Game** to enter the process arena (`PSDINTRO`); leave it through its exit
-to continue with the unmodified Doom campaign from `E1M1` onward.
+to continue with the unmodified campaign from `E1M1` onward.
 
 ## What you need
 
 - macOS 11 or later.
 - CMake 3.16 or later.
 - Python 3.10 or later.
-- A user-supplied Doom IWAD. psDoom does not include Doom game data.
 - Homebrew libraries for the build:
 
   ```sh
   brew install sdl2 sdl2_mixer libsamplerate libpng fluid-synth
   ```
 
-A shareware `DOOM1.WAD` is convenient for local use. Put your own copy at
-`wads/DOOM1.WAD` before building, and the build will copy it into the app
-bundle. This file is not included in psDoom or tracked by Git.
+- An internet connection the first time you build, to download Freedoom.
+
+You do not need any Doom game data. psDoom ships with
+[Freedoom](https://freedoom.github.io/) Phase 1, a free game compatible with
+Doom. If you own Doom, psDoom can use your copy instead (see
+[Using your own Doom](#using-your-own-doom)).
 
 ## Install and launch
 
-From the project folder, build and open the app:
+From the project folder, download Freedoom, then build and open the app:
 
 ```sh
+tools/fetch-freedoom.sh
 cmake -S . -B build
 cmake --build build -j
 open build/psDoom.app
 ```
 
-If you do not use `wads/DOOM1.WAD`, put a compatible IWAD in
-`~/Library/Application Support/psDoom`, or point `DOOMWADDIR` or `DOOMWADPATH`
-to its location before launching. When neither environment variable is set, the
-launcher searches the app bundle first and then
-`~/Library/Application Support/psDoom`.
+`tools/fetch-freedoom.sh` downloads Freedoom 0.13.0 from its official GitHub
+release, checks it against the SHA-256 pinned in `tools/freedoom.sha256`, and
+puts `freedoom1.wad` with its licence and credits in the `wads/` folder. That
+folder is not tracked by Git. The build checks the file again and copies it
+into the app. If it is missing, the build stops and tells you to run the script.
+
+## Using your own Doom
+
+psDoom picks its game data when it starts:
+
+1. If you start it with `-iwad <file>`, it uses that file.
+2. Otherwise it uses a registered or Ultimate Doom `DOOM.WAD` if it finds one in
+   `DOOMWADDIR`, then in each `DOOMWADPATH` folder, then in
+   `~/Library/Application Support/psDoom`.
+3. Otherwise it uses the bundled Freedoom.
+
+The process arena runs on registered Doom, Ultimate Doom and Freedoom Phase 1.
+psDoom never picks the shareware `DOOM1.WAD` or a Doom II IWAD by itself. If
+you start it with `-iwad` on either of them, you get the plain game with no
+process arena and no process monsters.
 
 ## How to play
 
-1. Launch psDoom and watch the stock Doom demo. No process management runs
+1. Launch psDoom and watch the game's demo. No process management runs
    during demos.
 2. Choose **New Game** and complete Doom's normal episode and skill selection.
    psDoom opens its one-time process arena.
 3. Fight the labeled monsters in the arena. Their labels show process names by
    default; process IDs are available as an option.
-4. Use the exit when you are finished. The regular Doom campaign resumes at
+4. Use the exit when you are finished. The regular campaign resumes at
    `E1M1` and continues normally.
 
 Normal Doom map, demo, save, and PWAD command-line controls bypass the bundled
@@ -119,3 +137,11 @@ psDooM concept by Dennis Chao; the SourceForge psDooM project was maintained by
 David Koppenhofer and based on XDoom by Udo Munk. This macOS revival builds on
 [Crispy Doom](https://github.com/fabiangreffrath/crispy-doom), which is licensed
 under GPL-2.0-or-later.
+
+The bundled game data is [Freedoom](https://freedoom.github.io/) 0.13.0,
+Copyright (c) 2001-2024 Contributors to the Freedoom project, used under the
+BSD 3-Clause licence. Its full licence text and credits ship inside the app as
+`psDoom.app/Contents/Resources/Freedoom-COPYING.txt`,
+`Freedoom-CREDITS.txt` and `Freedoom-CREDITS-MUSIC.txt`. Freedoom is not
+covered by psDoom's MIT licence. Doom is a trademark of id Software; psDoom
+does not include any id Software game data.

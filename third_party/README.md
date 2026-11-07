@@ -34,7 +34,7 @@ tree; only these thin call-sites and fields are in here:
 | File | Change |
 | --- | --- |
 | `src/doom/p_mobj.h` | Added `int psd_pid;` + `char psd_name[16];` + `unsigned long long psd_start;` (process start token for the pid-reuse guard) to `mobj_t` (0 = ordinary monster). |
-| `src/doom/d_main.c` | Includes `psdoom.h`; verifies the actual bundle `PSDINTRO` resource before the shareware exception, makes it READY, starts stock `DEMO1` for ordinary launches, calls `psdoom_init()`, and binds persisted `psdoom_*` settings. |
+| `src/doom/d_main.c` | Includes `psdoom.h`; verifies the actual bundle `PSDINTRO` resource (`D_IsBundledPsDoomArena`) to make the intro available, makes it READY, starts stock `DEMO1` for ordinary launches, calls `psdoom_init()`, and binds persisted `psdoom_*` settings. The `-file` shareware lockout is upstream's, unmodified: the former psDoom `&& !bundled_psdoom_arena` exception was removed, so the arena never loads on shareware (the launcher does not offer it there). |
 | `src/doom/p_setup.c` | Loads `PSDINTRO` only while explicit psDoom intro state is ACTIVE; otherwise retains normal campaign map lookup. |
 | `src/doom/g_game.c`, `src/doom/g_game.h` | Adds the deferred New Game wrapper, consumes PENDING into ACTIVE immediately before `G_InitNew`, clears intro state for demos, exits to stock `E1M1`, and restores saves from the recorded WAD owner before base geometry loads. After a load, `psdoom_loaded_game()` drops process monsters that saves from older builds still hold. |
 | `src/doom/m_menu.c` | Uses the psDoom deferred New Game wrapper only from completed normal and Nightmare skill selections, preserving episode selection and confirmation flow. |
