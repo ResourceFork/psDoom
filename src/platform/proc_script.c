@@ -10,9 +10,10 @@
  *   `<verb> <id> [key=value...]`, double-forked so it never blocks the game and
  *   never leaks a zombie. Direct exec means an entity's label/id can't be
  *   interpreted as shell syntax. An id <= 1 is never handed to it.
- * - Both commands run in a process group of their own and inherit no
- *   descriptor above stderr. A poll that overruns its timeout is stopped as a
- *   whole group (its pipeline and background children too).
+ * - Both commands run in a process group of their own, get /dev/null as
+ *   stdin and inherit no descriptor above stderr. A poll that overruns its
+ *   timeout is stopped as a whole group (its pipeline and background children
+ *   too), and only its complete lines are parsed.
  */
 
 #include "proc_script.h"
@@ -31,12 +32,15 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
+#ifdef __APPLE__
+#include <libproc.h>   /* proc_pidinfo(PROC_PIDLISTFDS) */
+#endif
 
 /* ------------------------------------------------------------------ config */
 
 #define SCRIPT_CMD_MAX     1024   /* max length of a configured command string */
 #define SCRIPT_BUF_CAP  (512 * 1024) /* max poll stdout we read in one cycle    */
-#define SCRIPT_LINE_MAX    2048   /* longest poll line we parse (excess clipped) */
+#define SCRIPT_LINE_MAX    2048   /* a longer poll line is dropped, not clipped  */
 #define SCRIPT_ARGV_MAX      64   /* argv slots for the response command         */
 #define SCRIPT_SNAPSHOT_MAX 4096  /* cached entities for label lookup            */
 
@@ -111,7 +115,7 @@ static int script_parse_line(const char *line, psd_proc_t *p)
     len = strlen(line);
     if (len >= sizeof(work))
     {
-        len = sizeof(work) - 1;
+        return 0;   /* too long to parse whole: dropped, never clipped */
     }
     memcpy(work, line, len);
     work[len] = '\0';
@@ -148,10 +152,10 @@ static int script_parse_line(const char *line, psd_proc_t *p)
         }
         else if (strcmp(key, "parent") == 0)
         {
-            if (!script_parse_int(val, 0, &p->ppid))
-            {
-                p->ppid = 0;   /* malformed or out of range: no parent */
-            }
+            long long v = strtoll(val, NULL, 10);
+            /* Lenient as before, but a value beyond int range is "no
+             * parent", never a wrapped id. */
+            p->ppid = (v > 0 && v <= INT_MAX) ? (int) v : 0;
         }
         else if (strcmp(key, "weight") == 0)
         {
@@ -197,7 +201,14 @@ int psd_script_parse(const char *buf, psd_proc_t *out, int max)
 
         if (len >= sizeof(linebuf))
         {
-            len = sizeof(linebuf) - 1;
+            /* Too long to parse whole: drop it. Clipping could cut an id
+             * field into a shorter, different id. */
+            if (nl == NULL)
+            {
+                break;
+            }
+            line = nl + 1;
+            continue;
         }
         memcpy(linebuf, line, len);
         linebuf[len] = '\0';
@@ -233,12 +244,57 @@ static unsigned long long script_mono_ms(void)
          + (unsigned long long) ts.tv_nsec / 1000000ULL;
 }
 
-/* One past the highest descriptor a child could have inherited. Read in the
- * parent, before fork: getdtablesize is not async-signal-safe. */
+/* Slack above the highest open descriptor, for descriptors another thread
+ * opens between this listing and the fork. */
+#define SCRIPT_FD_SLACK 64
+
+/*
+ * One past the highest descriptor the child must close. Computed in the
+ * parent, before fork (none of this is async-signal-safe). On macOS it is
+ * the highest descriptor actually open (listed with proc_pidinfo) plus slack:
+ * that also covers a descriptor above a lowered soft RLIMIT_NOFILE, and keeps
+ * the close loop short when the limit is huge. Elsewhere, or if the listing
+ * fails, it is the descriptor table size.
+ */
 static int script_fd_limit(void)
 {
     int n = getdtablesize();
 
+#ifdef __APPLE__
+    {
+        int bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
+
+        if (bytes > 0)
+        {
+            size_t              cap  = (size_t) bytes
+                                     + SCRIPT_FD_SLACK * sizeof(struct proc_fdinfo);
+            struct proc_fdinfo *fdis = malloc(cap);
+
+            if (fdis != NULL)
+            {
+                int got = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, fdis, (int) cap);
+
+                if (got > 0)
+                {
+                    int count = got / (int) sizeof(struct proc_fdinfo);
+                    int high  = STDERR_FILENO;
+                    int i;
+
+                    for (i = 0; i < count; i++)
+                    {
+                        if (fdis[i].proc_fd > high)
+                        {
+                            high = fdis[i].proc_fd;
+                        }
+                    }
+                    free(fdis);
+                    return high + 1 + SCRIPT_FD_SLACK;
+                }
+                free(fdis);
+            }
+        }
+    }
+#endif
     return (n > 256) ? n : 256;
 }
 
@@ -252,21 +308,42 @@ static void script_set_cloexec(int fd)
     }
 }
 
+/* /dev/null for a child's stdin, opened close-on-exec in the parent. -1 if
+ * it cannot be opened (the child then keeps the inherited stdin). */
+static int script_open_devnull(void)
+{
+    int fd = open("/dev/null", O_RDONLY);
+
+    if (fd >= 0)
+    {
+        script_set_cloexec(fd);
+    }
+    return fd;
+}
+
 /*
  * In a freshly forked child: move into a new process group of its own (so a
  * timeout can stop the whole command, pipeline and background jobs included),
- * make `stdout_fd` (if >= 0) its stdout, close every descriptor above stderr
- * (the game's files, sockets and WAD never reach a script), and exec `path`
- * (or search PATH for argv[0] if `path` is NULL). The game is multi-threaded,
- * so the parent builds argv before fork and this makes only async-signal-safe
- * calls before the exec. Never returns.
+ * make `stdin_fd` (if >= 0; /dev/null, since a background group reading the
+ * terminal would be stopped by SIGTTIN) its stdin and `stdout_fd` (if >= 0)
+ * its stdout, close every descriptor above stderr up to `fd_limit` (the
+ * game's files, sockets and WAD never reach a script), and exec `path` (or
+ * search PATH for argv[0] if `path` is NULL). The game is multi-threaded, so
+ * the parent builds argv and the limit before fork; setpgid, dup2, fcntl and
+ * close are async-signal-safe, and execv is, but execvp's PATH search is not
+ * strictly so (as before this change). Never returns.
  */
-static void script_child_exec(int stdout_fd, int fd_limit, const char *path,
-                              char *const argv[])
+static void script_child_exec(int stdin_fd, int stdout_fd, int fd_limit,
+                              const char *path, char *const argv[])
 {
     int fd;
 
     (void) setpgid(0, 0);
+    if (stdin_fd >= 0 && stdin_fd != STDIN_FILENO
+        && dup2(stdin_fd, STDIN_FILENO) < 0)
+    {
+        _exit(127);
+    }
     if (stdout_fd == STDOUT_FILENO)
     {
         (void) fcntl(STDOUT_FILENO, F_SETFD, 0);   /* keep it across exec */
@@ -354,6 +431,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     int                total = 0;
     int                stop  = 0;
     int                fd_limit;
+    int                devnull;
     char              *argv[4];
     unsigned long long deadline;
 
@@ -374,6 +452,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     argv[1]  = "-c";
     argv[2]  = (char *) cmd;
     argv[3]  = NULL;
+    devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
 
     pid = fork();
@@ -381,11 +460,19 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     {
         close(fds[0]);
         close(fds[1]);
+        if (devnull >= 0)
+        {
+            close(devnull);
+        }
         return -1;
     }
     if (pid == 0)
     {
-        script_child_exec(fds[1], fd_limit, "/bin/sh", argv);
+        script_child_exec(devnull, fds[1], fd_limit, "/bin/sh", argv);
+    }
+    if (devnull >= 0)
+    {
+        close(devnull);
     }
 
     /* Record the group: its id is the child's pid. Set it here as well as in
@@ -458,6 +545,19 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
         total += (int) r;
     }
 
+    /* Cut off before EOF (timeout, full buffer, error): keep only complete
+     * lines. The line being written is unfinished, and parsing it could turn
+     * a half-written id (42 of 4242) into a different, valid one. */
+    if (stop)
+    {
+        int keep = total;
+
+        while (keep > 0 && buf[keep - 1] != '\n')
+        {
+            keep--;
+        }
+        total = keep;
+    }
     buf[total] = '\0';
     close(fds[0]);
 
@@ -506,8 +606,8 @@ static int script_split_cmd(char *cmd, char **argv, int max)
 
 /*
  * Invoke the response command as `<verb> <id> [amount=N] [label=...]`, exec'd
- * directly (no shell), in a process group of its own and with no descriptor
- * above stderr. Double-forked so the game neither blocks on it nor
+ * directly (no shell), in a process group of its own, with /dev/null as stdin
+ * and no descriptor above stderr. Double-forked so the game neither blocks on it nor
  * accumulates zombies. Returns 0 if refused (an id <= 1 is never handed to
  * the responder), else 1 (dispatched, or no response command configured).
  */
@@ -521,6 +621,7 @@ static int script_run_respond(const char *verb, int id,
     char *argv[SCRIPT_ARGV_MAX];
     int   n;
     int   fd_limit;
+    int   devnull;
     pid_t pid;
 
     if (id <= 1)
@@ -555,22 +656,27 @@ static int script_run_respond(const char *verb, int id,
         argv[n++] = labelbuf;
     }
     argv[n]  = NULL;
+    devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
 
     pid = fork();
-    if (pid < 0)
-    {
-        return 1;
-    }
     if (pid == 0)
     {
         /* intermediate child: fork again so the grandchild is reparented to
          * launchd (auto-reaped) and we never wait on the actual command. */
         if (fork() == 0)
         {
-            script_child_exec(-1, fd_limit, NULL, argv);
+            script_child_exec(devnull, -1, fd_limit, NULL, argv);
         }
         _exit(0);         /* intermediate child exits immediately */
+    }
+    if (devnull >= 0)
+    {
+        close(devnull);
+    }
+    if (pid < 0)
+    {
+        return 1;
     }
 
     script_reap(pid);     /* reap the intermediate child (exits at once) */

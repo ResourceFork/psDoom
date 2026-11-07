@@ -633,10 +633,122 @@ static void test_script_children_inherit_no_fds(void)
     close(file_fd);
 }
 
-/* The fd probe: list this process's open descriptors above stderr. */
+/* A line too long to parse whole is dropped, never clipped: clipping an id
+ * field that crosses the limit would make a shorter, different id. */
+static void test_script_parse_drops_overlong_line(void)
+{
+    static char buf[4096];
+    psd_proc_t  out[2];
+    size_t      len;
+    int         n;
+
+    len = (size_t) snprintf(buf, sizeof(buf), "label=");
+    memset(buf + len, 'x', 2040 - len);
+    len = 2040;
+    snprintf(buf + len, sizeof(buf) - len, "\tid=123456\nid=9\n");
+    n = psd_script_parse(buf, out, 2);
+    CHECK(n == 1 && out[0].pid == 9);
+    if (n >= 1 && out[0].pid != 9)
+    {
+        fprintf(stderr, "  over-long line gave id %d\n", out[0].pid);
+    }
+}
+
+/* A poll cut off by its timeout keeps only its complete lines: the line it
+ * was writing (here `id=42`, on its way to 4242) is not parsed. */
+static void test_script_poll_timeout_drops_partial_line(void)
+{
+    psd_proc_t out[4];
+    int        n;
+
+    proc_script_install("printf 'id=7\\nid=42'; sleep 2; printf '42\\n'", NULL, 300);
+    n = proc_backend()->list(out, 4);
+    CHECK(n == 1);
+    CHECK(n >= 1 && out[0].pid == 7);
+    CHECK(index_of(out, n, 42) < 0);
+}
+
+/* The commands run in a background process group, so they get /dev/null as
+ * stdin rather than the game's (a terminal read would stop them with
+ * SIGTTIN). Here the game's stdin is a pipe nobody writes: `cat` would block
+ * on it until the timeout. */
+static void test_script_children_stdin_is_devnull(void)
+{
+    int                p[2];
+    int                saved;
+    unsigned long long t0;
+    unsigned long long elapsed;
+    psd_proc_t         out[4];
+    int                n;
+
+    saved = dup(STDIN_FILENO);
+    CHECK(saved >= 0 && pipe(p) == 0);
+    if (saved < 0)
+    {
+        return;
+    }
+    dup2(p[0], STDIN_FILENO);
+
+    proc_script_install("cat >/dev/null; printf 'id=3\\n'", NULL, 1500);
+    t0 = test_mono_ms();
+    n = proc_backend()->list(out, 4);
+    elapsed = test_mono_ms() - t0;
+
+    dup2(saved, STDIN_FILENO);
+    close(saved);
+    close(p[0]);
+    close(p[1]);
+
+    CHECK(n == 1 && out[0].pid == 3);
+    CHECK(elapsed < 1000);
+}
+
+/* A descriptor numbered above the current soft RLIMIT_NOFILE (the limit was
+ * lowered after it was opened) is not inherited either. */
+static void test_script_children_inherit_no_fds_above_limit(void)
+{
+    struct rlimit saved;
+    struct rlimit lowered;
+    char          poll[1200];
+    psd_proc_t    out[4];
+    int           high_fd;
+    int           n;
+
+    if (g_self[0] == '\0' || strpbrk(g_self, " \t'") != NULL
+        || getrlimit(RLIMIT_NOFILE, &saved) != 0)
+    {
+        CHECK(0);
+        return;
+    }
+    high_fd = dup2(STDERR_FILENO, 300);
+    CHECK(high_fd == 300);
+    lowered         = saved;
+    lowered.rlim_cur = 200;
+    CHECK(setrlimit(RLIMIT_NOFILE, &lowered) == 0);
+
+    snprintf(poll, sizeof(poll), "'%s' --fd-probe", g_self);
+    proc_script_install(poll, NULL, 2000);
+    n = proc_backend()->list(out, 4);
+
+    CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+    close(high_fd);
+
+    CHECK(n == 1);
+    if (n == 1)
+    {
+        CHECK(strcmp(out[0].name, "none") == 0);
+        if (strcmp(out[0].name, "none") != 0)
+        {
+            fprintf(stderr, "  poll child inherited fds: %s\n", out[0].name);
+        }
+    }
+}
+
+/* The fd probe: list this process's open descriptors above stderr, up to at
+ * least 1024 (an fd can sit above a lowered soft limit). */
 static void fd_probe_list(char *buf, size_t cap)
 {
-    int    limit = getdtablesize();
+    int    limit = getdtablesize() > 1024 ? getdtablesize() : 1024;
     int    fd;
     size_t len = 0;
 
@@ -862,6 +974,19 @@ static void test_macos_renice_refuses_reserved(void)
     static const int bad[] = { 1, 0, -1, INT_MIN };
     size_t           i;
 
+    /* Control first: a valid pid (our own, delta 0) must reach the seam. If
+     * it does not, the seam is not in effect, and renicing pid 1 below could
+     * reach the OS, so stop here. */
+    seam_setpriority_calls = 0;
+    proc_macos_renice((int) getpid(), 0);
+    CHECK(seam_setpriority_calls == 1);
+    CHECK(seam_setpriority_who == (id_t) getpid());
+    if (seam_setpriority_calls != 1)
+    {
+        fprintf(stderr, "  setpriority seam not in effect; skipping pid <= 1 calls\n");
+        return;
+    }
+
     for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
     {
         seam_setpriority_calls = 0;
@@ -872,13 +997,6 @@ static void test_macos_renice_refuses_reserved(void)
             fprintf(stderr, "  native renice reached setpriority for pid %d\n", bad[i]);
         }
     }
-
-    /* Control: a valid pid (our own, delta 0) does reach setpriority, so the
-     * seam is in effect and the checks above are meaningful. */
-    seam_setpriority_calls = 0;
-    proc_macos_renice((int) getpid(), 0);
-    CHECK(seam_setpriority_calls == 1);
-    CHECK(seam_setpriority_who == (id_t) getpid());
 
     proc_backend_set(&proc_macos_backend);
     seam_setpriority_calls = 0;
@@ -934,6 +1052,10 @@ int main(int argc, char **argv)
     test_script_respond_refuses_reserved_ids();
     test_script_poll_timeout_leaves_no_child();
     test_script_children_inherit_no_fds();
+    test_script_parse_drops_overlong_line();
+    test_script_poll_timeout_drops_partial_line();
+    test_script_children_stdin_is_devnull();
+    test_script_children_inherit_no_fds_above_limit();
     test_guard_same_process_acts();
     test_guard_reused_pid_refused();
     test_guard_vanished_pid_refused();
