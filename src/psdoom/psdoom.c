@@ -385,16 +385,25 @@ static boolean PSD_MonsterDrawable(mobjtype_t type)
     return spr >= 0 && spr < numsprites && sprites[spr].numframes > 0;
 }
 
+/* Set once a sync has played its teleport sound; cleared as each sync starts. */
+static boolean psd_fog_sound_played;
+
 /* Teleport fog and sound at (x, y, z), as the engine's teleporters do. The
- * sound plays from the fog, so it outlives a monster removed right after. The
- * fog is skipped if the WAD lacks its sprite. */
+ * sound plays from the fog, so it outlives a monster removed right after, and
+ * only once per sync, so a burst of spawns or exits doesn't take every sound
+ * channel from the player's own sounds. The fog is skipped if the WAD lacks
+ * its sprite. */
 static void PSD_TeleportFog(fixed_t x, fixed_t y, fixed_t z)
 {
     if (PSD_MonsterDrawable(MT_TFOG))
     {
         mobj_t *fog = P_SpawnMobj(x, y, z, MT_TFOG);
 
-        S_StartSound(fog, sfx_telept);
+        if (!psd_fog_sound_played)
+        {
+            S_StartSound(fog, sfx_telept);
+            psd_fog_sound_played = true;
+        }
     }
 }
 
@@ -440,16 +449,21 @@ static void PSD_ForgetMobj(const mobj_t *mo)
 }
 
 /* End a process monster's life for `reason` (psd_end_action decides how). A
- * monster whose process left the list teleports out; it never just vanishes.
- * Only the sync calls this, between thinker runs, so `mo` is not in use. */
-static void PSD_RetireMonster(mobj_t *mo, psd_end_reason_t reason)
+ * live monster whose process left the list teleports out; it never just
+ * vanishes. A corpse died normally and stays, as an ordinary corpse that acts
+ * on nothing and is not saved. Only the sync calls this, between thinker
+ * runs, so `mo` is not in use. Returns true if `mo` was removed. */
+static boolean PSD_RetireMonster(mobj_t *mo, psd_end_reason_t reason)
 {
-    if (psd_end_action(reason) == PSD_END_TELEPORT_OUT)
+    if (psd_end_action(reason) != PSD_END_TELEPORT_OUT)
     {
-        PSD_TeleportFog(mo->x, mo->y, mo->z);
+        mo->psd_pid = PSD_CORPSE_PID;
+        return false;
     }
+    PSD_TeleportFog(mo->x, mo->y, mo->z);
     PSD_ForgetMobj(mo);
     P_RemoveMobj(mo);
+    return true;
 }
 
 /* Pick the toughest tier `metric` earns, then degrade to the first lighter
@@ -654,14 +668,9 @@ static boolean PSD_MorphMonster(mobj_t *mo, mobjtype_t newtype)
 
     newstate = (ni->seestate != S_NULL) ? ni->seestate : ni->spawnstate;
 
-    /* Morph flash + cue (skip the fog if the WAD lacks the sprite). Done while
-     * `mo` is still valid -- before P_SetMobjState, which could in principle
-     * retire it. */
-    if (PSD_MonsterDrawable(MT_TFOG))
-    {
-        P_SpawnMobj(fx, fy, fz, MT_TFOG);
-        S_StartSound(mo, sfx_telept);
-    }
+    /* Morph flash + cue. Done while `mo` is still valid -- before
+     * P_SetMobjState, which could in principle retire it. */
+    PSD_TeleportFog(fx, fy, fz);
 
     P_SetMobjState(mo, newstate);
     return true;
@@ -968,11 +977,7 @@ void psdoom_init(void)
 
     psd_select_init();
     psdoom_options_parse_args();   /* let -psdoom-* flags override the config */
-    psd_next_sync      = 0;
-    psd_killed_count   = 0;
-    psd_grade_count    = 0;
-    psd_fork_count     = 0;
-    psd_swarm_live     = 0;
+    PSD_ResetLevelState();
     psd_last_leveltime = 0;
     psd_enabled        = true;
     psd_first_active_collection = psdoom_intro_active();
@@ -1146,25 +1151,25 @@ void psdoom_sync(void)
     n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
     psd_collect_count++;
 
+    psd_fog_sound_played = false;
+
     /* 1) Retire monsters no longer in the curated set (process exited, its pid
      *    was reused, or it dropped below the relevance cut), and monsters a
-     *    checked action already found gone. They teleport out. A fog spawned
-     *    here joins the end of the list with psd_pid 0, so the walk skips it. */
+     *    checked action already found gone. Live ones teleport out; corpses
+     *    stay (psd_end_reason). A fog spawned here joins the end of the list
+     *    with psd_pid 0, so the walk skips it. */
     for (th = thinkercap.next; th != &thinkercap; th = next)
     {
         next = th->next;
 
         if (th->function.acp1 == (actionf_p1) P_MobjThinker)
         {
-            mobj_t *mo = (mobj_t *) th;
-            if (mo->psd_pid == PSD_GONE_PID)
+            mobj_t          *mo = (mobj_t *) th;
+            psd_end_reason_t why = psd_end_reason(mo->psd_pid, mo->health <= 0,
+                mo->psd_pid > 0 && PSD_MonsterSelected(mo, n));
+
+            if (why != PSD_END_STAYS && PSD_RetireMonster(mo, why))
             {
-                PSD_RetireMonster(mo, PSD_END_IDENTITY_LOST);
-                removed++;
-            }
-            else if (mo->psd_pid > 0 && !PSD_MonsterSelected(mo, n))
-            {
-                PSD_RetireMonster(mo, PSD_END_LEFT_LIST);
                 removed++;
             }
         }
@@ -1297,6 +1302,44 @@ void psdoom_restored_mobj(struct mobj_s *target)
     mo->psd_pid   = 0;
     mo->psd_start = 0;
     memset(mo->psd_name, 0, sizeof(mo->psd_name));
+}
+
+void psdoom_loaded_game(void)
+{
+    thinker_t *th;
+    thinker_t *next;
+    int        dropped = 0;
+
+    /* Saves made before process monsters became ethereal still hold them, as
+     * plain mobjs. Only psDoom spawns a monster on demand (no spawn point)
+     * and clears the MF_COUNTKILL its type carries, so that signature finds
+     * them; left in place they would sit beside the monsters the sync
+     * rebuilds. This runs after every pointer in the save is restored, so
+     * dropping them does not shift any index. */
+    for (th = thinkercap.next; th != &thinkercap; th = next)
+    {
+        next = th->next;
+
+        if (th->function.acp1 == (actionf_p1) P_MobjThinker)
+        {
+            mobj_t *mo = (mobj_t *) th;
+
+            if (psd_legacy_process_monster(mo->player != NULL,
+                                           mo->spawnpoint.type != 0,
+                                           (mo->info->flags & MF_COUNTKILL) != 0,
+                                           (mo->flags & MF_COUNTKILL) != 0))
+            {
+                PSD_ForgetMobj(mo);
+                P_RemoveMobj(mo);
+                dropped++;
+            }
+        }
+    }
+    if (dropped != 0)
+    {
+        fprintf(stderr, "psDoom: dropped %d process monsters from an older save\n",
+                dropped);
+    }
 }
 
 /* --------------------------------------------------------------- label draw */

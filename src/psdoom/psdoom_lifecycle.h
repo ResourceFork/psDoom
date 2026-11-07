@@ -16,6 +16,9 @@
 #define PSD_GONE_PID  (-2)  /* its process is gone or its pid was reused; it
                              * acts on nothing and shows no label until the
                              * next sync retires it                           */
+#define PSD_CORPSE_PID (-3) /* a killed process monster's corpse whose process
+                             * has left the list: it stays as an ordinary corpse,
+                             * acts on nothing, shows no label, and is not saved */
 
 /* What a save does with one mobj. */
 typedef enum
@@ -38,16 +41,35 @@ typedef enum
                             * pid was reused, or it fell below the cut)       */
     PSD_END_IDENTITY_LOST, /* a checked renice or kill found its pid gone or
                             * reused (tagged PSD_GONE_PID)                    */
-    PSD_END_KILLED,        /* it was killed in the game                       */
+    PSD_END_KILLED,        /* it was killed in the game (a corpse), whatever
+                            * then happened to its process                    */
+    PSD_END_STAYS,         /* not ending: still listed, or not a process
+                            * monster at all                                  */
 } psd_end_reason_t;
 
 typedef enum
 {
-    PSD_END_DIE,          /* the engine's normal death; psDoom does nothing   */
+    PSD_END_DIE,          /* the engine's normal death: the corpse stays as an
+                           * ordinary corpse (tagged PSD_CORPSE_PID); psDoom
+                           * adds no fog and does not remove it               */
     PSD_END_TELEPORT_OUT, /* teleport fog and sound where it stood, then it
                            * is removed                                       */
 } psd_end_action_t;
 
 psd_end_action_t psd_end_action(psd_end_reason_t reason);
+
+/* Why the sync ends a mobj's life this sync, if it does. `psd_pid` is its
+ * tag, `dead` is nonzero for a corpse (health <= 0), and `listed` is nonzero
+ * if its process is in this sync's curated list. A corpse is always KILLED,
+ * so a monster killed in the game never teleports out. */
+psd_end_reason_t psd_end_reason(int psd_pid, int dead, int listed);
+
+/* True for a mobj that a save from an older build wrote for a process monster
+ * or swarm soul: not a player, spawned on demand (no spawn point), of a type
+ * that counts as a kill but with that flag cleared on the mobj. Only psDoom
+ * clears it, so ordinary monsters, spawned or raised by the engine, never
+ * match. */
+int psd_legacy_process_monster(int is_player, int map_placed,
+                               int type_counts_kill, int mobj_counts_kill);
 
 #endif /* PSDOOM_LIFECYCLE_H */

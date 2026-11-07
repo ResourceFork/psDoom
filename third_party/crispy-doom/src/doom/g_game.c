@@ -2613,6 +2613,7 @@ void G_DoLoadGame (void)
 
     // [crispy] read more extended savegame data
     P_ReadExtendedSaveGameData(1);
+    psdoom_loaded_game(); // [psDoom] drop process monsters an older save kept
 
     fclose(save_stream);
     

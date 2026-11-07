@@ -60,6 +60,10 @@ void psdoom_kill(struct mobj_s *target);
 int psdoom_mobj_saved(const struct mobj_s *target);
 void psdoom_restored_mobj(struct mobj_s *target);
 
+/* After a load has restored every pointer (end of G_DoLoadGame): drop the
+ * process monsters that saves from older builds still hold. */
+void psdoom_loaded_game(void);
+
 /*
  * Draw a process-monster's PID and name centered above its sprite. Called
  * from the renderer (R_DrawVisSprite) once per visible process-monster.

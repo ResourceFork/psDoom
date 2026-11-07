@@ -914,6 +914,47 @@ static void test_end_action(void)
     CHECK(psd_end_action(PSD_END_KILLED) == PSD_END_DIE);
 }
 
+/* The sync's routing: a live monster that left the list or lost its identity
+ * ends (and teleports out); a corpse always counts as killed, even when its
+ * process has gone or a checked kill found the pid reused, so a killed
+ * monster never teleports out; anything still listed, or not a process
+ * monster, stays. */
+static void test_end_reason(void)
+{
+    /* Alive. */
+    CHECK(psd_end_reason(4123, 0, 1) == PSD_END_STAYS);
+    CHECK(psd_end_reason(4123, 0, 0) == PSD_END_LEFT_LIST);
+    CHECK(psd_end_reason(PSD_GONE_PID, 0, 0) == PSD_END_IDENTITY_LOST);
+    CHECK(psd_end_action(psd_end_reason(4123, 0, 0)) == PSD_END_TELEPORT_OUT);
+
+    /* Dead: still listed stays (it blocks a respawn); otherwise killed. */
+    CHECK(psd_end_reason(4123, 1, 1) == PSD_END_STAYS);
+    CHECK(psd_end_reason(4123, 1, 0) == PSD_END_KILLED);
+    CHECK(psd_end_reason(PSD_GONE_PID, 1, 0) == PSD_END_KILLED);
+    CHECK(psd_end_action(psd_end_reason(4123, 1, 0)) == PSD_END_DIE);
+    CHECK(psd_end_action(psd_end_reason(PSD_GONE_PID, 1, 0)) == PSD_END_DIE);
+
+    /* Not process monsters: ordinary, swarm souls, kept corpses. */
+    CHECK(psd_end_reason(0, 0, 0) == PSD_END_STAYS);
+    CHECK(psd_end_reason(PSD_SWARM_PID, 0, 0) == PSD_END_STAYS);
+    CHECK(psd_end_reason(PSD_CORPSE_PID, 1, 0) == PSD_END_STAYS);
+
+    /* A kept corpse was spawned on demand, so a save skips it too. */
+    CHECK(psd_save_disposition(PSD_CORPSE_PID, 0) == PSD_SAVE_SKIP);
+}
+
+/* Older saves wrote process monsters as plain mobjs; a load drops exactly
+ * those: on demand, a kill-counting type, the flag cleared, not a player. */
+static void test_legacy_process_monster(void)
+{
+    CHECK(psd_legacy_process_monster(0, 0, 1, 0));     /* old process monster */
+    CHECK(!psd_legacy_process_monster(0, 1, 1, 1));    /* map monster          */
+    CHECK(!psd_legacy_process_monster(0, 1, 1, 0));    /* map-placed           */
+    CHECK(!psd_legacy_process_monster(0, 0, 1, 1));    /* engine-spawned (brain spit) */
+    CHECK(!psd_legacy_process_monster(0, 0, 0, 0));    /* fog, missile, pickup */
+    CHECK(!psd_legacy_process_monster(1, 0, 0, 0));    /* a player             */
+}
+
 #ifdef __APPLE__
 /* The native backend, exercised READ-ONLY: listing and lookup capture a start
  * time that agrees between the two. Never renices or kills anything. */
@@ -1097,6 +1138,8 @@ int main(int argc, char **argv)
     test_identity_without_start_token();
     test_save_disposition();
     test_end_action();
+    test_end_reason();
+    test_legacy_process_monster();
 #ifdef __APPLE__
     test_macos_start_token_readonly();
     test_macos_zombie_readonly();

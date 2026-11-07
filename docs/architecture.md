@@ -87,18 +87,18 @@ change land in the vendored tree, and each is recorded in `third_party/README.md
 
 Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
 
-| Concern                | File : symbol                                           | Hook                                                                                                    |
-| ---------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Per-monster state      | `p_mobj.h` : `mobj_t`                                   | add `psd_pid`, `psd_name` and `psd_start` fields                                                        |
-| Spawn → process        | `p_mobj.c` : `P_SpawnMapThing`, `P_SpawnMobj`           | associate `MF_COUNTKILL` monsters with a process, or spawn on demand                                    |
-| Wound → renice         | `p_inter.c` : `P_DamageMobj`                            | call `psdoom_wound(target)` for a surviving process-monster                                             |
-| Kill → kill            | `p_inter.c` : `P_KillMobj`                              | call `psdoom_kill(target)` for a process-monster                                                        |
-| Periodic sync          | `p_tick.c` : `P_Ticker`                                 | call self-throttled `psdoom_sync()`; it performs no collection outside active `PSDINTRO`                |
-| Labels                 | `r_things.c` : `R_ProjectSprite`, `R_DrawVisSprite`     | carry process identity to rendered sprites and draw labels                                              |
-| Startup trust and demo | `d_main.c` : `D_DoomMain`, `D_StartPsDoomDemo`          | verify the actual bundle resource, enter READY, preserve normal overrides, and begin stock `DEMO1`      |
-| New Game lifecycle     | `m_menu.c`, `g_game.c` : skill callbacks, `G_DoNewGame` | completed normal/Nightmare selection requests the intro; `G_DoNewGame` consumes the request into ACTIVE |
-| Intro lookup and exit  | `p_setup.c`, `g_game.c` : `P_SetupLevel`, `G_ExitLevel` | load `PSDINTRO` only when ACTIVE, then clear it and defer unmodified IWAD `E1M1`                        |
-| Save restoration       | `g_game.c`, `g_game.h` : `G_DoLoadGame`                 | derive ACTIVE from the saved map WAD owner before base geometry loads                                   |
+| Concern | File : symbol | Hook |
+| --- | --- | --- |
+| Per-monster state | `p_mobj.h` : `mobj_t` | add `psd_pid`, `psd_name` and `psd_start` fields |
+| Spawn → process | `p_mobj.c` : `P_SpawnMapThing`, `P_SpawnMobj` | associate `MF_COUNTKILL` monsters with a process, or spawn on demand |
+| Wound → renice | `p_inter.c` : `P_DamageMobj` | call `psdoom_wound(target)` for a surviving process-monster |
+| Kill → kill | `p_inter.c` : `P_KillMobj` | call `psdoom_kill(target)` for a process-monster |
+| Periodic sync | `p_tick.c` : `P_Ticker` | call self-throttled `psdoom_sync()`; it performs no collection outside active `PSDINTRO` |
+| Labels | `r_things.c` : `R_ProjectSprite`, `R_DrawVisSprite` | carry process identity to rendered sprites and draw labels |
+| Startup trust and demo | `d_main.c` : `D_DoomMain`, `D_StartPsDoomDemo` | verify the actual bundle resource, enter READY, preserve normal overrides, and begin stock `DEMO1` |
+| New Game lifecycle | `m_menu.c`, `g_game.c` : skill callbacks, `G_DoNewGame` | completed normal/Nightmare selection requests the intro; `G_DoNewGame` consumes the request into ACTIVE |
+| Intro lookup and exit | `p_setup.c`, `g_game.c` : `P_SetupLevel`, `G_ExitLevel` | load `PSDINTRO` only when ACTIVE, then clear it and defer unmodified IWAD `E1M1` |
+| Save restoration | `g_game.c`, `g_game.h` : `G_DoLoadGame` | derive ACTIVE from the saved map WAD owner before base geometry loads; after pointers are restored, `psdoom_loaded_game()` drops process monsters an older save kept |
 | Saves skip process monsters | `p_saveg.c` : `P_ArchiveThinkers`, `P_ThinkerToIndex`, `P_IndexToThinker`, `P_UnArchiveThinkers` | write no process monster or swarm soul; restored mobjs carry no process identity |
 
 ## Features
@@ -133,11 +133,14 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   the next sync when the kill policy leaves the real process running. The set clears on level restart
   and on a load. A process monster teleports in (`MT_TFOG` + `sfx_telept`) when it spawns, and
   teleports out the same way when its process leaves the list or a checked action finds its pid
-  gone or reused; a monster killed in the game dies normally.
+  gone or reused. A monster killed in the game dies normally: its corpse stays, and once its process
+  leaves the list it becomes an ordinary corpse (`PSD_CORPSE_PID`) that is not saved. At most one
+  teleport sound plays per sync.
 - **Ethereal in saves.** Process monsters are backed only by the live list, so a save never writes
   one (nor a swarm soul), and a load restores no process identity: map monsters come back as they
   were, and the sync rebuilds process monsters from the live list. The save format is unchanged;
-  only which mobjs are written changes (`psdoom_mobj_saved`, `psdoom_lifecycle.c`).
+  only which mobjs are written changes (`psdoom_mobj_saved`, `psdoom_lifecycle.c`). Saves from older
+  builds, which did write them, lose those monsters on load (`psdoom_loaded_game`).
 - **Process labels.** Each process-monster's name (and, optionally, its PID) is drawn above its
   sprite using the HUD font; the renderer carries `psd_pid`/`psd_name` on the `vissprite_t`. PID
   is hidden by default to keep a crowded courtyard readable. Distant sprites are skipped; labels
