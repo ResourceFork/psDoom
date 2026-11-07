@@ -99,11 +99,25 @@ int main(int argc, char **argv)
      * "-iwad <file>" pair, so the launcher looks at the same one.
      */
     const char *explicit_iwad = NULL;
+    int explicit_index = 0; /* argv index of the caller's -iwad value */
     for (int i = 1; i + 1 < argc; i++)
     {
         if (strcasecmp(argv[i], "-iwad") == 0)
         {
             explicit_iwad = argv[i + 1];
+            explicit_index = i + 1;
+            break;
+        }
+    }
+
+    /* The engine expands a response file (@file, -response file) in place,
+     * so an -iwad inside one is invisible here. */
+    int has_response_file = 0;
+    for (int i = 1; i < argc; i++)
+    {
+        if (argv[i][0] == '@' || strcasecmp(argv[i], "-response") == 0)
+        {
+            has_response_file = 1;
             break;
         }
     }
@@ -164,7 +178,8 @@ int main(int argc, char **argv)
 
     /*
      * Build the child argv: engine path, the selected IWAD unless the caller
-     * named one, optional trusted arena, then pass through caller arguments.
+     * named one, optional trusted arena, then pass through caller arguments
+     * (a bare -iwad name replaced by the file it resolved to).
      * Caller-provided copies of the launcher-only trust marker are always
      * discarded.
      */
@@ -175,9 +190,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* The engine uses the first -iwad pair. With a response file the
+     * launcher's choice goes last, so an -iwad the file holds still wins. */
+    int iwad_first = iwad.pass_iwad && !has_response_file;
+    int iwad_last = iwad.pass_iwad && has_response_file;
+
     int n = 0;
     child_argv[n++] = engine;
-    if (iwad.pass_iwad)
+    if (iwad_first)
     {
         child_argv[n++] = "-iwad";
         child_argv[n++] = iwad.path;
@@ -195,7 +215,17 @@ int main(int argc, char **argv)
         {
             continue;
         }
+        if (i == explicit_index && iwad.replace_explicit)
+        {
+            child_argv[n++] = iwad.path;
+            continue;
+        }
         child_argv[n++] = argv[i];
+    }
+    if (iwad_last)
+    {
+        child_argv[n++] = "-iwad";
+        child_argv[n++] = iwad.path;
     }
     child_argv[n] = NULL;
 

@@ -374,9 +374,9 @@ static const psd_tier_t psd_cpu_tiers[] =
 };
 
 /* True if monster `type`'s sprite is present in the loaded WAD. Spawning a
- * monster the renderer can't draw is fatal (R_ProjectSprite I_Error), and the
- * shareware IWAD is missing several monster sprites, so classification checks
- * this and degrades to a drawable type. */
+ * monster the renderer can't draw is fatal (R_ProjectSprite I_Error), and no
+ * Doom 1-format IWAD has every ladder sprite (none has Hell Knight), so
+ * classification checks this and degrades to a drawable type. */
 static boolean PSD_MonsterDrawable(mobjtype_t type)
 {
     statenum_t  st  = mobjinfo[type].spawnstate;
@@ -467,10 +467,10 @@ static boolean PSD_RetireMonster(mobj_t *mo, psd_end_reason_t reason)
 }
 
 /* Pick the toughest tier `metric` earns, then degrade to the first lighter
- * tier whose sprite the loaded WAD actually has. The shareware IWAD lacks Hell
- * Knight / Cyberdemon sprites, and spawning an undrawable monster is fatal
- * (R_ProjectSprite I_Error), so a heavy/busy process caps at Baron there and
- * uses the full ladder on a complete WAD. Zombieman (the last fallback) exists
+ * tier whose sprite the loaded WAD actually has. Freedoom Phase 1 and
+ * registered Doom lack the Hell Knight sprite, and spawning an undrawable
+ * monster is fatal (R_ProjectSprite I_Error), so that tier falls back to the
+ * next lighter one; a complete WAD uses the full ladder. Zombieman (the last fallback) exists
  * in every Doom IWAD. */
 static mobjtype_t PSD_ClassifyByTiers(unsigned long long metric,
                                       const psd_tier_t *tiers, int ntiers)
@@ -742,8 +742,8 @@ static void PSD_ReclassifyMonsters(int n)
 /* ------------------------------------------------------------ fork swarms */
 
 /* The monster type used for swarm souls. Lost Soul is the thematic choice, but
- * the shareware IWAD (Episode 1 only) lacks its sprite, so degrade to a
- * drawable grunt there -- spawning an undrawable type is fatal. */
+ * a WAD without its sprite (shareware, Episode 1 only) degrades to a
+ * drawable grunt -- spawning an undrawable type is fatal. */
 static mobjtype_t PSD_SwarmType(void)
 {
     if (PSD_MonsterDrawable(MT_SKULL))    return MT_SKULL;
@@ -1001,8 +1001,7 @@ void psdoom_sync(void)
     int removed = 0;
 
     if (psd_intro_smoke_stage == 1 && gamestate == GS_LEVEL
-        && demoplayback && gameepisode == 1 && gamemap == 5
-        && !psdoom_intro_active() && leveltime >= 1)
+        && demoplayback && !psdoom_intro_active() && leveltime >= 1)
     {
         if (psd_collect_count != 0 || psd_backend_action_count != 0)
         {
@@ -1013,7 +1012,8 @@ void psdoom_sync(void)
             return;
         }
         fprintf(stderr,
-                "psDoom intro smoke: stock DEMO1 E1M5 active; intro inactive; process collections=0 backend actions=0\n");
+                "psDoom intro smoke: stock DEMO1 E%dM%d active; intro inactive; process collections=0 backend actions=0\n",
+                gameepisode, gamemap);
         psd_intro_smoke_stage = 2;
         G_DeferedPsDoomNewGame(sk_medium, 1, 1);
         return;

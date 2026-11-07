@@ -60,15 +60,16 @@ if [[ -f "$WADS/freedoom1.wad" && -f "$WADS/freedoom-COPYING.txt" \
     exit 0
 fi
 
-WORK="$(mktemp -d "$WADS/.fetch-freedoom.XXXXXX")"
-check_dir "$WORK" "."
-[[ "$WORK" == "$WADS"/.fetch-freedoom.* ]] || die "unexpected work dir: $WORK"
+# Cleanup removes only the files this script writes, then the empty dir.
 cleanup() {
     rm -f "$WORK/$ZIP_NAME" "$WORK/freedoom1.wad" "$WORK/COPYING.txt" \
         "$WORK/CREDITS.txt" "$WORK/CREDITS-MUSIC.txt"
     rmdir "$WORK" 2>/dev/null || true
 }
+WORK="$(mktemp -d "$WADS/.fetch-freedoom.XXXXXX")"
 trap cleanup EXIT
+check_dir "$WORK" "."
+[[ "$WORK" == "$WADS"/.fetch-freedoom.* ]] || die "unexpected work dir: $WORK"
 
 printf 'fetch-freedoom: downloading %s\n' "$URL"
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \

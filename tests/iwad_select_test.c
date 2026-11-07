@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int *g_run;
@@ -381,10 +382,72 @@ static void test_select_explicit_iwad(void)
     select_with(files, "/w/DOOM2.WAD", NULL, NULL, "/Users/me", &c, &fs);
     CHECK(!c.pass_iwad && !c.arena_ok && c.kind == PSD_IWAD_COMMERCIAL);
 
-    /* An explicit name the launcher cannot open is not overridden by a
+    /* An explicit name the launcher cannot find is not overridden by a
      * registered IWAD elsewhere, and gets no arena. */
     select_with(files, "DOOM1.WAD", NULL, NULL, "/Users/me", &c, &fs);
     CHECK(!c.pass_iwad && !c.arena_ok && c.kind == PSD_IWAD_MISSING);
+    CHECK(!c.replace_explicit);
+}
+
+static void test_select_explicit_bare_name(void)
+{
+    static const fake_file_t files[] = {
+        { SUPPORT "/DOOM.WAD", PSD_IWAD_REGISTERED },
+        { RES "/freedoom1.wad", PSD_IWAD_FREEDOOM1 },
+        { "/w/DOOM1.WAD", PSD_IWAD_SHAREWARE },
+        { "/w/DOOM2.WAD", PSD_IWAD_COMMERCIAL },
+        { NULL, PSD_IWAD_MISSING }
+    };
+    psd_iwad_choice_t c;
+    fake_fs_t fs;
+
+    /* Found through the launcher's own search path, in either case; the
+     * launcher hands the engine the resolved file. */
+    select_with(files, "doom.wad", NULL, NULL, "/Users/me", &c, &fs);
+    CHECK(c.replace_explicit && !c.pass_iwad);
+    CHECK(strcmp(c.path, SUPPORT "/DOOM.WAD") == 0);
+    CHECK(c.kind == PSD_IWAD_REGISTERED && c.arena_ok);
+
+    select_with(files, "FREEDOOM1.WAD", NULL, NULL, "/Users/me", &c, &fs);
+    CHECK(c.replace_explicit);
+    CHECK(strcmp(c.path, RES "/freedoom1.wad") == 0);
+    CHECK(c.kind == PSD_IWAD_FREEDOOM1 && c.arena_ok);
+
+    /* With the caller's DOOMWADDIR/DOOMWADPATH, those are searched instead,
+     * and shareware or Doom II found there still gets no arena. */
+    select_with(files, "doom1.wad", "/w", NULL, "/Users/me", &c, &fs);
+    CHECK(c.replace_explicit);
+    CHECK(strcmp(c.path, "/w/DOOM1.WAD") == 0);
+    CHECK(c.kind == PSD_IWAD_SHAREWARE && !c.arena_ok);
+
+    select_with(files, "DOOM2.WAD", NULL, "/x:/w", "/Users/me", &c, &fs);
+    CHECK(c.replace_explicit && strcmp(c.path, "/w/DOOM2.WAD") == 0);
+    CHECK(c.kind == PSD_IWAD_COMMERCIAL && !c.arena_ok);
+
+    select_with(files, "freedoom1.wad", NULL, "/x", "/Users/me", &c, &fs);
+    CHECK(!c.replace_explicit && !c.arena_ok && c.kind == PSD_IWAD_MISSING);
+}
+
+static void test_select_file_valued_entries(void)
+{
+    static const fake_file_t files[] = {
+        { "/Games/DOOM.WAD", PSD_IWAD_REGISTERED },
+        { "/g/doom.wad", PSD_IWAD_REGISTERED },
+        { "/s/DOOM.WAD", PSD_IWAD_SHAREWARE },
+        { RES "/freedoom1.wad", PSD_IWAD_FREEDOOM1 },
+        { NULL, PSD_IWAD_MISSING }
+    };
+    psd_iwad_choice_t c;
+    fake_fs_t fs;
+
+    /* An entry may name the DOOM.WAD file itself, as the engine allows. */
+    select_with(files, NULL, "/Games/DOOM.WAD", NULL, "/Users/me", &c, &fs);
+    CHECK(c.pass_iwad && strcmp(c.path, "/Games/DOOM.WAD") == 0);
+    CHECK(c.arena_ok);
+
+    select_with(files, NULL, NULL, "/s/DOOM.WAD:/g/doom.wad", "/Users/me", &c, &fs);
+    CHECK(strcmp(c.path, "/g/doom.wad") == 0); /* shareware entry skipped */
+    CHECK(c.kind == PSD_IWAD_REGISTERED);
 }
 
 /* ---- the real file probe -------------------------------------------------- */
@@ -439,6 +502,11 @@ static void test_probe_file(void)
 
     unlink(path);
     CHECK(psd_iwad_probe_file(path, NULL) == PSD_IWAD_MISSING);
+
+    /* A FIFO is refused without being opened (opening it would block). */
+    CHECK(mkfifo(path, 0600) == 0);
+    CHECK(psd_iwad_probe_file(path, NULL) == PSD_IWAD_MISSING);
+    unlink(path);
     CHECK(psd_iwad_probe_file(td, NULL) == PSD_IWAD_MISSING); /* a directory */
     CHECK(psd_iwad_probe_file("", NULL) == PSD_IWAD_MISSING);
 }
@@ -456,5 +524,7 @@ void iwad_select_tests(int *checks_run, int *checks_failed)
     test_select_never_shareware_or_doom2();
     test_select_bundled_missing();
     test_select_explicit_iwad();
+    test_select_explicit_bare_name();
+    test_select_file_valued_entries();
     test_probe_file();
 }

@@ -362,7 +362,9 @@ python3 tools/validate_wad.py --wad /tmp/psdoom-arena.wad --iwad wads/freedoom1.
 The `--iwad` check verifies every referenced texture/flat plus
 `SKY1`, `F_SKY1`, the exit-switch pair, and stock `E1M1`/`E1M2`. CMake generates
 and validates a temporary file before atomically publishing the declared WAD
-output; the build runs it against the bundled `freedoom1.wad`. Generation and structural validation require Python 3.10 or newer and
+output; the build runs it against the bundled `freedoom1.wad`, and also against an id
+`wads/DOOM.WAD` or `wads/DOOM1.WAD` when a developer has one (read only, never bundled), since
+Freedoom's texture set is a superset of Doom 1's. Generation and structural validation require Python 3.10 or newer and
 have no third-party Python or WAD-tool dependencies.
 
 Xcode project, generated from the same CMake:
@@ -405,10 +407,14 @@ ctest --test-dir build --output-on-failure
   longer bundled.
 - **IWAD selection:** the launcher chooses the IWAD itself (`src/app/macos/iwad_select.c`, an
   engine-free function covered by the host tests) and passes it as `-iwad`:
-  1. a caller's `-iwad` is passed through untouched; the arena is added only when that file is
-     registered/Ultimate Doom or Freedoom Phase 1;
+  1. a caller's `-iwad` is never replaced by another IWAD. A path is passed through untouched; a
+     bare name is looked up the way the engine would (working directory, then the caller's
+     `DOOMWADDIR`/`DOOMWADPATH`, or else `Resources/` and the support directory, each in the given,
+     lower and upper case) and passed as the resolved file, so the engine opens exactly what was
+     classified. The arena is added only when that file is registered/Ultimate Doom or Freedoom
+     Phase 1;
   2. otherwise the first registered or Ultimate `DOOM.WAD` in `DOOMWADDIR`, each `DOOMWADPATH`
-     entry, then `~/Library/Application Support/psDoom/`;
+     entry, then `~/Library/Application Support/psDoom/` (an entry may name the file itself);
   3. otherwise `Resources/freedoom1.wad` (named even when missing, so the engine reports it
      rather than searching on its own).
 
@@ -418,6 +424,9 @@ ctest --test-dir build --output-on-failure
   requires a stock `E1M1`, so it has not been validated on Doom II. The launcher still sets
   `DOOMWADPATH` (unless the caller set `DOOMWADDIR`/`DOOMWADPATH`) to `Contents/Resources/`
   then `~/Library/Application Support/psDoom/` for anything else the engine looks up by name.
+  With a response file (`@file`, `-response`) the launcher's `-iwad` goes last, so an `-iwad`
+  inside the file still wins. As a backstop the engine makes the intro available only on
+  registered/Ultimate Doom or Freedoom Phase 1 (`D_IsBundledPsDoomArena`).
 - **Distribution follow-ups** (not needed to run locally; future home: `packaging/macos/`):
   - Bundle the Homebrew dylibs (SDL2 / SDL2_mixer / libsamplerate / libpng / FluidSynth) into
     `Contents/Frameworks` and rewrite install names (`install_name_tool` / `dylibbundler`).

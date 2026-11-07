@@ -4,13 +4,14 @@
  * The launcher decides which IWAD the engine runs and whether the bundled
  * PSDINTRO arena may be loaded with it. The policy, in order:
  *
- *   1. An explicit -iwad from the caller is never overridden. The arena is
- *      loaded only when that file is a registered/Ultimate Doom or Freedoom
- *      Phase 1 IWAD; anything else (shareware, Doom II, unknown) runs as stock
- *      Crispy Doom with no arena.
+ *   1. An explicit -iwad from the caller is never replaced by another IWAD
+ *      (a bare name is resolved the way the engine would find it). The arena
+ *      is loaded only when that file is a registered/Ultimate Doom or
+ *      Freedoom Phase 1 IWAD; anything else (shareware, Doom II, unknown)
+ *      runs as stock Crispy Doom with no arena.
  *   2. Otherwise a registered or Ultimate Doom DOOM.WAD found in DOOMWADDIR,
  *      then each DOOMWADPATH entry, then ~/Library/Application Support/psDoom
- *      wins.
+ *      wins. An entry may name the DOOM.WAD file itself.
  *   3. Otherwise the bundled Resources/freedoom1.wad is used.
  *
  * A shareware DOOM1.WAD, and a Doom II-format IWAD, are never selected
@@ -53,8 +54,11 @@ typedef struct
 typedef struct
 {
     /* When pass_iwad is set the launcher adds "-iwad path". It is clear when
-     * the caller gave -iwad, whose argument is passed through untouched. */
+     * the caller gave -iwad. When replace_explicit is set, the caller's bare
+     * -iwad name was found and path is that file: the launcher passes path
+     * in its place so the engine opens exactly the file classified here. */
     int pass_iwad;
+    int replace_explicit;
     char path[PATH_MAX];
     psd_iwad_kind_t kind; /* classification of the IWAD the engine will run */
     int arena_ok;         /* the bundled arena may be loaded with it        */

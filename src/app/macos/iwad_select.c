@@ -127,6 +127,13 @@ psd_iwad_kind_t psd_iwad_probe_file(const char *path, void *ctx)
         return PSD_IWAD_MISSING;
     }
 
+    /* Regular files only: opening a FIFO or device could block or have side
+     * effects. fstat below re-checks the file actually opened. */
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+    {
+        return PSD_IWAD_MISSING;
+    }
+
     f = fopen(path, "rb");
     if (f == NULL)
     {
@@ -181,22 +188,48 @@ psd_iwad_kind_t psd_iwad_probe_file(const char *path, void *ctx)
     return kind;
 }
 
-/* Probe dir/name; on a registered hit copy the path into out. */
+
+/* Copy a probed path into out with its kind. */
+static void choose(psd_iwad_choice_t *out, const char *path, size_t len,
+                   psd_iwad_kind_t kind)
+{
+    memcpy(out->path, path, len + 1);
+    out->kind = kind;
+    out->arena_ok = psd_iwad_kind_arena_ok(kind);
+}
+
+/* Probe a registered DOOM.WAD in one DOOMWADDIR/DOOMWADPATH/support entry.
+ * Like the engine, an entry may name the IWAD file itself rather than its
+ * directory. On a registered hit copy the path into out. */
 static int try_registered(const psd_iwad_query_t *query, const char *dir,
                           size_t dir_len, psd_iwad_choice_t *out)
 {
     char candidate[PATH_MAX];
+    const char *base;
     size_t i;
+    int n;
 
-    if (dir == NULL || dir_len == 0)
+    if (dir == NULL || dir_len == 0 || dir_len >= sizeof(candidate))
     {
         return 0;
     }
 
+    memcpy(candidate, dir, dir_len);
+    candidate[dir_len] = '\0';
+    base = strrchr(candidate, '/');
+    base = base ? base + 1 : candidate;
+    if (strcasecmp(base, "doom.wad") == 0
+        && query->probe(candidate, query->probe_ctx) == PSD_IWAD_REGISTERED)
+    {
+        choose(out, candidate, dir_len, PSD_IWAD_REGISTERED);
+        out->pass_iwad = 1;
+        return 1;
+    }
+
     for (i = 0; i < sizeof(registered_names) / sizeof(registered_names[0]); i++)
     {
-        int n = snprintf(candidate, sizeof(candidate), "%.*s/%s",
-                         (int) dir_len, dir, registered_names[i]);
+        n = snprintf(candidate, sizeof(candidate), "%.*s/%s",
+                     (int) dir_len, dir, registered_names[i]);
 
         if (n < 0 || (size_t) n >= sizeof(candidate))
         {
@@ -204,10 +237,137 @@ static int try_registered(const psd_iwad_query_t *query, const char *dir,
         }
         if (query->probe(candidate, query->probe_ctx) == PSD_IWAD_REGISTERED)
         {
-            memcpy(out->path, candidate, (size_t) n + 1);
+            choose(out, candidate, (size_t) n, PSD_IWAD_REGISTERED);
             out->pass_iwad = 1;
-            out->kind = PSD_IWAD_REGISTERED;
-            out->arena_ok = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Try name, its lower-case and its upper-case spelling in dir (dir_len 0:
+ * the working directory), as the engine's case-insensitive lookup does. The
+ * first file that exists wins, whatever its kind. */
+static int try_name(const psd_iwad_query_t *query, const char *dir,
+                    size_t dir_len, const char *name, psd_iwad_choice_t *out)
+{
+    char spelled[PATH_MAX];
+    char candidate[PATH_MAX];
+    size_t len = strlen(name);
+    int variant;
+
+    if (len >= sizeof(spelled))
+    {
+        return 0;
+    }
+
+    for (variant = 0; variant < 3; variant++)
+    {
+        psd_iwad_kind_t kind;
+        size_t i;
+        int n;
+
+        for (i = 0; i <= len; i++)
+        {
+            char c = name[i];
+
+            if (variant == 1 && c >= 'A' && c <= 'Z')
+            {
+                c = (char) (c - 'A' + 'a');
+            }
+            else if (variant == 2 && c >= 'a' && c <= 'z')
+            {
+                c = (char) (c - 'a' + 'A');
+            }
+            spelled[i] = c;
+        }
+        if (variant > 0 && strcmp(spelled, name) == 0)
+        {
+            continue;
+        }
+
+        if (dir_len == 0)
+        {
+            n = snprintf(candidate, sizeof(candidate), "%s", spelled);
+        }
+        else
+        {
+            n = snprintf(candidate, sizeof(candidate), "%.*s/%s",
+                         (int) dir_len, dir, spelled);
+        }
+        if (n < 0 || (size_t) n >= sizeof(candidate))
+        {
+            continue;
+        }
+
+        kind = query->probe(candidate, query->probe_ctx);
+        if (kind != PSD_IWAD_MISSING)
+        {
+            choose(out, candidate, (size_t) n, kind);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Find a bare -iwad name the way the engine would through the search path
+ * the launcher leaves it: the caller's DOOMWADDIR and DOOMWADPATH when either
+ * is set, otherwise the bundle's Resources then the support directory. */
+static int resolve_bare_name(const psd_iwad_query_t *query, const char *name,
+                             psd_iwad_choice_t *out)
+{
+    char support[PATH_MAX];
+    int n;
+
+    if (try_name(query, NULL, 0, name, out))
+    {
+        return 1;
+    }
+
+    if (query->doomwaddir != NULL || query->doomwadpath != NULL)
+    {
+        if (query->doomwaddir != NULL && query->doomwaddir[0] != '\0'
+            && try_name(query, query->doomwaddir, strlen(query->doomwaddir),
+                        name, out))
+        {
+            return 1;
+        }
+        if (query->doomwadpath != NULL)
+        {
+            const char *entry = query->doomwadpath;
+
+            for (;;)
+            {
+                const char *sep = strchr(entry, ':');
+                size_t len = sep ? (size_t) (sep - entry) : strlen(entry);
+
+                if (len > 0 && try_name(query, entry, len, name, out))
+                {
+                    return 1;
+                }
+                if (sep == NULL)
+                {
+                    break;
+                }
+                entry = sep + 1;
+            }
+        }
+        return 0;
+    }
+
+    if (query->resources_dir != NULL
+        && try_name(query, query->resources_dir, strlen(query->resources_dir),
+                    name, out))
+    {
+        return 1;
+    }
+    if (query->home != NULL && query->home[0] != '\0')
+    {
+        n = snprintf(support, sizeof(support),
+                     "%s/Library/Application Support/psDoom", query->home);
+        if (n > 0 && (size_t) n < sizeof(support)
+            && try_name(query, support, (size_t) n, name, out))
+        {
             return 1;
         }
     }
@@ -227,21 +387,32 @@ void psd_iwad_select(const psd_iwad_query_t *query, psd_iwad_choice_t *out)
         return;
     }
 
-    /* 1. The caller's -iwad is theirs: pass it through, and allow the arena
-     * only when the very file the engine opens first is arena-capable. The
-     * engine checks the argument as given before searching, so probing the
-     * same string matches what it loads; a bare name that is not in the
-     * working directory is not resolved here and gets no arena. */
+    /* 1. The caller's -iwad is theirs and is never replaced by another IWAD.
+     * A path (anything with a '/') is probed as given, which is the first
+     * thing the engine opens. A bare name is looked up like the engine does
+     * and, when found, handed back resolved (replace_explicit) so the engine
+     * opens exactly the file that was classified. The arena is allowed only
+     * on an arena-capable kind; an unresolved name gets none. */
     if (query->explicit_iwad != NULL)
     {
-        out->kind = query->probe(query->explicit_iwad, query->probe_ctx);
-        out->arena_ok = psd_iwad_kind_arena_ok(out->kind);
+        const char *name = query->explicit_iwad;
+
+        if (strchr(name, '/') != NULL || name[0] == '\0')
+        {
+            out->kind = query->probe(name, query->probe_ctx);
+            out->arena_ok = psd_iwad_kind_arena_ok(out->kind);
+        }
+        else if (resolve_bare_name(query, name, out))
+        {
+            out->replace_explicit = 1;
+        }
         return;
     }
 
     /* 2. A registered or Ultimate DOOM.WAD in the user's directories. */
-    if (try_registered(query, query->doomwaddir,
-                       query->doomwaddir ? strlen(query->doomwaddir) : 0, out))
+    if (query->doomwaddir != NULL
+        && try_registered(query, query->doomwaddir, strlen(query->doomwaddir),
+                          out))
     {
         return;
     }

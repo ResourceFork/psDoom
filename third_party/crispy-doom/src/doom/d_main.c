@@ -1479,8 +1479,9 @@ static const char *const loadparms[] = {"-file", "-merge", NULL};
 #define PSDOOM_BUNDLED_ARENA_ARG "-psdoom-bundled-arena"
 
 /* The intro is available only for the arena physically bundled next to this
- * engine. The loaded WAD set must contain exactly the IWAD and that resource,
- * and PSDINTRO must come from the resource itself. */
+ * engine, on registered/Ultimate Doom or Freedoom Phase 1 (never shareware or
+ * Doom II). The loaded WAD set must contain exactly the IWAD and that
+ * resource, and PSDINTRO must come from the resource itself. */
 static boolean D_IsBundledPsDoomArena(void)
 {
     char engine_path[PATH_MAX];
@@ -1492,7 +1493,8 @@ static boolean D_IsBundledPsDoomArena(void)
     char *separator;
     int marker;
 
-    if (!M_ParmExists(PSDOOM_BUNDLED_ARENA_ARG)
+    if (gamemission != doom || (gamemode != registered && gamemode != retail)
+        || !M_ParmExists(PSDOOM_BUNDLED_ARENA_ARG)
         || realpath(myargv[0], engine_path) == NULL)
     {
         return false;

@@ -73,6 +73,9 @@ psDoom never picks the shareware `DOOM1.WAD` or a Doom II IWAD by itself. If
 you start it with `-iwad` on either of them, you get the plain game with no
 process arena and no process monsters.
 
+Saved games are kept per IWAD, so games saved while psDoom ran on another IWAD
+(such as an older build's shareware `DOOM1.WAD`) do not appear under Freedoom.
+
 ## How to play
 
 1. Launch psDoom and watch the game's demo. No process management runs

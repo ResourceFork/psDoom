@@ -139,6 +139,23 @@ if(PSDOOM_BUNDLE_FREEDOOM)
     list(APPEND _PSD_ARENA_VALIDATE_ARGS --iwad "${_PSD_FREEDOOM_WAD}")
     list(APPEND _PSD_ARENA_DEPENDS "${_PSD_FREEDOOM_WAD}")
 endif()
+# Freedoom's texture set includes Doom II names, and a registered DOOM.WAD
+# takes precedence at runtime, so also check the arena's resources against an
+# id Doom IWAD when the developer has one in wads/ (only read, never bundled).
+set(_PSD_ARENA_ID_VALIDATE)
+foreach(_psd_id_iwad DOOM.WAD DOOM1.WAD)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/wads/${_psd_id_iwad}")
+        list(APPEND _PSD_ARENA_ID_VALIDATE
+            COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_wad.py"
+                --wad "${_PSD_ARENA_WAD_TMP}"
+                --iwad "${CMAKE_CURRENT_SOURCE_DIR}/wads/${_psd_id_iwad}")
+        list(APPEND _PSD_ARENA_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/wads/${_psd_id_iwad}")
+        message(STATUS "psDoom: also validating the arena against wads/${_psd_id_iwad}")
+        break()
+    endif()
+endforeach()
 
 add_custom_command(
     OUTPUT "${_PSD_ARENA_WAD}"
@@ -151,6 +168,7 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_wad.py"
         ${_PSD_ARENA_VALIDATE_ARGS}
+    ${_PSD_ARENA_ID_VALIDATE}
     COMMAND ${CMAKE_COMMAND} -E rename
         "${_PSD_ARENA_WAD_TMP}" "${_PSD_ARENA_WAD}"
     DEPENDS ${_PSD_ARENA_DEPENDS}
@@ -188,7 +206,23 @@ add_custom_command(TARGET psDoom POST_BUILD
 )
 
 # The bundled default IWAD and the notices its BSD-3 licence requires. A
-# shareware DOOM1.WAD in wads/ is no longer bundled: psDoom never selects it.
+# shareware DOOM1.WAD in wads/ is no longer bundled: psDoom never selects it,
+# and a copy left in an older build tree is removed. With bundling OFF, any
+# Freedoom files an earlier build left in the bundle are removed too.
+add_custom_command(TARGET psDoom POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${_PSD_RES_DIR}/DOOM1.WAD"
+    VERBATIM
+)
+if(NOT PSDOOM_BUNDLE_FREEDOOM)
+    add_custom_command(TARGET psDoom POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${_PSD_RES_DIR}/freedoom1.wad"
+            "${_PSD_RES_DIR}/Freedoom-COPYING.txt"
+            "${_PSD_RES_DIR}/Freedoom-CREDITS.txt"
+            "${_PSD_RES_DIR}/Freedoom-CREDITS-MUSIC.txt"
+        VERBATIM
+    )
+endif()
 if(PSDOOM_BUNDLE_FREEDOOM)
     add_custom_command(TARGET psDoom POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
