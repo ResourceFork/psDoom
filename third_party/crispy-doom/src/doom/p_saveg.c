@@ -27,6 +27,7 @@
 #include "p_local.h"
 #include "p_saveg.h"
 #include "a11y.h"
+#include "psdoom.h"  // [psDoom] process monsters are not saved
 
 // State.
 #include "doomstat.h"
@@ -439,7 +440,8 @@ uint32_t P_ThinkerToIndex (thinker_t* thinker)
 
     for (th = thinkercap.next, i = 0; th != &thinkercap; th = th->next)
     {
-	if (th->function.acp1 == (actionf_p1) P_MobjThinker)
+	// [psDoom] count only the mobjs a save writes
+	if (th->function.acp1 == (actionf_p1) P_MobjThinker && psdoom_mobj_saved((mobj_t *) th))
 	{
 	    i++;
 	    if (th == thinker)
@@ -461,7 +463,8 @@ thinker_t* P_IndexToThinker (uint32_t index)
 
     for (th = thinkercap.next, i = 0; th != &thinkercap; th = th->next)
     {
-	if (th->function.acp1 == (actionf_p1) P_MobjThinker)
+	// [psDoom] count only the mobjs a save writes
+	if (th->function.acp1 == (actionf_p1) P_MobjThinker && psdoom_mobj_saved((mobj_t *) th))
 	{
 	    i++;
 	    if (i == index)
@@ -1688,6 +1691,10 @@ void P_ArchiveThinkers (void)
     {
 	if (th->function.acp1 == (actionf_p1)P_MobjThinker)
 	{
+	    // [psDoom] a process monster lives only in the process list
+	    if (!psdoom_mobj_saved((mobj_t *) th))
+		continue;
+
             saveg_write8(tc_mobj);
 	    saveg_write_pad();
             saveg_write_mobj_t((mobj_t *) th);
@@ -1742,6 +1749,7 @@ void P_UnArchiveThinkers (void)
 	    saveg_read_pad();
 	    mobj = Z_Malloc (sizeof(*mobj), PU_LEVEL, NULL);
             saveg_read_mobj_t(mobj);
+	    psdoom_restored_mobj(mobj); // [psDoom] no restored mobj is a process monster
 
 	    // [crispy] restore mobj->target and mobj->tracer fields
 	    //mobj->target = NULL;

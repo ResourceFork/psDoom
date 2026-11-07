@@ -25,6 +25,7 @@
 #include "proc_backend.h"    /* current uid, renice, kill (via vtable) */
 #include "proc_script.h"     /* optional external-script backend (env-driven) */
 #include "proc_select.h"    /* curated process collection */
+#include "psdoom_lifecycle.h" /* psd_pid tags; save and retire rules */
 #include "psdoom_options.h" /* user-tunable settings (menu / CLI / config) */
 
 #include <ctype.h>
@@ -77,12 +78,8 @@
  * ignores them (they never signal/renice anything) -- they are a cosmetic
  * threat the player clears by shooting. A per-parent cooldown, a per-burst cap
  * and a global live ceiling together bound how many can pile up. */
-#define PSD_SWARM_PID        (-1)  /* psd_pid tag for an inert swarm soul       */
-#define PSD_GONE_PID         (-2)  /* psd_pid tag: its process is gone or its pid
-                                    * was reused; acts on nothing and shows no
-                                    * label until the next sync removes it (see
-                                    * PSD_MarkGone)                             */
-#define PSD_FORK_BURST         5   /* child-count jump (per sync) that triggers */
+/* PSD_SWARM_PID and PSD_GONE_PID (psd_pid tags) live in psdoom_lifecycle.h. */
+#define PSD_FORK_BURST        5   /* child-count jump (per sync) that triggers */
 #define PSD_SWARM_PER_BURST    6   /* max souls spawned per detected burst      */
 #define PSD_MAX_SWARM_LIVE    24   /* global ceiling on live swarm souls        */
 #define PSD_SWARM_COOLDOWN  (PSD_SYNC_INTERVAL * 4) /* tics before a parent re-swarms */
@@ -388,6 +385,73 @@ static boolean PSD_MonsterDrawable(mobjtype_t type)
     return spr >= 0 && spr < numsprites && sprites[spr].numframes > 0;
 }
 
+/* Teleport fog and sound at (x, y, z), as the engine's teleporters do. The
+ * sound plays from the fog, so it outlives a monster removed right after. The
+ * fog is skipped if the WAD lacks its sprite. */
+static void PSD_TeleportFog(fixed_t x, fixed_t y, fixed_t z)
+{
+    if (PSD_MonsterDrawable(MT_TFOG))
+    {
+        mobj_t *fog = P_SpawnMobj(x, y, z, MT_TFOG);
+
+        S_StartSound(fog, sfx_telept);
+    }
+}
+
+/* Drop every reference the game holds to `mo` before it is removed, so no
+ * monster, missile, player or sector keeps a pointer to freed memory. The
+ * engine already copes with these being NULL: loading a vanilla save leaves
+ * them NULL. */
+static void PSD_ForgetMobj(const mobj_t *mo)
+{
+    thinker_t *th;
+    int        i;
+
+    for (th = thinkercap.next; th != &thinkercap; th = th->next)
+    {
+        if (th->function.acp1 == (actionf_p1) P_MobjThinker)
+        {
+            mobj_t *other = (mobj_t *) th;
+
+            if (other->target == mo)
+            {
+                other->target = NULL;
+            }
+            if (other->tracer == mo)
+            {
+                other->tracer = NULL;
+            }
+        }
+    }
+    for (i = 0; i < MAXPLAYERS; i++)
+    {
+        if (players[i].attacker == mo)
+        {
+            players[i].attacker = NULL;
+        }
+    }
+    for (i = 0; i < numsectors; i++)
+    {
+        if (sectors[i].soundtarget == mo)
+        {
+            sectors[i].soundtarget = NULL;
+        }
+    }
+}
+
+/* End a process monster's life for `reason` (psd_end_action decides how). A
+ * monster whose process left the list teleports out; it never just vanishes.
+ * Only the sync calls this, between thinker runs, so `mo` is not in use. */
+static void PSD_RetireMonster(mobj_t *mo, psd_end_reason_t reason)
+{
+    if (psd_end_action(reason) == PSD_END_TELEPORT_OUT)
+    {
+        PSD_TeleportFog(mo->x, mo->y, mo->z);
+    }
+    PSD_ForgetMobj(mo);
+    P_RemoveMobj(mo);
+}
+
 /* Pick the toughest tier `metric` earns, then degrade to the first lighter
  * tier whose sprite the loaded WAD actually has. The shareware IWAD lacks Hell
  * Knight / Cyberdemon sprites, and spawning an undrawable monster is fatal
@@ -481,6 +545,9 @@ static boolean PSD_SpawnMonster(const psd_proc_t *p)
                 mo->psd_start = p->start_token;
                 strncpy(mo->psd_name, p->name, sizeof(mo->psd_name) - 1);
                 mo->psd_name[sizeof(mo->psd_name) - 1] = '\0';
+
+                /* It teleports in, as it will teleport out. */
+                PSD_TeleportFog(mo->x, mo->y, mo->z);
                 return true;
             }
         }
@@ -858,8 +925,25 @@ void psdoom_end_intro(void)
     psd_first_active_collection = false;
 }
 
+/* Forget everything psDoom tracks about the current level's monsters. */
+static void PSD_ResetLevelState(void)
+{
+    psd_killed_count = 0;
+    psd_grade_count  = 0;
+    psd_fork_count   = 0;
+    psd_swarm_live   = 0;
+    psd_next_sync    = 0;
+}
+
 void psdoom_restore_intro(int active)
 {
+    /* A save keeps no process monster or swarm soul (they are ethereal), so
+     * the loaded level starts with none: drop the kills, grades, fork
+     * baselines and the live-soul tally of the level being replaced. The sync
+     * rebuilds process monsters from the live list. */
+    PSD_ResetLevelState();
+    psd_last_leveltime = 0;
+
     if (active && psd_intro_state != PSD_INTRO_UNAVAILABLE)
     {
         psd_intro_state = PSD_INTRO_ACTIVE;
@@ -1035,11 +1119,7 @@ void psdoom_sync(void)
      * immediately (this also clears a stale throttle when re-entering E1M1). */
     if (leveltime < psd_last_leveltime)
     {
-        psd_killed_count = 0;
-        psd_grade_count  = 0;
-        psd_fork_count   = 0;
-        psd_swarm_live   = 0;
-        psd_next_sync    = 0;
+        PSD_ResetLevelState();
         psd_first_active_collection = true;
     }
     psd_last_leveltime = leveltime;
@@ -1068,7 +1148,8 @@ void psdoom_sync(void)
 
     /* 1) Retire monsters no longer in the curated set (process exited, its pid
      *    was reused, or it dropped below the relevance cut), and monsters a
-     *    checked action already found gone. */
+     *    checked action already found gone. They teleport out. A fog spawned
+     *    here joins the end of the list with psd_pid 0, so the walk skips it. */
     for (th = thinkercap.next; th != &thinkercap; th = next)
     {
         next = th->next;
@@ -1076,10 +1157,14 @@ void psdoom_sync(void)
         if (th->function.acp1 == (actionf_p1) P_MobjThinker)
         {
             mobj_t *mo = (mobj_t *) th;
-            if (mo->psd_pid == PSD_GONE_PID
-                || (mo->psd_pid > 0 && !PSD_MonsterSelected(mo, n)))
+            if (mo->psd_pid == PSD_GONE_PID)
             {
-                P_RemoveMobj(mo);
+                PSD_RetireMonster(mo, PSD_END_IDENTITY_LOST);
+                removed++;
+            }
+            else if (mo->psd_pid > 0 && !PSD_MonsterSelected(mo, n))
+            {
+                PSD_RetireMonster(mo, PSD_END_LEFT_LIST);
                 removed++;
             }
         }
@@ -1189,6 +1274,29 @@ void psdoom_kill(struct mobj_s *target)
     /* Remember it so psdoom_sync won't respawn it -- crucial when the kill
      * policy leaves the real process running. */
     PSD_MarkKilled(mo->psd_pid, mo->psd_start, mo->psd_name);
+}
+
+/* ---------------------------------------------------------------- save/load */
+
+int psdoom_mobj_saved(const struct mobj_s *target)
+{
+    const mobj_t *mo = (const mobj_t *) target;
+
+    /* P_SpawnMapThing records the map thing; an on-demand P_SpawnMobj leaves
+     * the spawn point zeroed, and no map thing has type 0. */
+    return psd_save_disposition(mo->psd_pid, mo->spawnpoint.type != 0)
+        != PSD_SAVE_SKIP;
+}
+
+void psdoom_restored_mobj(struct mobj_s *target)
+{
+    mobj_t *mo = (mobj_t *) target;
+
+    /* The identity is not in the save and the restored block is not zeroed:
+     * every restored mobj is an ordinary one. */
+    mo->psd_pid   = 0;
+    mo->psd_start = 0;
+    memset(mo->psd_name, 0, sizeof(mo->psd_name));
 }
 
 /* --------------------------------------------------------------- label draw */

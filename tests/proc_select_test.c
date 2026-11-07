@@ -6,8 +6,10 @@
  * never kills anything, and its renice reaches only this binary's
  * getpriority/setpriority seam, never the OS), so the triage policy, the
  * pid-reuse guard and the backend plumbing are exercised deterministically
- * off-machine (no Doom engine). The script tests spawn only their own poll and
- * respond commands and never signal anything. proc_select calls one
+ * off-machine (no Doom engine), and so are the process-monster lifecycle rules
+ * (psdoom_lifecycle: what a save keeps, how a monster leaves). The script
+ * tests spawn only their own poll and respond commands and never signal
+ * anything. proc_select calls one
  * option getter (psdoom_all_users_enabled); we stub it here rather than link
  * the engine-coupled options module.
  *
@@ -18,6 +20,7 @@
 #include "proc_backend.h"
 #include "proc_fake.h"
 #include "proc_script.h"
+#include "psdoom_lifecycle.h"
 #ifdef __APPLE__
 #include "proc_macos.h"   /* read-only listing/lookup check */
 #endif
@@ -881,6 +884,36 @@ static void test_identity_without_start_token(void)
     CHECK(!psd_proc_same(&entity, 4123, 5ULL, "web frontend"));
 }
 
+/* Process monsters are ethereal: a save writes ordinary mobjs as is, writes a
+ * map-placed monster that carried a process identity as a plain map monster,
+ * and never writes a monster spawned on demand for the process list. */
+static void test_save_disposition(void)
+{
+    /* Ordinary mobjs, map-placed or not (a teleport fog, a missile). */
+    CHECK(psd_save_disposition(0, 1) == PSD_SAVE_KEEP);
+    CHECK(psd_save_disposition(0, 0) == PSD_SAVE_KEEP);
+
+    /* Spawned on demand: a process monster, a swarm soul, a gone monster. */
+    CHECK(psd_save_disposition(4123, 0) == PSD_SAVE_SKIP);
+    CHECK(psd_save_disposition(2, 0) == PSD_SAVE_SKIP);
+    CHECK(psd_save_disposition(PSD_SWARM_PID, 0) == PSD_SAVE_SKIP);
+    CHECK(psd_save_disposition(PSD_GONE_PID, 0) == PSD_SAVE_SKIP);
+
+    /* Map-placed with a process identity: kept, identity stripped. */
+    CHECK(psd_save_disposition(4123, 1) == PSD_SAVE_STRIP);
+    CHECK(psd_save_disposition(PSD_GONE_PID, 1) == PSD_SAVE_STRIP);
+    CHECK(psd_save_disposition(PSD_SWARM_PID, 1) == PSD_SAVE_STRIP);
+}
+
+/* Leaving the process list, by exit or by an identity mismatch, teleports a
+ * monster out; a monster killed in the game dies normally. */
+static void test_end_action(void)
+{
+    CHECK(psd_end_action(PSD_END_LEFT_LIST) == PSD_END_TELEPORT_OUT);
+    CHECK(psd_end_action(PSD_END_IDENTITY_LOST) == PSD_END_TELEPORT_OUT);
+    CHECK(psd_end_action(PSD_END_KILLED) == PSD_END_DIE);
+}
+
 #ifdef __APPLE__
 /* The native backend, exercised READ-ONLY: listing and lookup capture a start
  * time that agrees between the two. Never renices or kills anything. */
@@ -1062,6 +1095,8 @@ int main(int argc, char **argv)
     test_guard_reserved_pids_refused();
     test_identity_name_truncation();
     test_identity_without_start_token();
+    test_save_disposition();
+    test_end_action();
 #ifdef __APPLE__
     test_macos_start_token_readonly();
     test_macos_zombie_readonly();

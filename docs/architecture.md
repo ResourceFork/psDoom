@@ -64,6 +64,8 @@ backend           ->   proc_select         ->   psdoom
     monsters (spawn/retire), draws labels, classifies by memory footprint or CPU load, re-grades
     live monsters, and spawns fork-bomb swarms. Engine-facing API: `psdoom_init`, `psdoom_sync`,
     `psdoom_wound(mobj)`, `psdoom_kill(mobj)`, `psdoom_draw_label(...)`.
+  - `psdoom_lifecycle.{h,c}` — the engine-free rules for how a process monster ends (teleport out or
+    die) and what a save keeps (keep, strip, or skip); covered by the host tests.
   - `psdoom_options.{h,c}` — user-tunable settings (kill policy, target-all-users, show-labels,
     show-pid, label distance, classify-by, max-live-monsters), the policy getters the game asks,
     and `-psdoom-*` CLI parsing. Engine-free; the ints are bound to the config file (d_main.c).
@@ -97,6 +99,7 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
 | New Game lifecycle     | `m_menu.c`, `g_game.c` : skill callbacks, `G_DoNewGame` | completed normal/Nightmare selection requests the intro; `G_DoNewGame` consumes the request into ACTIVE |
 | Intro lookup and exit  | `p_setup.c`, `g_game.c` : `P_SetupLevel`, `G_ExitLevel` | load `PSDINTRO` only when ACTIVE, then clear it and defer unmodified IWAD `E1M1`                        |
 | Save restoration       | `g_game.c`, `g_game.h` : `G_DoLoadGame`                 | derive ACTIVE from the saved map WAD owner before base geometry loads                                   |
+| Saves skip process monsters | `p_saveg.c` : `P_ArchiveThinkers`, `P_ThinkerToIndex`, `P_IndexToThinker`, `P_UnArchiveThinkers` | write no process monster or swarm soul; restored mobjs carry no process identity |
 
 ## Features
 
@@ -127,7 +130,14 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   becomes ACTIVE, uses that snapshot as the CPU-rate baseline, then spawns a monster per current-UID
   process on the intro's clear grid; wound → `setpriority` renice; kill → `SIGTERM`. Killing a
   process-monster is remembered for the level (`psd_killed`, by pid+name) so it does not respawn on
-  the next sync when the kill policy leaves the real process running. The set clears on level restart.
+  the next sync when the kill policy leaves the real process running. The set clears on level restart
+  and on a load. A process monster teleports in (`MT_TFOG` + `sfx_telept`) when it spawns, and
+  teleports out the same way when its process leaves the list or a checked action finds its pid
+  gone or reused; a monster killed in the game dies normally.
+- **Ethereal in saves.** Process monsters are backed only by the live list, so a save never writes
+  one (nor a swarm soul), and a load restores no process identity: map monsters come back as they
+  were, and the sync rebuilds process monsters from the live list. The save format is unchanged;
+  only which mobjs are written changes (`psdoom_mobj_saved`, `psdoom_lifecycle.c`).
 - **Process labels.** Each process-monster's name (and, optionally, its PID) is drawn above its
   sprite using the HUD font; the renderer carries `psd_pid`/`psd_name` on the `vissprite_t`. PID
   is hidden by default to keep a crowded courtyard readable. Distant sprites are skipped; labels

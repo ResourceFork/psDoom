@@ -48,6 +48,18 @@ void psdoom_wound(struct mobj_s *target);
  * not a process-monster. */
 void psdoom_kill(struct mobj_s *target);
 
+/* Process monsters are ethereal: they are backed only by the live process
+ * list. psdoom_mobj_saved is nonzero if a save writes `target` (P_ArchiveThinkers
+ * and the save's mobj index enumeration, P_ThinkerToIndex / P_IndexToThinker);
+ * a monster spawned on demand for a process, swarm souls included, is never
+ * written. psdoom_restored_mobj clears the process identity of a mobj just
+ * read from a save (P_UnArchiveThinkers), so a load restores ordinary mobjs
+ * only. Neither changes the save format. psdoom_restore_intro also resets the
+ * per-level process state, so the sync rebuilds process monsters from the
+ * live list after a load. */
+int psdoom_mobj_saved(const struct mobj_s *target);
+void psdoom_restored_mobj(struct mobj_s *target);
+
 /*
  * Draw a process-monster's PID and name centered above its sprite. Called
  * from the renderer (R_DrawVisSprite) once per visible process-monster.

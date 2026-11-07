@@ -42,7 +42,7 @@ If `PSDOOM_POLL_CMD` is unset, psDoom uses its native OS backend as before.
 
 | key | type | required | default | meaning |
 |---|---|---|---|---|
-| `id` | integer > 1 | **yes** | — | Stable, unique handle for the entity; becomes the monster's identity. **Must stay the same across polls** for the same entity, so it can be tracked, re-graded, and not respawned after a kill. `0` and `1` are reserved (ignored if emitted). An `id` that is not plain decimal digits in the range 2 to 2147483647 (a sign, a space, trailing characters or overflow) is rejected, and that line yields no entity. |
+| `id` | integer > 1 | **yes** | — | Stable, unique handle for the entity; becomes the monster's identity. **Must stay the same across polls** for the same entity, so it can be tracked, re-graded, and not respawned after a kill. A script must not reuse an `id` for a different entity while that `id` is listed, because tracking which entity an `id` names is the script's job, not psDoom's. `0` and `1` are reserved (ignored if emitted). An `id` that is not plain decimal digits in the range 2 to 2147483647 (a sign, a space, trailing characters or overflow) is rejected, and that line yields no entity. |
 | `parent` | integer ≥ 0 | no | `0` | `id` of this entity's parent. Used to group fork-bomb swarms (a parent whose child count spikes). `0` = no parent. |
 | `label` | string | no | `""` | Text drawn above the monster. Rendered in the HUD font (uppercase ASCII; other glyphs show as spaces). Truncated to 31 bytes. |
 | `weight` | unsigned integer | no | `0` | "Size" metric. Drives monster toughness when *Classify by* is **memory/weight** (the default). Compared against the [size ladder](#size-ladder). |

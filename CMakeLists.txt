@@ -41,6 +41,7 @@ add_subdirectory(third_party/crispy-doom)
 # third_party/ stays untouched.
 target_sources(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_lifecycle.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_options.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_menu.c"
@@ -177,6 +178,7 @@ enable_testing()
 add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/proc_select_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_lifecycle.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_fake.c")
