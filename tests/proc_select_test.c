@@ -3,9 +3,11 @@
  *
  * Engine-free: links proc_select, proc_backend, the fake and script backends
  * and, on macOS, the native backend for READ-ONLY listing/lookup checks (it
- * never renices or kills anything), so the triage policy, the pid-reuse guard
- * and the backend plumbing are exercised deterministically off-machine (no
- * Doom engine). proc_select calls one
+ * never kills anything, and its renice reaches only this binary's
+ * getpriority/setpriority seam, never the OS), so the triage policy, the
+ * pid-reuse guard and the backend plumbing are exercised deterministically
+ * off-machine (no Doom engine). The script tests spawn only their own poll and
+ * respond commands and never signal anything. proc_select calls one
  * option getter (psdoom_all_users_enabled); we stub it here rather than link
  * the engine-coupled options module.
  *
@@ -20,10 +22,16 @@
 #include "proc_macos.h"   /* read-only listing/lookup check */
 #endif
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+#include <sys/resource.h> /* getpriority / setpriority (link-time seam) */
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>     /* waitpid (reap our own zombie child) */
 
@@ -389,6 +397,264 @@ static void test_script_backend_roundtrip(void)
     unlink(result);
 }
 
+/* ---- script backend hardening -------------------------------------------- */
+
+static char g_self[1024];   /* absolute path of this binary (the fd probe) */
+
+static unsigned long long test_mono_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long) ts.tv_sec * 1000ULL
+         + (unsigned long long) ts.tv_nsec / 1000000ULL;
+}
+
+static const char *test_tmpdir(void)
+{
+    const char *td = getenv("TMPDIR");
+
+    return (td != NULL && td[0] != '\0') ? td : "/tmp";
+}
+
+/* An id outside 2..INT_MAX, or anything but plain decimal digits, drops the
+ * line: it must never become an entity whose id wraps (4294967295 -> -1 would
+ * turn a responder's `kill "$id"` into `kill -1`). */
+static void test_script_parse_rejects_bad_ids(void)
+{
+    static const char *bad[] =
+    {
+        "id=4294967295\tlabel=wraps-to-minus-1\n",
+        "id=4294967297\tlabel=wraps-to-1\n",
+        "id=2147483648\tlabel=int-max-plus-1\n",
+        "id=99999999999999999999999\tlabel=huge\n",
+        "id=-1\tlabel=minus-one\n",
+        "id=-2147483648\tlabel=int-min\n",
+        "id=0\tlabel=zero\n",
+        "id=1\tlabel=one\n",
+        "id=12abc\tlabel=trailing-junk\n",
+        "id=\tlabel=empty\n",
+        "id= 42\tlabel=leading-space\n",
+        "id=+42\tlabel=plus-sign\n",
+        "id=0x10\tlabel=hex\n",
+        "id=42\tid=junk\tlabel=last-value-invalid\n",
+    };
+    psd_proc_t out[2];
+    size_t     i;
+    int        n;
+
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+    {
+        n = psd_script_parse(bad[i], out, 2);
+        CHECK(n == 0);
+        if (n != 0)
+        {
+            fprintf(stderr, "  accepted id %d from: %s", out[0].pid, bad[i]);
+        }
+    }
+
+    n = psd_script_parse("id=2147483647\tlabel=max\n", out, 2);
+    CHECK(n == 1 && out[0].pid == INT_MAX);
+    n = psd_script_parse("id=2\tlabel=min\n", out, 2);
+    CHECK(n == 1 && out[0].pid == 2);
+    n = psd_script_parse("id=0042\n", out, 2);
+    CHECK(n == 1 && out[0].pid == 42);
+    /* A parent that would wrap is dropped to "no parent", not kept wrapped. */
+    n = psd_script_parse("id=7\tparent=4294967297\n", out, 2);
+    CHECK(n == 1 && out[0].ppid == 0);
+}
+
+/* Defense in depth: even a raw backend call never hands an id <= 1 to the
+ * response command (the recording responder only writes its argv). */
+static void test_script_respond_refuses_reserved_ids(void)
+{
+    char poll[512];
+    char respond[512];
+    char result[512];
+    char respond_content[700];
+    psd_proc_t out[4];
+
+    snprintf(poll,    sizeof(poll),    "%s/psd_rpoll_%d.sh", test_tmpdir(), (int) getpid());
+    snprintf(respond, sizeof(respond), "%s/psd_rresp_%d.sh", test_tmpdir(), (int) getpid());
+    snprintf(result,  sizeof(result),  "%s/psd_rres_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(result);
+    write_executable(poll, "#!/bin/sh\nprintf 'id=4242\\tlabel=control\\n'\n");
+    snprintf(respond_content, sizeof(respond_content),
+             "#!/bin/sh\necho \"<$*>\" >> '%s'\n", result);
+    write_executable(respond, respond_content);
+
+    proc_script_install(poll, respond, 1000);
+    (void) proc_backend()->list(out, 4);
+
+    CHECK(proc_backend()->kill(-1) == 0);
+    CHECK(proc_backend()->kill(0) == 0);
+    CHECK(proc_backend()->kill(1) == 0);
+    proc_backend()->renice(-1, 4);
+    proc_backend()->renice(1, 4);
+    (void) proc_backend()->kill(4242);           /* control: dispatched */
+    CHECK(wait_for_contains(result, "<kill 4242", 3000));
+    usleep(300000);   /* give any wrongly dispatched responder time to land */
+    CHECK(!file_contains(result, "<kill -1"));
+    CHECK(!file_contains(result, "<kill 0"));
+    CHECK(!file_contains(result, "<kill 1>"));
+    CHECK(!file_contains(result, "<wound -1"));
+    CHECK(!file_contains(result, "<wound 1 "));
+
+    unlink(poll);
+    unlink(respond);
+    unlink(result);
+}
+
+/* A poll that overruns its timeout is stopped as a whole process group: a
+ * background child it started does not outlive the timeout. The child is a
+ * `sleep 5`, so on a build that leaks it, it exits by itself; this test never
+ * signals anything. */
+static void test_script_poll_timeout_leaves_no_child(void)
+{
+    char               pidfile[512];
+    char               poll[1024];
+    psd_proc_t         out[4];
+    unsigned long long t0;
+    unsigned long long elapsed;
+    long               child = 0;
+    long               shell = 0;
+    int                alive = 1;
+    int                waited;
+    int                n;
+    FILE              *f;
+
+    snprintf(pidfile, sizeof(pidfile), "%s/psd_leak_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(pidfile);
+    snprintf(poll, sizeof(poll),
+             "sleep 5 & echo \"$! $$\" > '%s'; wait", pidfile);
+
+    proc_script_install(poll, NULL, 300);
+    t0 = test_mono_ms();
+    n = proc_backend()->list(out, 4);
+    elapsed = test_mono_ms() - t0;
+    CHECK(n == 0);
+    CHECK(elapsed < 2000);   /* the game was not held past the timeout */
+
+    f = fopen(pidfile, "r");
+    CHECK(f != NULL);
+    if (f != NULL)
+    {
+        CHECK(fscanf(f, "%ld %ld", &child, &shell) == 2);
+        fclose(f);
+    }
+    CHECK(child > 1 && shell > 1);
+    if (child <= 1)
+    {
+        unlink(pidfile);
+        return;
+    }
+
+    /* Read-only check (getpgid sends nothing): the child is gone once no
+     * process with its pid is in the poll's group or in ours. A pid reused by
+     * an unrelated process sits in another group and also counts as gone. */
+    for (waited = 0; waited <= 2000; waited += 20)
+    {
+        pid_t g = getpgid((pid_t) child);
+
+        if ((g < 0 && errno == ESRCH)
+            || (g >= 0 && g != (pid_t) shell && g != getpgrp()))
+        {
+            alive = 0;
+            break;
+        }
+        usleep(20000);
+    }
+    CHECK(!alive);
+    if (alive)
+    {
+        fprintf(stderr, "  poll child %ld outlived the poll timeout\n", child);
+    }
+    unlink(pidfile);
+}
+
+/* Descriptors open in the game (a file, a socket, a high-numbered one, none of
+ * them close-on-exec) must not reach the poll or the respond command: each
+ * child sees only stdin, stdout and stderr. The probe is this binary run with
+ * --fd-probe / --fd-probe-file (see main). */
+static void test_script_children_inherit_no_fds(void)
+{
+    char       poll[1200];
+    char       respond[1200];
+    char       result[512];
+    psd_proc_t out[4];
+    int        file_fd;
+    int        sock_fd;
+    int        high_fd;
+    int        n;
+
+    if (g_self[0] == '\0' || strpbrk(g_self, " \t'") != NULL)
+    {
+        fprintf(stderr, "FAIL: fd probe path unusable: '%s'\n", g_self);
+        CHECK(0);
+        return;
+    }
+
+    snprintf(result, sizeof(result), "%s/psd_fds_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(result);
+    snprintf(poll, sizeof(poll), "'%s' --fd-probe", g_self);
+    snprintf(respond, sizeof(respond), "%s --fd-probe-file %s", g_self, result);
+
+    file_fd = open("/dev/null", O_RDONLY);
+    sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    high_fd = dup2(file_fd, 200);
+    CHECK(file_fd >= 3 && sock_fd >= 3 && high_fd == 200);
+
+    proc_script_install(poll, respond, 2000);
+    n = proc_backend()->list(out, 4);
+    CHECK(n == 1);
+    if (n == 1)
+    {
+        CHECK(strcmp(out[0].name, "none") == 0);
+        if (strcmp(out[0].name, "none") != 0)
+        {
+            fprintf(stderr, "  poll child inherited fds: %s\n", out[0].name);
+        }
+    }
+
+    (void) proc_backend()->kill(2);
+    CHECK(wait_for_contains(result, "\n", 3000));
+    CHECK(file_contains(result, "none\n"));
+    if (!file_contains(result, "none\n"))
+    {
+        fprintf(stderr, "  respond child inherited fds (see %s)\n", result);
+    }
+    else
+    {
+        unlink(result);
+    }
+
+    close(high_fd);
+    close(sock_fd);
+    close(file_fd);
+}
+
+/* The fd probe: list this process's open descriptors above stderr. */
+static void fd_probe_list(char *buf, size_t cap)
+{
+    int    limit = getdtablesize();
+    int    fd;
+    size_t len = 0;
+
+    buf[0] = '\0';
+    for (fd = 3; fd < limit; fd++)
+    {
+        if (fcntl(fd, F_GETFD) != -1 && len + 12 < cap)
+        {
+            len += (size_t) snprintf(buf + len, cap - len, "%s%d",
+                                     len == 0 ? "" : ",", fd);
+        }
+    }
+    if (len == 0)
+    {
+        snprintf(buf, cap, "none");
+    }
+}
+
 /* ---- pid-reuse guard: act only on the process the monster was spawned for -- */
 
 static psd_proc_t mkident(int pid, unsigned long long start, const char *name)
@@ -562,10 +828,100 @@ static void test_macos_zombie_readonly(void)
     waitpid(child, NULL, 0);
     CHECK(proc_macos_lookup((int) child, &cur) == 0);
 }
+
+/* Link-time seam: these definitions take the place of libSystem's
+ * getpriority/setpriority for this test binary only, so the native renice is
+ * observed without changing the priority of any real process. Nothing else in
+ * this binary calls them. */
+static int   seam_setpriority_calls;
+static id_t  seam_setpriority_who;
+
+int getpriority(int which, id_t who)
+{
+    (void) which;
+    (void) who;
+    errno = 0;
+    return 0;
+}
+
+int setpriority(int which, id_t who, int prio)
+{
+    (void) which;
+    (void) prio;
+    seam_setpriority_calls++;
+    seam_setpriority_who = who;
+    return 0;
+}
+
+extern const proc_backend_t proc_macos_backend;
+
+/* The native renice refuses pid <= 1, as the native kill does, both raw and
+ * through the checked wrapper. */
+static void test_macos_renice_refuses_reserved(void)
+{
+    static const int bad[] = { 1, 0, -1, INT_MIN };
+    size_t           i;
+
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+    {
+        seam_setpriority_calls = 0;
+        proc_macos_renice(bad[i], 4);
+        CHECK(seam_setpriority_calls == 0);
+        if (seam_setpriority_calls != 0)
+        {
+            fprintf(stderr, "  native renice reached setpriority for pid %d\n", bad[i]);
+        }
+    }
+
+    /* Control: a valid pid (our own, delta 0) does reach setpriority, so the
+     * seam is in effect and the checks above are meaningful. */
+    seam_setpriority_calls = 0;
+    proc_macos_renice((int) getpid(), 0);
+    CHECK(seam_setpriority_calls == 1);
+    CHECK(seam_setpriority_who == (id_t) getpid());
+
+    proc_backend_set(&proc_macos_backend);
+    seam_setpriority_calls = 0;
+    CHECK(psd_proc_renice_checked(1, 0ULL, "launchd", 4) == PSD_ACT_REFUSED);
+    CHECK(psd_proc_renice_checked(0, 0ULL, "kernel_task", 4) == PSD_ACT_REFUSED);
+    CHECK(psd_proc_renice_checked(-1, 0ULL, "", 4) == PSD_ACT_REFUSED);
+    CHECK(seam_setpriority_calls == 0);
+    proc_backend_set(NULL);
+}
 #endif
 
-int main(void)
+int main(int argc, char **argv)
 {
+    /* fd probe mode: run as the poll command (prints one entity whose label
+     * lists the inherited fds) or as the respond command (appends the list to
+     * a file). The list is taken before anything else is opened. */
+    if (argc >= 2 && strcmp(argv[1], "--fd-probe") == 0)
+    {
+        char fds[256];
+
+        fd_probe_list(fds, sizeof(fds));
+        printf("id=2\tlabel=%s\n", fds);
+        return 0;
+    }
+    if (argc >= 3 && strcmp(argv[1], "--fd-probe-file") == 0)
+    {
+        char  fds[256];
+        FILE *f;
+
+        fd_probe_list(fds, sizeof(fds));
+        f = fopen(argv[2], "a");
+        if (f != NULL)
+        {
+            fprintf(f, "%s\n", fds);
+            fclose(f);
+        }
+        return 0;
+    }
+    if (argc >= 1 && realpath(argv[0], g_self) == NULL)
+    {
+        g_self[0] = '\0';
+    }
+
     test_triage_filters_and_ranking();
     test_triage_all_users();
     test_triage_truncation();
@@ -574,6 +930,10 @@ int main(void)
     test_script_parse();
     test_script_parse_truncates();
     test_script_backend_roundtrip();
+    test_script_parse_rejects_bad_ids();
+    test_script_respond_refuses_reserved_ids();
+    test_script_poll_timeout_leaves_no_child();
+    test_script_children_inherit_no_fds();
     test_guard_same_process_acts();
     test_guard_reused_pid_refused();
     test_guard_vanished_pid_refused();
@@ -583,6 +943,7 @@ int main(void)
 #ifdef __APPLE__
     test_macos_start_token_readonly();
     test_macos_zombie_readonly();
+    test_macos_renice_refuses_reserved();
 #endif
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);

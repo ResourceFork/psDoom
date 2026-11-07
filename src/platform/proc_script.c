@@ -4,11 +4,15 @@
  *
  * - Enumerate: run PSDOOM_POLL_CMD through the shell, capture its stdout (with a
  *   timeout so a slow/hung script never freezes the game), and parse the
- *   tab-separated key=value lines into psd_proc_t.
+ *   tab-separated key=value lines into psd_proc_t. An id outside 2..INT_MAX,
+ *   or not plain decimal digits, drops the line.
  * - Act: run PSDOOM_RESPOND_CMD *directly* (no shell) as
  *   `<verb> <id> [key=value...]`, double-forked so it never blocks the game and
  *   never leaks a zombie. Direct exec means an entity's label/id can't be
- *   interpreted as shell syntax.
+ *   interpreted as shell syntax. An id <= 1 is never handed to it.
+ * - Both commands run in a process group of their own and inherit no
+ *   descriptor above stderr. A poll that overruns its timeout is stopped as a
+ *   whole group (its pipeline and background children too).
  */
 
 #include "proc_script.h"
@@ -19,6 +23,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -46,6 +52,41 @@ static psd_proc_t script_last[SCRIPT_SNAPSHOT_MAX];
 static int        script_last_n;
 
 /* --------------------------------------------------------------- pure parse */
+
+/* Parse `val` as plain decimal digits (no sign, space or trailing character)
+ * with a value in min..INT_MAX. Returns 1 and sets *out on success, 0 if the
+ * value is empty, malformed or out of range (so nothing ever wraps). */
+static int script_parse_int(const char *val, int min, int *out)
+{
+    const char *s;
+    int         v = 0;
+
+    if (val == NULL || val[0] == '\0')
+    {
+        return 0;
+    }
+    for (s = val; *s != '\0'; s++)
+    {
+        int d;
+
+        if (*s < '0' || *s > '9')
+        {
+            return 0;
+        }
+        d = *s - '0';
+        if (v > (INT_MAX - d) / 10)
+        {
+            return 0;   /* beyond INT_MAX */
+        }
+        v = v * 10 + d;
+    }
+    if (v < min)
+    {
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
 
 /* Parse one already-isolated line into `p`. Returns 1 if it carries a valid
  * entity (a usable `id`), 0 otherwise. */
@@ -96,17 +137,21 @@ static int script_parse_line(const char *line, psd_proc_t *p)
 
         if (strcmp(key, "id") == 0)
         {
-            long long v = strtoll(val, NULL, 10);
-            if (v > 1)                       /* 0 and 1 are reserved */
+            /* 2..INT_MAX only (0 and 1 are reserved). The last id wins, so an
+             * invalid last id drops the line rather than keeping an earlier
+             * one. */
+            have_id = script_parse_int(val, 2, &p->pid);
+            if (!have_id)
             {
-                p->pid  = (int) v;
-                have_id = 1;
+                p->pid = 0;
             }
         }
         else if (strcmp(key, "parent") == 0)
         {
-            long long v = strtoll(val, NULL, 10);
-            p->ppid = (v > 0) ? (int) v : 0;
+            if (!script_parse_int(val, 0, &p->ppid))
+            {
+                p->ppid = 0;   /* malformed or out of range: no parent */
+            }
         }
         else if (strcmp(key, "weight") == 0)
         {
@@ -115,7 +160,7 @@ static int script_parse_line(const char *line, psd_proc_t *p)
         else if (strcmp(key, "load") == 0)
         {
             long long v = strtoll(val, NULL, 10);
-            p->cpu_percent = (v > 0) ? (int) v : 0;
+            p->cpu_percent = (v <= 0) ? 0 : (v > INT_MAX) ? INT_MAX : (int) v;
         }
         else if (strcmp(key, "flags") == 0)
         {
@@ -188,16 +233,128 @@ static unsigned long long script_mono_ms(void)
          + (unsigned long long) ts.tv_nsec / 1000000ULL;
 }
 
+/* One past the highest descriptor a child could have inherited. Read in the
+ * parent, before fork: getdtablesize is not async-signal-safe. */
+static int script_fd_limit(void)
+{
+    int n = getdtablesize();
+
+    return (n > 256) ? n : 256;
+}
+
+static void script_set_cloexec(int fd)
+{
+    int flags = fcntl(fd, F_GETFD);
+
+    if (flags != -1)
+    {
+        (void) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+}
+
 /*
- * Run `cmd` via the shell and capture up to `cap`-1 bytes of its stdout into
- * `buf` (always NUL-terminated). Kills the child if it exceeds `timeout_ms`.
- * Returns bytes captured (>= 0), or -1 if the child could not be spawned.
+ * In a freshly forked child: move into a new process group of its own (so a
+ * timeout can stop the whole command, pipeline and background jobs included),
+ * make `stdout_fd` (if >= 0) its stdout, close every descriptor above stderr
+ * (the game's files, sockets and WAD never reach a script), and exec `path`
+ * (or search PATH for argv[0] if `path` is NULL). The game is multi-threaded,
+ * so the parent builds argv before fork and this makes only async-signal-safe
+ * calls before the exec. Never returns.
+ */
+static void script_child_exec(int stdout_fd, int fd_limit, const char *path,
+                              char *const argv[])
+{
+    int fd;
+
+    (void) setpgid(0, 0);
+    if (stdout_fd == STDOUT_FILENO)
+    {
+        (void) fcntl(STDOUT_FILENO, F_SETFD, 0);   /* keep it across exec */
+    }
+    else if (stdout_fd >= 0 && dup2(stdout_fd, STDOUT_FILENO) < 0)
+    {
+        _exit(127);
+    }
+    for (fd = STDERR_FILENO + 1; fd < fd_limit; fd++)
+    {
+        (void) close(fd);
+    }
+    if (path != NULL)
+    {
+        execv(path, argv);
+    }
+    else
+    {
+        execvp(argv[0], argv);
+    }
+    _exit(127);
+}
+
+static void script_reap(pid_t pid)
+{
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+    {
+    }
+}
+
+/* 1 if `pid` is still our unreaped child (running or a zombie). Does not reap
+ * it. While that holds, its pid -- and so the process group id it leads --
+ * cannot have been handed to any other process. */
+static int script_child_unreaped(pid_t pid)
+{
+    siginfo_t info;
+
+    for (;;)
+    {
+        memset(&info, 0, sizeof(info));
+        if (waitid(P_PID, (id_t) pid, &info,
+                   WEXITED | WSTOPPED | WNOHANG | WNOWAIT) == 0)
+        {
+            return 1;
+        }
+        if (errno != EINTR)
+        {
+            return 0;
+        }
+    }
+}
+
+/*
+ * Stop the poll command's process group, `pgid` (the recorded pid of the
+ * child that leads it), then reap that child. The group is signalled only
+ * while its leader is verified to be our unreaped child, so the id is ours;
+ * if it is not, nothing is signalled. Members of the group other than the
+ * leader are not our children: once killed, launchd reaps them.
+ */
+static void script_stop_group(pid_t pgid)
+{
+    if (pgid <= 1 || !script_child_unreaped(pgid))
+    {
+        return;
+    }
+    if (kill(-pgid, SIGKILL) != 0)
+    {
+        (void) kill(pgid, SIGKILL);   /* group not formed: the leader alone */
+    }
+    script_reap(pgid);
+}
+
+/*
+ * Run `cmd` via the shell, in a process group of its own, and capture up to
+ * `cap`-1 bytes of its stdout into `buf` (always NUL-terminated). If it
+ * overruns `timeout_ms` (still writing, or holding stdout open, or not
+ * exiting after EOF), or fills the buffer, the whole group is killed and its
+ * leader reaped, so no part of the command outlives the poll. Returns bytes
+ * captured (>= 0), or -1 if the child could not be spawned.
  */
 static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_ms)
 {
     int                fds[2];
     pid_t              pid;
     int                total = 0;
+    int                stop  = 0;
+    int                fd_limit;
+    char              *argv[4];
     unsigned long long deadline;
 
     if (cmd == NULL || cmd[0] == '\0' || buf == NULL || cap <= 0)
@@ -210,6 +367,14 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     {
         return -1;
     }
+    script_set_cloexec(fds[0]);
+    script_set_cloexec(fds[1]);
+
+    argv[0]  = "sh";
+    argv[1]  = "-c";
+    argv[2]  = (char *) cmd;
+    argv[3]  = NULL;
+    fd_limit = script_fd_limit();
 
     pid = fork();
     if (pid < 0)
@@ -220,13 +385,13 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     }
     if (pid == 0)
     {
-        /* child: stdout -> pipe, then run the (user-owned) shell command */
-        dup2(fds[1], STDOUT_FILENO);
-        close(fds[0]);
-        close(fds[1]);
-        execl("/bin/sh", "sh", "-c", cmd, (char *) NULL);
-        _exit(127);
+        script_child_exec(fds[1], fd_limit, "/bin/sh", argv);
     }
+
+    /* Record the group: its id is the child's pid. Set it here as well as in
+     * the child, so it exists before any timeout below whichever runs first
+     * (this fails harmlessly once the child has exec'd). */
+    (void) setpgid(pid, pid);
 
     /* parent: read with a deadline */
     close(fds[1]);
@@ -244,7 +409,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
 
         if (remaining <= 0)
         {
-            kill(pid, SIGKILL);
+            stop = 1;             /* timed out */
             break;
         }
 
@@ -260,18 +425,19 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
             {
                 continue;
             }
+            stop = 1;
             break;
         }
         if (sel == 0)
         {
-            kill(pid, SIGKILL);   /* timed out */
+            stop = 1;             /* timed out */
             break;
         }
 
         space = cap - 1 - total;
         if (space <= 0)
         {
-            kill(pid, SIGKILL);   /* buffer full; stop reading */
+            stop = 1;             /* buffer full; stop reading */
             break;
         }
 
@@ -282,18 +448,42 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
             {
                 continue;
             }
+            stop = 1;
             break;
         }
         if (r == 0)
         {
-            break;                /* EOF: command finished */
+            break;                /* EOF: command closed its stdout */
         }
         total += (int) r;
     }
 
     buf[total] = '\0';
     close(fds[0]);
-    waitpid(pid, NULL, 0);        /* reap (already dead, or killed above) */
+
+    /* After EOF the command should exit at once; give it until the deadline,
+     * never longer, so the game is not held by a command that closed stdout
+     * and kept running. */
+    while (!stop)
+    {
+        pid_t w = waitpid(pid, NULL, WNOHANG);
+
+        if (w == pid || (w < 0 && errno != EINTR))
+        {
+            return total;         /* exited and reaped */
+        }
+        if (script_mono_ms() >= deadline)
+        {
+            stop = 1;
+            break;
+        }
+        {
+            struct timespec ts = { 0, 2 * 1000 * 1000 };   /* 2 ms */
+            nanosleep(&ts, NULL);
+        }
+    }
+
+    script_stop_group(pid);
     return total;
 }
 
@@ -316,70 +506,75 @@ static int script_split_cmd(char *cmd, char **argv, int max)
 
 /*
  * Invoke the response command as `<verb> <id> [amount=N] [label=...]`, exec'd
- * directly (no shell). Double-forked so the game neither blocks on it nor
- * accumulates zombies. No-op if no response command is configured.
+ * directly (no shell), in a process group of its own and with no descriptor
+ * above stderr. Double-forked so the game neither blocks on it nor
+ * accumulates zombies. Returns 0 if refused (an id <= 1 is never handed to
+ * the responder), else 1 (dispatched, or no response command configured).
  */
-static void script_run_respond(const char *verb, int id,
-                               int have_amount, int amount, const char *label)
+static int script_run_respond(const char *verb, int id,
+                              int have_amount, int amount, const char *label)
 {
+    char  cmd[SCRIPT_CMD_MAX];
+    char  idbuf[32];
+    char  amountbuf[48];
+    char  labelbuf[64];
+    char *argv[SCRIPT_ARGV_MAX];
+    int   n;
+    int   fd_limit;
     pid_t pid;
 
+    if (id <= 1)
+    {
+        return 0;   /* 0, 1 and negatives are reserved: never a target */
+    }
     if (script_respond_cmd[0] == '\0')
     {
-        return;
+        return 1;
     }
+
+    /* Build argv before fork (snprintf is not async-signal-safe): the
+     * command and its static args from the configured string, then the
+     * psDoom-supplied arguments (the documented contract). */
+    snprintf(cmd, sizeof(cmd), "%s", script_respond_cmd);
+    n = script_split_cmd(cmd, argv, SCRIPT_ARGV_MAX - 6);
+    if (n <= 0)
+    {
+        return 1;
+    }
+    snprintf(idbuf, sizeof(idbuf), "%d", id);
+    argv[n++] = (char *) verb;
+    argv[n++] = idbuf;
+    if (have_amount)
+    {
+        snprintf(amountbuf, sizeof(amountbuf), "amount=%d", amount);
+        argv[n++] = amountbuf;
+    }
+    if (label != NULL && label[0] != '\0')
+    {
+        snprintf(labelbuf, sizeof(labelbuf), "label=%s", label);
+        argv[n++] = labelbuf;
+    }
+    argv[n]  = NULL;
+    fd_limit = script_fd_limit();
 
     pid = fork();
     if (pid < 0)
     {
-        return;
+        return 1;
     }
     if (pid == 0)
     {
         /* intermediate child: fork again so the grandchild is reparented to
-         * init (auto-reaped) and we never wait on the actual command. */
-        pid_t grandchild = fork();
-
-        if (grandchild == 0)
+         * launchd (auto-reaped) and we never wait on the actual command. */
+        if (fork() == 0)
         {
-            char  cmd[SCRIPT_CMD_MAX];
-            char  idbuf[32];
-            char  amountbuf[48];
-            char  labelbuf[64];
-            char *argv[SCRIPT_ARGV_MAX];
-            int   n;
-
-            /* command + its static args from the configured string */
-            snprintf(cmd, sizeof(cmd), "%s", script_respond_cmd);
-            n = script_split_cmd(cmd, argv, SCRIPT_ARGV_MAX - 6);
-
-            /* psDoom-supplied arguments (the documented contract) */
-            snprintf(idbuf, sizeof(idbuf), "%d", id);
-            argv[n++] = (char *) verb;
-            argv[n++] = idbuf;
-            if (have_amount)
-            {
-                snprintf(amountbuf, sizeof(amountbuf), "amount=%d", amount);
-                argv[n++] = amountbuf;
-            }
-            if (label != NULL && label[0] != '\0')
-            {
-                snprintf(labelbuf, sizeof(labelbuf), "label=%s", label);
-                argv[n++] = labelbuf;
-            }
-            argv[n] = NULL;
-
-            if (n > 0 && argv[0] != NULL)
-            {
-                execvp(argv[0], argv);
-            }
-            _exit(127);   /* exec failed */
+            script_child_exec(-1, fd_limit, NULL, argv);
         }
-
         _exit(0);         /* intermediate child exits immediately */
     }
 
-    waitpid(pid, NULL, 0);   /* reap the intermediate child (exits at once) */
+    script_reap(pid);     /* reap the intermediate child (exits at once) */
+    return 1;
 }
 
 /* --------------------------------------------------------------- vtable ops */
@@ -435,15 +630,15 @@ static unsigned int script_current_uid(void)
 
 static void script_renice(int pid, int nice_delta)
 {
-    script_run_respond("wound", pid, 1, nice_delta, script_label_for(pid));
+    (void) script_run_respond("wound", pid, 1, nice_delta, script_label_for(pid));
 }
 
 static int script_kill(int pid)
 {
     /* Fire-and-forget: we can't synchronously know the script's exit, so report
-     * "dispatched". A still-present entity simply reappears on the next poll. */
-    script_run_respond("kill", pid, 0, 0, script_label_for(pid));
-    return 1;
+     * "dispatched". A still-present entity simply reappears on the next poll.
+     * 0 only when refused (an id <= 1). */
+    return script_run_respond("kill", pid, 0, 0, script_label_for(pid));
 }
 
 /* Script entities can't be re-read without running the poll command (slow, and

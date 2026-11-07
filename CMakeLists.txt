@@ -185,8 +185,9 @@ target_include_directories(psdoom_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
 if(APPLE)
-    # Linked only for read-only listing/lookup checks; the tests never call the
-    # native renice or kill.
+    # Linked for read-only listing/lookup checks and the renice pid <= 1 check;
+    # the tests never call the native kill, and the native renice reaches only
+    # the test binary's own getpriority/setpriority seam, never the OS.
     target_sources(psdoom_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
     target_include_directories(psdoom_tests PRIVATE

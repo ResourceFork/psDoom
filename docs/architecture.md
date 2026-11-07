@@ -290,6 +290,13 @@ classifier, re-classification and fork swarms work for those entities for free.
   `PSDOOM_RESPOND_CMD` _directly_ (no shell — entity labels/ids can't be interpreted as syntax),
   double-forked so they neither block nor leak zombies. `psdoom_init` installs it when
   `PSDOOM_POLL_CMD` is set, else the native backend stays.
+- Both commands run in a process group of their own and inherit only stdin, stdout and
+  stderr: every other descriptor (the WAD, sockets, files) is closed in the child before exec.
+  A poll that overruns its timeout (or fills the buffer, or holds stdout open) is stopped with
+  `SIGKILL` to its recorded group, sent only while the group's leader is verified to be the
+  game's own unreaped child, and the leader is then reaped, so no pipeline or background child
+  outlives the poll. An `id` outside 2..`INT_MAX` (or not plain digits) drops the line, and an
+  id <= 1 is never handed to the response command.
 - The pure parser (`psd_script_parse`) is engine/OS-free and unit-tested; the host test also
   drives a real poll/respond subprocess round-trip.
 - **The wire contract is documented authoritatively in [`script-backend.md`](script-backend.md)**

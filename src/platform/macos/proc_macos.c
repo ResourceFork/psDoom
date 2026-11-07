@@ -255,7 +255,7 @@ void proc_macos_renice(int pid, int nice_delta)
     int cur;
     int target;
 
-    if (pid <= 0)
+    if (pid <= 1)                       /* never renice kernel/launchd */
     {
         return;
     }
