@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """psDoom plugin harness -- one poll/respond pair for any list of things.
 
-The harness sits between psDoom's script backend (docs/script-backend.md, the
-v1 contract, unchanged) and a *plugin*: a small executable that can list
+The harness sits between a ps-app's script backend (the v1 contract,
+unchanged; psDoom's docs/script-backend.md) and a *plugin*: a small
+executable that can list
 items, nudge one, and remove one. psDoom runs:
 
     PSDOOM_POLL_CMD    = python3 psdoom_harness.py --config CFG poll
@@ -13,7 +14,8 @@ integer ids, size/load scaling onto the games' ladders, 31-byte labels,
 background caching under the 1-second poll timeout, and a safety layer
 (dry run by default, per-plugin remove opt-in, rate limit, audit log, undo).
 
-Design: docs/plugin-harness.md. Python 3.10+ standard library only.
+Design: psDoom docs/plugin-harness.md. Python 3.10+ standard library only.
+Self-contained: nothing here imports or reads from outside harness/.
 
 Commands (all need --config, there is no default state location):
 
@@ -40,7 +42,7 @@ import unicodedata
 PROTOCOL = 1
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# The games' ladders (docs/script-backend.md, "Size ladder" / "Load ladder").
+# The games' ladders (v1 contract, "Size ladder" / "Load ladder").
 SIZE_LADDER = [0, 16777216, 67108864, 201326592, 536870912, 1610612736,
                4294967296]
 LOAD_LADDER = [0, 5, 25, 60, 120, 250, 500]

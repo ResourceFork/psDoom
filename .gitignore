@@ -87,3 +87,6 @@ xcuserdata/
 
 # Python bytecode (harness/ tests import modules by path)
 __pycache__/
+
+# harness/ test scratch root (default of harness/tests/run_tests.py)
+/harness/tests/.scratch/

@@ -13,7 +13,19 @@ limit, an audit log and undo. Design and plugin contract:
 | [`plugins/processes.py`](plugins/processes.py) | your own processes, like the native backend |
 | [`plugins/csv_rows.py`](plugins/csv_rows.py) | rows of a CSV file, with undo |
 | [`examples/`](examples/) | config files; replace the `state_dir` placeholder first |
-| [`tests/`](tests/) | `ctest` runs these as `psdoom_harness_tests` |
+| [`tests/`](tests/) | `python3 -I harness/tests/run_tests.py` (no build needed); psDoom's `ctest` also runs them as `psdoom_harness_tests` |
+
+This folder is self-contained: nothing in it imports or reads files outside `harness/`,
+and its tests need only Python, so it can move to its own repository unchanged. The two links
+above point into the psDoom repository that hosts it today.
+
+## One contract for the apps
+
+The harness's poll output and responder calls are exactly the v1 script-backend contract. Any
+ps-app (psDoom, psQuake, later ones) that speaks v1 works with every plugin behind the
+harness, and plugins never see the app. Plugins are tested against the harness alone
+(`tests/`); each app proves its side with its own conformance test (psDoom:
+`tests/harness_e2e_test.c`).
 
 ## Quick start (no-kill: dry run)
 

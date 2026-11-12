@@ -18,9 +18,9 @@ import signal
 import subprocess
 import sys
 
-# Session-critical names, mirroring scripts/poll-processes.sh, plus the game
-# and the usual terminal apps that launch it (this plugin has no launcher-chain
-# guard like the native backend).
+# Session-critical names, mirroring psDoom's scripts/poll-processes.sh, plus
+# the games and the usual terminal apps that launch them (this plugin has no
+# launcher-chain guard like psDoom's native backend).
 DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
         "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom",
         "Terminal", "iTerm2"}

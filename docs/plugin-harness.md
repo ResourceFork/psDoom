@@ -28,13 +28,48 @@ contract to change are in the [appendix](#appendix-v2-contract-proposals), as pr
 - `harness/psdoom_harness.py` — the harness, one file.
 - `harness/plugins/processes.py` — your own processes, the native behaviour.
 - `harness/plugins/csv_rows.py` — rows of a CSV file.
-- `harness/tests/` — unit and subprocess tests (`ctest` runs them as `psdoom_harness_tests`);
-  `tests/harness_e2e_test.c` drives the harness through psDoom's real script backend.
+- `harness/tests/` — unit and subprocess tests of the harness and both plugins. Run them
+  from a plain checkout with `python3 -I harness/tests/run_tests.py` (no CMake; scratch goes
+  to the git-ignored `harness/tests/.scratch/`). psDoom's `ctest` also runs them as
+  `psdoom_harness_tests`, with a scratch root in its build tree.
+- `tests/harness_e2e_test.c` — psDoom's app-side conformance test ([below](#one-contract-for-every-ps-app)).
 
 Python 3.10+ standard library only. The build already requires Python 3.10 (`CMakeLists.txt`
 uses it for the WAD tools), so the harness adds no dependency. A top-level `harness/` keeps it
 apart from `scripts/` (the copy-me `sh` reference pair) and `tools/` (build-time tools): it is
 a runtime component with its own tests.
+
+**Self-contained.** Nothing in `harness/` imports or reads from psDoom's source or build, and
+its tests need only Python, so the folder can later move to its own repository unchanged.
+psDoom keeps only two hooks into it: the `ctest` registration and the conformance test.
+
+## One contract for every ps-app
+
+The harness's poll output and its responder calls *are* the
+[v1 script-backend contract](script-backend.md). That is the single contract every ps-app
+recognizes, whatever plugin sits behind the harness:
+
+```
+ ps-app (psDoom, psQuake, ...)  ◀── v1 contract ──▶  harness  ◀── plugin contract ──▶  plugin
+       app conformance test                    harness tests (plugins tested here, no app)
+```
+
+That splits the testing in two:
+
+- **Harness and plugins** are tested against the harness alone (`harness/tests/`), with no game
+  involved: a plugin is correct if the harness turns its output into valid v1 and its actions
+  into the right plugin calls.
+- **Each app** proves its side once with a conformance test: the app's real script backend runs
+  the harness's poll command, sees the listed entities, and its injure and kill reach the
+  harness's responder and land on a test file. For psDoom that is `tests/harness_e2e_test.c`
+  (inside `psdoom_tests`): a live kill and wound against a CSV it writes, then the default
+  dry-run config leaving the CSV alone.
+
+**psQuake, or any later app, gets the same conformance test**: drive its own script backend
+against the harness and the CSV plugin on a CSV it creates, with an explicit state root, and
+check the same four things (entities listed with the expected labels and sizes, `kill` removes
+the row, `wound` lowers the priority, dry run changes nothing). No plugin needs an app-specific
+change, and a new plugin needs no app test.
 
 ## Plugin contract
 
