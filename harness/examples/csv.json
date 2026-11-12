@@ -1,0 +1,14 @@
+{
+  "state_dir": "REPLACE-WITH-AN-ABSOLUTE-PATH",
+  "dry_run": true,
+  "cache_ttl_s": 2,
+  "plugin": {
+    "name": "csv",
+    "command": ["python3", "${HARNESS_DIR}/plugins/csv_rows.py",
+                "--file", "REPLACE-WITH-AN-ABSOLUTE-PATH.csv",
+                "--key-column", "id", "--name-column", "name",
+                "--priority-column", "priority"],
+    "allow_remove": false,
+    "timeout_s": 10
+  }
+}

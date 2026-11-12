@@ -1,0 +1,13 @@
+{
+  "state_dir": "REPLACE-WITH-AN-ABSOLUTE-PATH",
+  "dry_run": true,
+  "cache_ttl_s": 2,
+  "max_tier": 6,
+  "rate_limit": {"actions": 10, "per_s": 60},
+  "plugin": {
+    "name": "processes",
+    "command": ["python3", "${HARNESS_DIR}/plugins/processes.py"],
+    "allow_remove": false,
+    "timeout_s": 10
+  }
+}

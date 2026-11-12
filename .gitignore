@@ -84,3 +84,6 @@ xcuserdata/
 # recovered original source under docs/original/ legitimately tracks .wad files,
 # so a blanket *.wad ignore would be wrong here.
 /wads/
+
+# Python bytecode (harness/ tests import modules by path)
+__pycache__/
