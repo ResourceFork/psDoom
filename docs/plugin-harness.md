@@ -30,8 +30,9 @@ contract to change are in the [appendix](#appendix-v2-contract-proposals), as pr
 - `harness/plugins/csv_rows.py` — rows of a CSV file.
 - `harness/tests/` — unit and subprocess tests of the harness and both plugins. Run them
   from a plain checkout with `python3 -I harness/tests/run_tests.py` (no CMake; scratch goes
-  to the git-ignored `harness/tests/.scratch/`). psDoom's `ctest` also runs them as
-  `psdoom_harness_tests`, with a scratch root in its build tree.
+  to `harness/tests/.scratch/`, ignored by `harness/.gitignore`; a symlinked root is
+  refused). psDoom's `ctest` also runs them as `psdoom_harness_tests`, with a scratch root
+  in its build tree.
 - `tests/harness_e2e_test.c` — psDoom's app-side conformance test ([below](#one-contract-for-every-ps-app)).
 
 Python 3.10+ standard library only. The build already requires Python 3.10 (`CMakeLists.txt`
@@ -40,7 +41,8 @@ apart from `scripts/` (the copy-me `sh` reference pair) and `tools/` (build-time
 a runtime component with its own tests.
 
 **Self-contained.** Nothing in `harness/` imports or reads from psDoom's source or build, and
-its tests need only Python, so the folder can later move to its own repository unchanged.
+its tests need only Python, and it carries its own `.gitignore` and a summary of the v1
+contract in its README, so the folder can later move to its own repository unchanged.
 psDoom keeps only two hooks into it: the `ctest` registration and the conformance test.
 
 ## One contract for every ps-app

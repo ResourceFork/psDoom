@@ -1,0 +1,3 @@
+# Kept with the folder so the ignores survive a move to its own repository.
+__pycache__/
+/tests/.scratch/

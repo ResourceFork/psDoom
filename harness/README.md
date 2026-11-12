@@ -19,6 +19,21 @@ This folder is self-contained: nothing in it imports or reads files outside `har
 and its tests need only Python, so it can move to its own repository unchanged. The two links
 above point into the psDoom repository that hosts it today.
 
+## The v1 contract in brief (what the apps read)
+
+The apps' contract lives in psDoom's `docs/script-backend.md`; this is the part the harness
+implements, so the folder stands on its own:
+
+- **Poll** (`PSDOOM_POLL_CMD`, run via `sh`, killed with its process group after 1 s by
+  default): stdout, first line `#!psdoom v1`, then one entity per line of TAB-separated
+  `key=value` fields: `id` (integer 2..2147483647, stable, never reused), `parent` (an
+  id or 0), `weight` (bytes; ladder 0, 16M, 64M, 192M, 512M, 1.5G, 4G), `load` (percent;
+  ladder 0, 5, 25, 60, 120, 250, 500), `flags` (bit 0 = background), `label` (at most
+  31 bytes drawn, no TAB or newline). Lines starting with `#` are comments.
+- **Respond** (`PSDOOM_RESPOND_CMD`, split on whitespace, exec'd without a shell, detached,
+  exit code ignored): `<cmd> <verb> <id> [key=value...]`, verb `wound` (with
+  `amount=N`) or `kill`, optional `label=`. Unknown verbs and keys must be no-ops.
+
 ## One contract for the apps
 
 The harness's poll output and responder calls are exactly the v1 script-backend contract. Any
