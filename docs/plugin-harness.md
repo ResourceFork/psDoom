@@ -119,6 +119,9 @@ psDoom needs integer ids that never name two things. The harness keeps
   are reserved by v1).
 - A key that comes back gets its old id.
 - At most 100 000 keys are remembered (least recently seen dropped); the counter is kept.
+- If `ids.json` is missing (while a cache exists) or damaged, refresh **fails closed**
+  rather than restart the counter, because a restarted counter could give an id the game
+  still holds to a different item. To start over, delete the whole `state_dir`.
 - Writes are atomic (temp file + rename) under an `flock` on `state_dir/state.lock`.
 
 Rejected: hashing the key to an id. It needs no state, but two keys can collide, and v1 says
@@ -181,14 +184,18 @@ This tool can delete things. The defaults assume a mistake.
 | `amount` | clamped 1..100 | psDoom sends `amount=4`. |
 | No shell | always | Plugins get an argument vector; keys and labels are data. |
 | Audit log | always | `state_dir/audit.jsonl`: one JSON line per call, with outcome, key, name, amount, action id, plugin message and undo record. JSON escaping keeps hostile text on one line. |
-| Undo | where the plugin supports it | `psdoom_harness.py --config C undo <action-id>` feeds the stored record to `restore`, once. |
+| Undo | where the plugin lists `restore` | `psdoom_harness.py --config C undo <action-id>` feeds the stored record to `restore`, once (under a lock). A record holds the value *before* that action, so undo several actions on one item newest first. |
 | Explicit state | always | `state_dir` must be in the config, absolute, and not `/`. There is no default location and nothing is read from environment variables. |
+| Private state | always | `state_dir` must be a real directory (not a symlink) owned by you and not writable by group or others; it is created `0700`. Otherwise every command refuses, because `respond` trusts the cache in it to map ids to keys. |
 
 `respond` always exits 0 (psDoom does not read it); the audit log is the record. `poll`
 always prints valid v1, with a `#` comment on error.
 
 The harness does not decide what is *safe to list*. That stays the plugin's job, as in v1: the
-processes plugin keeps the session-critical deny-list from `scripts/poll-processes.sh`.
+processes plugin keeps the session-critical deny-list from `scripts/poll-processes.sh`, plus
+the game and the Terminal and iTerm2 apps. It has no launcher-chain guard like the native
+backend, and its pid-reuse check compares a start time with 1-second resolution, so a pid
+reused within the same second would pass it.
 
 ## Configuration
 
@@ -292,8 +299,10 @@ a line above it goes. Rules of thumb:
   one poll. A second hit then fails in the plugin (`no row with that key`) and is audited.
 - Rate-limited and blocked hits still look like a hit in the game: the monster reappears,
   like a process that ignores SIGTERM. v1 has no channel to say why.
-- The CSV plugin may change a file's quoting style on write (cells, order, line endings and
-  BOM are kept). Do not point it at a file another program is editing at the same time.
+- The CSV plugin may change a file's quoting style on write (cells, order, line endings,
+  BOM and file mode are kept; a symlink is written through). A hard link to the file is
+  broken by the atomic rename. A key names the first row that has it; later duplicates are
+  not listed. Do not point it at a file another program is editing at the same time.
 
 ## Appendix: v2 contract proposals
 

@@ -29,7 +29,9 @@ import fcntl
 import json
 import os
 import secrets
+import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -122,7 +124,19 @@ def load_config(path):
 
 
 def ensure_state_dir(cfg):
-    os.makedirs(cfg["state_dir"], mode=0o700, exist_ok=True)
+    """Create the state dir 0700, then refuse it unless it is a real
+    directory (not a symlink) owned by this user and not writable by group
+    or others, so nobody else can plant a cache, an id map or an undo
+    record that respond would trust."""
+    d = cfg["state_dir"]
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if not stat.S_ISDIR(st.st_mode):
+        raise HarnessError("state_dir is not a directory (or is a symlink)")
+    if st.st_uid != os.getuid():
+        raise HarnessError("state_dir is not owned by this user")
+    if st.st_mode & 0o022:
+        raise HarnessError("state_dir is writable by group or others")
 
 
 def state_path(cfg, name):
@@ -166,6 +180,13 @@ def read_json(path, default=None):
         return default
 
 
+def read_cache(cfg):
+    c = read_json(state_path(cfg, "cache.json"))
+    if not isinstance(c, dict) or not isinstance(c.get("items"), list):
+        return None
+    return c
+
+
 def write_json_atomic(path, obj):
     tmp = "%s.tmp.%d" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as f:
@@ -183,7 +204,8 @@ def audit(cfg, entry):
     entry.setdefault("plugin", cfg["plugin"]["name"])
     line = json.dumps(entry, sort_keys=True, ensure_ascii=True) + "\n"
     fd = os.open(state_path(cfg, "audit.jsonl"),
-                 os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                 os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                 0o600)
     try:
         os.write(fd, line.encode("ascii"))
     finally:
@@ -424,8 +446,16 @@ def assign_ids(cfg, items, now):
     different key, even after the key is forgotten. Call under state.lock."""
     path = state_path(cfg, "ids.json")
     m = read_json(path, None)
-    if not isinstance(m, dict) or m.get("version") != 1:
-        m = {"version": 1, "next": ID_MIN, "keys": {}}
+    if m is None and not os.path.exists(path) and \
+            not os.path.exists(state_path(cfg, "cache.json")):
+        m = {"version": 1, "next": ID_MIN, "keys": {}}   # a fresh state dir
+    if not isinstance(m, dict) or m.get("version") != 1 or \
+            not isinstance(m.get("next"), int) or \
+            not isinstance(m.get("keys"), dict):
+        # Fail closed: restarting the counter could hand an id the game
+        # still holds to a different item.
+        raise HarnessError("ids.json is missing or damaged; ids could be "
+                           "reused. Delete the whole state_dir to start over.")
     keys = m["keys"]
     for it in items:
         rec = keys.get(it["key"])
@@ -519,8 +549,7 @@ def render_v1(items):
 
 def cmd_poll(cfg):
     ensure_state_dir(cfg)
-    cache_path = state_path(cfg, "cache.json")
-    cache = read_json(cache_path)
+    cache = read_cache(cfg)
     now = time.time()
     dirty = os.path.exists(state_path(cfg, "dirty"))
     stale = (cache is None or dirty or
@@ -537,7 +566,7 @@ def cmd_poll(cfg):
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
         while cache is None and time.monotonic() < deadline:
             time.sleep(0.02)
-            cache = read_json(cache_path)
+            cache = read_cache(cfg)
     sys.stdout.write(render_v1(cache["items"] if cache else []))
     return 0
 
@@ -549,7 +578,9 @@ def rate_allow(cfg, now):
     rl = cfg["rate_limit"]
     limit, window = int(rl["actions"]), float(rl["per_s"])
     path = state_path(cfg, "rate.json")
-    stamps = [t for t in (read_json(path, []) or []) if now - t < window]
+    stamps = read_json(path, [])
+    stamps = [t for t in (stamps if isinstance(stamps, list) else [])
+              if _is_num(t) and now - t < window]
     if len(stamps) >= limit:
         write_json_atomic(path, stamps)
         return False
@@ -567,10 +598,23 @@ def parse_extras(extras):
     return out
 
 
+ID_RE = re.compile(r"[0-9]{1,10}\Z")
+
+
 def cmd_respond(cfg, argv):
     """Never raises; psDoom does not read the exit code, the audit log is the
     record of what happened."""
     ensure_state_dir(cfg)
+    try:
+        return _respond(cfg, argv)
+    except Exception as e:
+        audit(cfg, {"verb": (argv[0] if argv else "")[:32],
+                    "id": (argv[1] if len(argv) > 1 else "")[:16],
+                    "outcome": "error", "detail": str(e)[:200]})
+        return 0
+
+
+def _respond(cfg, argv):
     verb = argv[0] if argv else ""
     ident = argv[1] if len(argv) > 1 else ""
     extras = parse_extras(argv[2:])
@@ -580,9 +624,9 @@ def cmd_respond(cfg, argv):
     if pverb is None:
         audit(cfg, dict(entry, outcome="ignored-verb"))
         return 0
-    cache = read_json(state_path(cfg, "cache.json")) or {}
+    cache = read_cache(cfg) or {}
     item = None
-    if ident.isdigit():
+    if ID_RE.match(ident):
         for it in cache.get("items", []):
             if it["id"] == int(ident):
                 item = it
@@ -591,6 +635,11 @@ def cmd_respond(cfg, argv):
         audit(cfg, dict(entry, outcome="unknown-id"))
         return 0
     entry.update(action=pverb, key=item["key"], name=item["name"])
+    key = item["key"]
+    if not isinstance(key, str) or not key or key.startswith("-") or \
+            "\x00" in key or len(key) > KEY_MAX:
+        audit(cfg, dict(entry, outcome="bad-key"))
+        return 0
     desc = cache.get("describe") or {}
     if pverb not in (desc.get("verbs") or []):
         audit(cfg, dict(entry, outcome="unsupported"))
@@ -633,7 +682,7 @@ def cmd_respond(cfg, argv):
         with Locked(state_path(cfg, "state.lock")):
             if pverb == "remove":
                 # Drop it now so the next poll already shows it gone.
-                c = read_json(state_path(cfg, "cache.json"))
+                c = read_cache(cfg)
                 if c:
                     c["items"] = [i for i in c["items"]
                                   if i["key"] != item["key"]]
@@ -645,6 +694,15 @@ def cmd_respond(cfg, argv):
 
 def cmd_undo(cfg, action_id):
     ensure_state_dir(cfg)
+    desc = (read_cache(cfg) or {}).get("describe") or {}
+    if "restore" not in (desc.get("verbs") or []):
+        raise HarnessError("the plugin does not list restore")
+    # One undo at a time, so the same action cannot be restored twice.
+    with Locked(state_path(cfg, "undo.lock")):
+        return _undo(cfg, action_id)
+
+
+def _undo(cfg, action_id):
     log = read_audit(cfg)
     target = None
     for e in log:

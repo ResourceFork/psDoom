@@ -229,7 +229,8 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     e2e_failed = checks_failed;
 
     /* The responder command is split on whitespace (docs/script-backend.md). */
-    E2E_CHECK(strpbrk(PSD_PYTHON3 PSD_HARNESS_DIR PSD_E2E_SCRATCH, " \t") == NULL);
+    /* ...and the paths are pasted into a JSON config unescaped. */
+    E2E_CHECK(strpbrk(PSD_PYTHON3 PSD_HARNESS_DIR PSD_E2E_SCRATCH, " \t\"\\") == NULL);
     E2E_CHECK(dir[0] == '/' && strlen(dir) > 1);
     if (mkdir(dir, 0700) != 0 && errno != EEXIST)
     {

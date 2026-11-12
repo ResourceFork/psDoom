@@ -18,9 +18,12 @@ import signal
 import subprocess
 import sys
 
-# Session-critical names, mirroring scripts/poll-processes.sh, plus the game.
+# Session-critical names, mirroring scripts/poll-processes.sh, plus the game
+# and the usual terminal apps that launch it (this plugin has no launcher-chain
+# guard like the native backend).
 DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
-        "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom"}
+        "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom",
+        "Terminal", "iTerm2"}
 
 PS_FIELDS = "pid=,ppid=,rss=,pcpu=,tt=,lstart=,comm="
 

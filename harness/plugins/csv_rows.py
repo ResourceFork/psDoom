@@ -13,7 +13,10 @@ number = more important) rows are ranked by it and `nudge` lowers it by
 `restore` (the record on stdin) puts things back.
 
 Writes are atomic (a temp file in the same directory, then rename) and are
-serialised by an flock on a sidecar ".<file>.lock". The file is read and
+serialised by an flock on a sidecar ".<file>.lock". A symlink is written
+through to its target and the file's mode is kept; a hard link to the file
+is not (rename gives it a new inode). A key names the first row that has it;
+later rows with the same key are not listed. The file is read and
 written as lists, so extra cells and column order survive; only the quoting
 style may change. Line endings and a UTF-8 byte-order mark are kept.
 Standard library only.
@@ -25,6 +28,7 @@ import fcntl
 import io
 import json
 import os
+import stat
 import sys
 
 BOM = "\ufeff"
@@ -45,13 +49,19 @@ def parse_args(argv):
 
 class Sheet:
     def __init__(self, path):
-        self.path = os.path.abspath(path)
+        # Write through a symlink to its target, so the link survives.
+        self.path = os.path.realpath(path)
         with open(self.path, "r", encoding="utf-8", newline="") as f:
             text = f.read()
         self.bom = text.startswith(BOM)
         if self.bom:
             text = text[1:]
-        self.eol = "\r\n" if "\r\n" in text else "\n"
+        # The header line's ending is the file's style (a CRLF inside a
+        # quoted cell does not count); a missing final newline stays missing.
+        first = text.find("\n")
+        self.eol = "\r\n" if first > 0 and text[first - 1] == "\r" \
+            else "\n"
+        self.final_eol = text.endswith("\n") or not text
         rows = list(csv.reader(io.StringIO(text)))
         self.header = rows[0] if rows else []
         self.rows = rows[1:]
@@ -79,13 +89,19 @@ class Sheet:
         w = csv.writer(buf, lineterminator=self.eol)
         w.writerow(self.header)
         w.writerows(self.rows)
+        body = buf.getvalue()
+        if not self.final_eol and body.endswith(self.eol):
+            body = body[:-len(self.eol)]
         d = os.path.dirname(self.path)
         tmp = os.path.join(d, ".%s.tmp.%d" % (os.path.basename(self.path),
                                              os.getpid()))
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write((BOM if self.bom else "") + buf.getvalue())
+        mode = stat.S_IMODE(os.stat(self.path).st_mode)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write((BOM if self.bom else "") + body)
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, mode)   # keep the file's permissions (a 0600 stays)
         os.replace(tmp, self.path)
 
 
@@ -137,7 +153,14 @@ def list_items(a, sh):
     pcol = sh.col(a.priority_column)
     scol = sh.col(a.size_column)
     lcol = sh.col(a.load_column)
-    rows = [(i, r) for i, r in enumerate(sh.rows) if sh.cell(r, kcol)]
+    # A key names the first row with it in file order -- the row nudge and
+    # remove act on -- so later duplicates are never listed.
+    rows, seen = [], set()
+    for i, r in enumerate(sh.rows):
+        k = sh.cell(r, kcol)
+        if k and k not in seen:
+            seen.add(k)
+            rows.append((i, r))
     if pcol is not None:
         rows.sort(key=lambda ir: -(num(sh.cell(ir[1], pcol)) or 0.0))
     out = []
@@ -215,7 +238,10 @@ def restore(a, sh, undo):
         pcol = sh.col(a.priority_column)
         if i < 0 or pcol is None or not isinstance(undo.get("old"), str):
             return result(False, "row or priority column is gone")
-        sh.rows[i][pcol] = undo["old"]
+        row = sh.rows[i]
+        while len(row) <= pcol:
+            row.append("")
+        row[pcol] = undo["old"]
     elif op == "move":
         idx = undo.get("index")
         if i < 0 or not isinstance(idx, int) or idx < 0:

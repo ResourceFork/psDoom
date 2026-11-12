@@ -610,6 +610,97 @@ class CsvPluginTests(Base):
         self.assertEqual(self.read(path), "id,name\na,A\n")
 
 
+class ReviewFixTests(Base):
+    """Regression checks for the adversarial review's findings."""
+
+    def test_duplicate_csv_key_lists_and_acts_on_the_same_row(self):
+        path = self.csv_file("id,name,priority\n"
+                             "r1,FirstRow,1\nr1,SecondRow,9\nr2,Other,5\n")
+        cfg = self.config(self.csv_cmd(path, "--priority-column", "priority"),
+                          name="csv", dry_run=False,
+                          plugin={"allow_remove": True})
+        self.refresh(cfg)
+        rows = self.poll(cfg)
+        self.assertNotIn("SecondRow", [r["label"] for r in rows])
+        self.harness(cfg, "respond", "kill", self.id_for(rows, "FirstRow"))
+        text = self.read(path)
+        self.assertNotIn("FirstRow", text)
+        self.assertIn("SecondRow", text)
+
+    def test_lost_id_map_fails_closed(self):
+        cfg = self.config(self.fake([{"key": "a"}]))
+        self.refresh(cfg)
+        os.unlink(os.path.join(self.state, "ids.json"))
+        r, _ = self.harness(cfg, "refresh")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ids.json", r.stderr)
+        with open(os.path.join(self.state, "ids.json"), "w") as f:
+            f.write("{not json")
+        r, _ = self.harness(cfg, "refresh")
+        self.assertEqual(r.returncode, 1)
+
+    def test_state_dir_must_be_private(self):
+        os.makedirs(self.state, mode=0o700)
+        os.chmod(self.state, 0o777)
+        cfg = self.config(self.fake([{"key": "a"}]))
+        r, _ = self.harness(cfg, "refresh")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("writable by group or others", r.stderr)
+        os.chmod(self.state, 0o700)
+        link = os.path.join(self.root, "link-state")
+        os.symlink(self.state, link)
+        with open(cfg) as f:
+            c = json.load(f)
+        c["state_dir"] = link
+        with open(cfg, "w") as f:
+            json.dump(c, f)
+        r, _ = self.harness(cfg, "refresh")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("symlink", r.stderr)
+
+    def test_csv_mode_symlink_and_endings_kept(self):
+        path = self.csv_file('id,name\na,A\nb,"two\r\nlines"\nc,C')
+        os.chmod(path, 0o600)
+        link = os.path.join(self.root, "link.csv")
+        os.symlink(path, link)
+        r = subprocess.run(self.csv_cmd(link, "remove", "a"),
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual(self.read(path), 'id,name\nb,"two\r\nlines"\nc,C')
+
+    def test_odd_ids_and_bad_rate_state_are_audited(self):
+        cfg = self.config(self.fake([{"key": "a"}]), dry_run=False)
+        self.refresh(cfg)
+        self.harness(cfg, "respond", "kill", "²")
+        with open(os.path.join(self.state, "rate.json"), "w") as f:
+            json.dump(["x", None, 1], f)
+        self.harness(cfg, "respond", "wound", self.poll(cfg)[0]["id"])
+        self.assertEqual([e["outcome"] for e in self.audit()],
+                         ["unknown-id", "ok"])
+
+    def test_non_object_cache_recovers(self):
+        cfg = self.config(self.fake([{"key": "a", "name": "A"}]),
+                          cache_ttl_s=0)
+        self.refresh(cfg)
+        with open(os.path.join(self.state, "cache.json"), "w") as f:
+            f.write("[]")
+        deadline = time.monotonic() + 10
+        rows = []
+        while not rows and time.monotonic() < deadline:
+            rows = self.poll(cfg)
+            time.sleep(0.1)
+        self.assertEqual([r["label"] for r in rows], ["A"])
+
+    def test_undo_needs_restore_verb(self):
+        cfg = self.config(self.fake([{"key": "a"}]))
+        self.refresh(cfg)
+        r, _ = self.harness(cfg, "undo", "abc")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("restore", r.stderr)
+
+
 class HostileTests(Base):
 
     HOSTILE = [
