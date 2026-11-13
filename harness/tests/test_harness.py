@@ -28,6 +28,7 @@ HARNESS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HARNESS = os.path.join(HARNESS_DIR, "psdoom_harness.py")
 CSV_PLUGIN = os.path.join(HARNESS_DIR, "plugins", "csv_rows.py")
 PROC_PLUGIN = os.path.join(HARNESS_DIR, "plugins", "processes.py")
+PS_HARNESS = os.path.join(HARNESS_DIR, "ps-harness")
 PY = sys.executable
 
 
@@ -131,12 +132,31 @@ class Base(unittest.TestCase):
         self.configs.append(path)
         return path
 
+    def env(self, **extra):
+        """A child environment that can never reach the real home: HOME is
+        a fake one under this test's root, and PS_HARNESS_ROOT is unset
+        unless a test sets it on purpose."""
+        env = {k: v for k, v in os.environ.items() if k != "PS_HARNESS_ROOT"}
+        env["HOME"] = os.path.join(self.root, "fakehome")
+        env.update(extra)
+        return env
+
     def harness(self, cfg, *args, timeout=20):
         t0 = time.monotonic()
         r = subprocess.run([PY, HARNESS, "--config", cfg] + list(args),
                            stdin=subprocess.DEVNULL, capture_output=True,
-                           text=True, timeout=timeout, cwd=self.root)
+                           text=True, timeout=timeout, cwd=self.root,
+                           env=self.env())
         return r, time.monotonic() - t0
+
+    def cli(self, *args, env=None, exe=None, timeout=20):
+        """Run the ps-harness launcher itself (its shebang interpreter is
+        bypassed so the suite's own Python runs it)."""
+        r = subprocess.run([PY, exe or PS_HARNESS] + list(args),
+                           stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=timeout, cwd=self.root,
+                           env=env or self.env())
+        return r
 
     def refresh(self, cfg):
         r, _ = self.harness(cfg, "refresh")
@@ -154,8 +174,10 @@ class Base(unittest.TestCase):
         with open(path) as f:
             return [json.loads(line) for line in f]
 
-    def fake(self, items, **spec):
-        spec_path = os.path.join(self.root, "fake-spec.json")
+    def fake(self, items, spec_name="default", **spec):
+        # One spec file per name: calling fake() again with the same name
+        # changes what that plugin lists (the id tests rely on it).
+        spec_path = os.path.join(self.root, "fake-spec-%s.json" % spec_name)
         calls = os.path.join(self.root, "fake-calls.jsonl")
         plugin = os.path.join(self.root, "fake.py")
         with open(plugin, "w") as f:
@@ -608,6 +630,233 @@ class CsvPluginTests(Base):
         self.assertEqual(code, 1)
         self.assertFalse(res["ok"])
         self.assertEqual(self.read(path), "id,name\na,A\n")
+
+
+class CliTests(Base):
+    """The ps-harness command line: verbs, aliases, plugin selection."""
+
+    def setUp(self):
+        super().setUp()
+        self.hroot = os.path.join(self.root, "hroot")
+        os.makedirs(os.path.join(self.hroot, "plugins"))
+
+    def named(self, name, items, **over):
+        """Write <hroot>/plugins/<name>.json for a fake plugin. No state_dir:
+        it defaults to <hroot>/state/<name>."""
+        cmd = self.fake(items, spec_name=name, **over.pop("spec", {}))
+        cfg = {"plugin": {"name": name, "command": cmd}}
+        cfg["plugin"].update(over.pop("plugin", {}))
+        cfg.update(over)
+        path = os.path.join(self.hroot, "plugins", name + ".json")
+        with open(path, "w") as f:
+            json.dump(cfg, f)
+        self.configs.append(path)
+        self.state = os.path.join(self.hroot, "state", name)
+        return path
+
+    def _reap_refresher(self, cfg_path):
+        with open(cfg_path) as f:
+            c = json.load(f)
+        if "state_dir" in c:
+            return super()._reap_refresher(cfg_path)
+        name = os.path.basename(cfg_path)[:-5]
+        state = os.path.join(self.hroot, "state", name)
+        tmp = os.path.join(self.root, "reap-%s.json" % name)
+        with open(tmp, "w") as f:
+            json.dump({"state_dir": state}, f)
+        super()._reap_refresher(tmp)
+
+    def r(self, *args, **kw):
+        return self.cli("--root", self.hroot, *args, **kw)
+
+    def get(self, *pre):
+        res = self.r(*pre, "get")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return parse_v1(res.stdout)
+
+    def wait_rows(self, *pre):
+        deadline = time.monotonic() + 10
+        rows = []
+        while not rows and time.monotonic() < deadline:
+            rows = self.get(*pre)
+            if not rows:
+                time.sleep(0.1)
+        return rows
+
+    def test_every_command_and_alias(self):
+        self.named("fake", [{"key": "a", "name": "A"}], dry_run=False,
+                   plugin={"allow_remove": True})
+        self.assertEqual(self.r("use", "fake").returncode, 0)
+        self.assertEqual(self.r("refresh").returncode, 0)
+        rows = self.get()
+        self.assertEqual(rows, parse_v1(self.r("poll").stdout))   # alias
+        ident = rows[0]["id"]
+        for args in (["post", ident, "amount=2"], ["wound", ident],
+                     ["delete", ident], ["kill", ident],
+                     ["respond", "wound", ident, "amount=3"],
+                     ["respond", "kill", ident]):
+            # A removed item leaves the cache at once; the fake still lists
+            # it, so a refresh brings it back (same key, same id).
+            self.assertEqual(self.r("refresh").returncode, 0)
+            self.assertEqual(self.get()[0]["id"], ident)
+            res = self.r(*args)
+            self.assertEqual(res.returncode, 0, res.stderr)
+        res = self.r("explode", ident)
+        self.assertEqual(res.returncode, 0)            # unknown verb: no-op
+        log = self.audit()
+        self.assertEqual([(e["verb"], e.get("action"), e["outcome"])
+                          for e in log],
+                         [("post", "nudge", "ok"), ("wound", "nudge", "ok"),
+                          ("delete", "remove", "ok"), ("kill", "remove", "ok"),
+                          ("wound", "nudge", "ok"), ("kill", "remove", "ok"),
+                          ("explode", None, "ignored-verb")])
+        acts = [c for c in self.calls() if c and c[0] in ("nudge", "remove")]
+        self.assertEqual(acts, [["nudge", "a", "amount=2"],
+                                ["nudge", "a", "amount=1"],
+                                ["remove", "a"], ["remove", "a"],
+                                ["nudge", "a", "amount=3"], ["remove", "a"]])
+        res = self.r("describe")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("verbs", json.loads(res.stdout))
+        res = self.r("undo", "abc")           # the fake lists no restore
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("restore", res.stderr)
+        res = self.r("plugins")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("* fake", res.stdout)
+        self.assertIn("  ps", res.stdout)
+        res = self.r()
+        self.assertEqual(res.returncode, 2)               # no command
+        self.assertIn("usage", res.stderr)
+
+    def test_post_and_delete_are_dry_run_by_default(self):
+        self.named("fake", [{"key": "a", "name": "A"}],
+                   plugin={"allow_remove": True})
+        rows = self.wait_rows("--plugin", "fake")
+        self.r("--plugin", "fake", "delete", rows[0]["id"])
+        self.r("--plugin", "fake", "post", rows[0]["id"])
+        self.assertEqual([e["outcome"] for e in self.audit()],
+                         ["dry-run", "dry-run"])
+        self.assertEqual([c for c in self.calls()
+                          if c and c[0] in ("nudge", "remove")], [])
+
+    def test_use_persists_across_calls(self):
+        self.named("one", [{"key": "a", "name": "From one"}])
+        self.named("two", [{"key": "b", "name": "From two"}])
+        self.assertEqual(self.r("use", "two").returncode, 0)
+        with open(os.path.join(self.hroot, "current")) as f:
+            self.assertEqual(f.read().strip(), "two")
+        self.state = os.path.join(self.hroot, "state", "two")
+        self.assertEqual([r["label"] for r in self.wait_rows()], ["From two"])
+        self.assertIn("* two", self.r("plugins").stdout)
+        self.assertEqual(self.r("use", "one").returncode, 0)
+        self.assertEqual([r["label"] for r in self.wait_rows()], ["From one"])
+
+    def test_default_plugin_is_ps(self):
+        res = self.r("plugins")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("* ps", res.stdout)
+        cfg = H.load_named(self.hroot, "ps")
+        self.assertTrue(cfg["dry_run"])                   # built-in is safe
+        self.assertFalse(cfg["plugin"]["allow_remove"])
+        self.assertEqual(cfg["state_dir"],
+                         os.path.join(self.hroot, "state", "ps"))
+        self.assertEqual(cfg["plugin"]["command"][-1], PROC_PLUGIN)
+        self.configs.append(self._ps_reap_config())
+        rows = self.wait_rows()                           # read-only listing
+        self.assertGreater(len(rows), 0)
+
+    def _ps_reap_config(self):
+        path = os.path.join(self.root, "ps-reap.json")
+        with open(path, "w") as f:
+            json.dump({"state_dir": os.path.join(self.hroot, "state", "ps")},
+                      f)
+        return path
+
+    def test_plugin_and_config_precedence(self):
+        self.named("cur", [{"key": "c", "name": "Current"}])
+        self.named("other", [{"key": "o", "name": "Other"}])
+        self.r("use", "cur")
+        filecfg = self.config(self.fake([{"key": "f", "name": "File"}],
+                                        spec_name="file"),
+                              state_dir=os.path.join(self.root, "filestate"))
+        self.assertEqual([r["label"] for r in self.wait_rows()], ["Current"])
+        self.assertEqual([r["label"] for r in self.wait_rows(
+            "--plugin", "other")], ["Other"])
+        self.assertEqual([r["label"] for r in self.wait_rows(
+            "--config", filecfg)], ["File"])
+        res = self.r("--plugin", "other", "--config", filecfg, "get")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("not both", res.stderr)
+        # the overrides did not change the persisted choice
+        self.assertIn("* cur", self.r("plugins").stdout)
+
+    def test_unknown_plugin_fails_cleanly(self):
+        res = self.r("use", "nope")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("unknown plugin 'nope'", res.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.hroot, "current")))
+        res = self.r("--plugin", "nope", "get")
+        self.assertEqual(res.returncode, 0)                # never break poll
+        self.assertTrue(res.stdout.startswith("#!psdoom v1\n"))
+        self.assertIn("unknown plugin", res.stdout)
+        self.assertEqual(parse_v1(res.stdout), [])
+        self.assertEqual(self.r("--plugin", "nope", "delete", "5").returncode,
+                         0)
+        for bad in ("../x", "A", "x/y", "", "-rf", "a" * 40):
+            res = self.r("use", bad)
+            self.assertEqual(res.returncode, 1, bad)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "x.json")))
+
+    def test_root_resolution(self):
+        envroot = os.path.join(self.root, "envroot")
+        fakehome = os.path.join(self.root, "fakehome")
+        # neither --root nor the variable: ~/.config/ps-harness (fake home)
+        self.assertEqual(self.cli("use", "ps").returncode, 0)
+        self.assertTrue(os.path.exists(os.path.join(
+            fakehome, ".config", "ps-harness", "current")))
+        # the variable
+        self.assertEqual(self.cli("use", "ps", env=self.env(
+            PS_HARNESS_ROOT=envroot)).returncode, 0)
+        self.assertTrue(os.path.exists(os.path.join(envroot, "current")))
+        # --root beats the variable
+        other = os.path.join(self.root, "optroot")
+        self.assertEqual(self.cli("--root", other, "use", "ps", env=self.env(
+            PS_HARNESS_ROOT=envroot)).returncode, 0)
+        self.assertTrue(os.path.exists(os.path.join(other, "current")))
+        res = self.cli("--root", "relative/root", "use", "ps")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("absolute", res.stderr)
+
+    def test_root_and_configs_must_be_private(self):
+        path = self.named("fake", [{"key": "a"}])
+        os.chmod(path, 0o666)
+        res = self.r("--plugin", "fake", "refresh")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("writable by group or others", res.stderr)
+        os.chmod(path, 0o644)
+        os.chmod(self.hroot, 0o777)
+        res = self.r("--plugin", "fake", "refresh")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("root is writable", res.stderr)
+        os.chmod(self.hroot, 0o755)
+
+    def test_launcher_works_through_a_symlink(self):
+        self.named("fake", [{"key": "a", "name": "Linked"}])
+        bindir = os.path.join(self.root, "bin")
+        os.makedirs(bindir)
+        link = os.path.join(bindir, "ps-harness")
+        os.symlink(PS_HARNESS, link)
+        self.assertTrue(os.access(PS_HARNESS, os.X_OK))
+        deadline = time.monotonic() + 10
+        rows = []
+        while not rows and time.monotonic() < deadline:
+            res = self.cli("--root", self.hroot, "--plugin", "fake", "get",
+                           exe=link)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            rows = parse_v1(res.stdout)
+            time.sleep(0.1)
+        self.assertEqual([r["label"] for r in rows], ["Linked"])
 
 
 class ReviewFixTests(Base):

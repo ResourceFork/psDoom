@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""psDoom plugin harness -- one poll/respond pair for any list of things.
+"""ps-harness -- one poll/respond pair for any list of things.
 
 The harness sits between a ps-app's script backend (the v1 contract,
 unchanged; psDoom's docs/script-backend.md) and a *plugin*: a small
-executable that can list
-items, nudge one, and remove one. psDoom runs:
+executable that can list items, nudge one, and remove one. psDoom runs:
 
-    PSDOOM_POLL_CMD    = python3 psdoom_harness.py --config CFG poll
-    PSDOOM_RESPOND_CMD = python3 psdoom_harness.py --config CFG respond
+    PSDOOM_POLL_CMD    = ps-harness get
+    PSDOOM_RESPOND_CMD = ps-harness          (psDoom appends wound|kill <id>)
 
 and the harness adds what every plugin would otherwise rewrite: stable
 integer ids, size/load scaling onto the games' ladders, 31-byte labels,
@@ -17,13 +16,21 @@ background caching under the 1-second poll timeout, and a safety layer
 Design: psDoom docs/plugin-harness.md. Python 3.10+ standard library only.
 Self-contained: nothing here imports or reads from outside harness/.
 
-Commands (all need --config, there is no default state location):
+    ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
-    poll                       print the v1 poll output from the cache
-    respond <verb> <id> [k=v]  map wound->nudge, kill->remove; unknown -> no-op
-    refresh                    run the plugin's list now and rewrite the cache
+    get                        print the v1 poll output (alias: poll)
+    post <id> [k=v...]         nudge: lower its priority (alias: wound)
+    delete <id> [k=v...]       remove it (alias: kill)
+    use <name>                 set and persist the current plugin
+    plugins                    list known plugins, marking the current one
+    refresh                    run the plugin's list now
+    describe                   print the plugin's describe, validated
     undo <action-id>           replay a recorded undo through the plugin
-    describe                   print the plugin's describe output, validated
+    respond <verb> <id> ...    the earlier respond form (alias)
+
+The root holds `current` and `plugins/<name>.json`; it is --root, else
+$PS_HARNESS_ROOT, else ~/.config/ps-harness. A plugin's state defaults to
+<root>/state/<name>. `ps` (your processes) is built in, dry run.
 """
 
 import errno
@@ -53,7 +60,19 @@ KEY_MAX = 1024            # longest plugin key the harness accepts
 OUTPUT_CAP = 8 * 1024 * 1024  # max bytes read from one plugin call
 ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
 
-VERB_MAP = {"wound": "nudge", "kill": "remove"}
+# Game verbs (v1) and the CLI's own words map to plugin verbs.
+VERB_MAP = {"wound": "nudge", "post": "nudge",
+            "kill": "remove", "delete": "remove"}
+
+PLUGIN_NAME_RE = None   # compiled below, after `import re`
+ROOT_ENV = "PS_HARNESS_ROOT"
+DEFAULT_PLUGIN = "ps"
+# Built-in plugin configs, used when <root>/plugins/<name>.json is absent.
+BUILTINS = {
+    "ps": {"plugin": {"name": "ps",
+                      "command": [sys.executable,
+                                  "${HARNESS_DIR}/plugins/processes.py"]}},
+}
 
 DEFAULTS = {
     "dry_run": True,
@@ -75,13 +94,36 @@ class HarnessError(Exception):
 
 # ---------------------------------------------------------------- config --
 
-def load_config(path):
-    """Read and validate a config file. The state root must be explicit."""
+def check_private(path, what):
+    """Refuse a file or directory that someone else could have written:
+    owned by another user, or writable by group or others. A plugin config
+    names a command to run, and the state feeds respond its keys."""
+    st = os.stat(path)
+    if st.st_uid != os.getuid():
+        raise HarnessError("%s is not owned by this user: %s" % (what, path))
+    if st.st_mode & 0o022:
+        raise HarnessError("%s is writable by group or others: %s"
+                           % (what, path))
+
+
+def load_config(path, default_state=None, self_args=None):
+    """Read and validate a config file."""
     if not path:
         raise HarnessError("--config is required")
     path = os.path.abspath(path)
+    check_private(path, "config")
     with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+        try:
+            raw = json.load(f)
+        except ValueError:
+            raise HarnessError("config is not valid JSON: %s" % path)
+    return config_from_dict(raw, path, default_state,
+                            self_args or ["--config", path])
+
+
+def config_from_dict(raw, path, default_state, self_args):
+    """Validate a config. state_dir comes from the config, else from the
+    root (named plugins); a bare --config file must name its own."""
     if not isinstance(raw, dict):
         raise HarnessError("config must be a JSON object")
     cfg = dict(DEFAULTS)
@@ -93,8 +135,11 @@ def load_config(path):
     plugin.update(raw.get("plugin") or {})
     cfg["plugin"] = plugin
     cfg["config_path"] = path
+    cfg["self_args"] = list(self_args)
 
     state = cfg.get("state_dir")
+    if state is None and default_state is not None:
+        state = default_state
     if not isinstance(state, str) or not state:
         raise HarnessError("config: state_dir is required (no default)")
     if not os.path.isabs(state):
@@ -532,8 +577,8 @@ def spawn_refresher(cfg):
                   os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__),
-             "--config", cfg["config_path"], "refresh"],
+            [sys.executable, os.path.abspath(__file__)] +
+            cfg["self_args"] + ["refresh"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
             close_fds=True, start_new_session=True)
     finally:
@@ -737,44 +782,191 @@ def _undo(cfg, action_id):
 
 # ------------------------------------------------------------------- main --
 
-USAGE = ("usage: psdoom_harness.py --config FILE "
-         "(poll | respond VERB ID [k=v...] | refresh | undo ACTION_ID | "
-         "describe)")
+PLUGIN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
+
+USAGE = ("usage: ps-harness [--root DIR] [--plugin NAME | --config FILE] "
+         "(get | post ID [k=v...] | delete ID [k=v...] | use NAME | plugins "
+         "| refresh | describe | undo ACTION_ID)")
+
+
+def resolve_root(opt_root):
+    """--root, else $PS_HARNESS_ROOT, else ~/.config/ps-harness."""
+    root = opt_root or os.environ.get(ROOT_ENV) or \
+        os.path.join(os.path.expanduser("~"), ".config", "ps-harness")
+    if not os.path.isabs(root):
+        raise HarnessError("root must be an absolute path: %s" % root)
+    root = os.path.normpath(root)
+    if root == os.sep:
+        raise HarnessError("root must not be /")
+    return root
+
+
+def check_root(root):
+    if os.path.exists(root):
+        check_private(os.path.realpath(root), "root")
+
+
+def plugin_config_path(root, name):
+    return os.path.join(root, "plugins", name + ".json")
+
+
+def check_name(name):
+    if not isinstance(name, str) or not PLUGIN_NAME_RE.match(name):
+        raise HarnessError("bad plugin name %r (lowercase letters, digits, "
+                           "- and _; up to 32)" % (name,))
+    return name
+
+
+def known_plugins(root):
+    names = set(BUILTINS)
+    d = os.path.join(root, "plugins")
+    try:
+        for f in os.listdir(d):
+            if f.endswith(".json") and PLUGIN_NAME_RE.match(f[:-5]):
+                names.add(f[:-5])
+    except FileNotFoundError:
+        pass
+    return sorted(names)
+
+
+def current_plugin(root):
+    try:
+        with open(os.path.join(root, "current"), "r", encoding="ascii") as f:
+            name = f.read().strip()
+    except (FileNotFoundError, UnicodeDecodeError):
+        return DEFAULT_PLUGIN
+    return name or DEFAULT_PLUGIN
+
+
+def load_named(root, name):
+    """A named plugin: <root>/plugins/<name>.json, else a built-in."""
+    check_name(name)
+    check_root(root)
+    path = plugin_config_path(root, name)
+    default_state = os.path.join(root, "state", name)
+    self_args = ["--root", root, "--plugin", name]
+    if os.path.exists(path):
+        return load_config(path, default_state, self_args)
+    if name in BUILTINS:
+        return config_from_dict(json.loads(json.dumps(BUILTINS[name])),
+                                path, default_state, self_args)
+    raise HarnessError("unknown plugin %r: no %s, and it is not built in "
+                       "(known: %s)" % (name, path,
+                                        ", ".join(known_plugins(root))))
+
+
+def parse_global(argv):
+    """Leading options, then the command and its arguments."""
+    opts = {"root": None, "plugin": None, "config": None}
+    i = 0
+    while i < len(argv) and argv[i] in ("--root", "--plugin", "--config"):
+        if i + 1 >= len(argv):
+            raise HarnessError("%s needs a value" % argv[i])
+        opts[argv[i][2:]] = argv[i + 1]
+        i += 2
+    if opts["plugin"] and opts["config"]:
+        raise HarnessError("give --plugin or --config, not both")
+    return opts, argv[i:]
+
+
+def select_config(opts):
+    """--config FILE > --plugin NAME > the current plugin > ps."""
+    if opts["config"]:
+        return load_config(opts["config"])
+    root = resolve_root(opts["root"])
+    return load_named(root, opts["plugin"] or current_plugin(root))
+
+
+def cmd_use(opts, rest):
+    if len(rest) != 1:
+        raise HarnessError("usage: ps-harness use NAME")
+    if opts["config"] or opts["plugin"]:
+        raise HarnessError("use takes no --plugin or --config")
+    root = resolve_root(opts["root"])
+    load_named(root, rest[0])          # refuse a name that cannot load
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    check_root(root)
+    path = os.path.join(root, "current")
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(rest[0] + "\n")
+    os.replace(tmp, path)
+    print("current plugin: %s" % rest[0])
+    return 0
+
+
+def cmd_plugins(opts):
+    root = resolve_root(opts["root"])
+    check_root(root)
+    cur = opts["plugin"] or current_plugin(root)
+    for name in known_plugins(root):
+        where = "config" if os.path.exists(plugin_config_path(root, name)) \
+            else "built-in"
+        print("%s %-16s %s" % ("*" if name == cur else " ", name, where))
+    if cur not in known_plugins(root):
+        print("* %-16s missing (no config)" % cur)
+    return 0
+
+
+def poll_error(e):
+    sys.stdout.write("#!psdoom v1\n# harness error: %s\n"
+                     % sanitize_label(e, 200))
+    return 0
 
 
 def main(argv):
-    if len(argv) < 3 or argv[0] != "--config":
+    try:
+        opts, rest = parse_global(argv)
+    except HarnessError as e:
+        sys.stderr.write("ps-harness: %s\n%s\n" % (e, USAGE))
+        return 2
+    if not rest:
         sys.stderr.write(USAGE + "\n")
         return 2
-    config_path, cmd, rest = argv[1], argv[2], argv[3:]
-    if cmd == "poll":
+    cmd, rest = rest[0], rest[1:]
+    if cmd in ("get", "poll"):
         try:
-            return cmd_poll(load_config(config_path))
+            return cmd_poll(select_config(opts))
         except Exception as e:   # never break the game's poll
-            sys.stdout.write("#!psdoom v1\n# harness error: %s\n"
-                             % sanitize_label(e, 200))
-            return 0
-    if cmd == "respond":
+            return poll_error(e)
+    if cmd in VERB_MAP or cmd == "respond":
+        # post/delete (and the game's wound/kill) never fail loudly:
+        # psDoom does not read the exit code; the audit log is the record.
+        verb_args = rest if cmd == "respond" else [cmd] + rest
         try:
-            return cmd_respond(load_config(config_path), rest)
+            return cmd_respond(select_config(opts), verb_args)
         except Exception as e:
-            sys.stderr.write("psdoom-harness: %s\n" % e)
+            sys.stderr.write("ps-harness: %s\n" % e)
             return 0
     try:
-        cfg = load_config(config_path)
-        if cmd == "refresh":
-            refresh(cfg)
-            return 0
-        if cmd == "undo" and len(rest) == 1:
-            return cmd_undo(cfg, rest[0])
-        if cmd == "describe":
-            print(json.dumps(describe(cfg), indent=2, sort_keys=True))
-            return 0
+        if cmd == "use":
+            return cmd_use(opts, rest)
+        if cmd == "plugins":
+            return cmd_plugins(opts)
+        if cmd in ("refresh", "describe", "undo"):
+            cfg = select_config(opts)
+            if cmd == "refresh":
+                refresh(cfg)
+                return 0
+            if cmd == "describe":
+                print(json.dumps(describe(cfg), indent=2, sort_keys=True))
+                return 0
+            if len(rest) == 1:
+                return cmd_undo(cfg, rest[0])
+            raise HarnessError("usage: ps-harness undo ACTION_ID")
     except (HarnessError, OSError, ValueError) as e:
-        sys.stderr.write("psdoom-harness: %s\n" % e)
+        sys.stderr.write("ps-harness: %s\n" % e)
         return 1
-    sys.stderr.write(USAGE + "\n")
-    return 2
+    # Any other word: a newer game's verb, or a typo. A no-op that exits 0,
+    # as the v1 contract asks of responders; audited as ignored-verb when
+    # a plugin config loads.
+    sys.stderr.write("ps-harness: unknown command %r (ignored)\n%s\n"
+                     % (cmd, USAGE))
+    try:
+        cmd_respond(select_config(opts), [cmd] + rest)
+    except Exception:
+        pass
+    return 0
 
 
 if __name__ == "__main__":
