@@ -1,13 +1,13 @@
 /*
- * psDoom -- grade -> monster tier (script contract v2).
+ * psDoom -- grade -> monster tier (script backend).
  *
- * A v2 poll line may carry `grade=<float 0..1>`: where the entity sits on its
+ * A poll line may carry `grade=<float 0..1>`: where the entity sits on its
  * source's own full range, with no knowledge of the game. The game maps that
  * range onto however many monster tiers it can actually draw, so 1.0 is
  * always the top drawable monster and 0.0 the bottom one, whatever the WAD.
  *
  * Engine-free and OS-free so the mapping is host-testable; psdoom.c supplies
- * which ladder tiers are drawable. See docs/script-backend.md (v2).
+ * which ladder tiers are drawable. See docs/script-backend.md.
  */
 
 #ifndef PSDOOM_GRADE_H

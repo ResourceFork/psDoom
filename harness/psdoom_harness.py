@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """ps-harness -- one poll/respond pair for any list of things.
 
-The harness sits between a ps-app's script backend (the v1 contract,
-unchanged; psDoom's docs/script-backend.md) and a *plugin*: a small
+The harness sits between a ps-app's script backend (the script contract,
+psDoom's docs/script-backend.md) and a *plugin*: a small
 executable that can list items, nudge one, and remove one. psDoom runs:
 
     PSDOOM_POLL_CMD    = ps-harness get
@@ -16,11 +16,9 @@ background caching under the 1-second poll timeout, and a safety layer
 Design: psDoom docs/plugin-harness.md. Python 3.10+ standard library only.
 Self-contained: nothing here imports or reads from outside harness/.
 
-    ps-harness [--root DIR] [--plugin NAME | --config FILE]
-               [--contract v1|v2] COMMAND ...
+    ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
-    get                        print the poll output (contract v2: a
-                               `#!psdoom v2` header and a 0..1 `grade`)
+    get                        print the poll output (with a 0..1 `grade`)
     post <id> [k=v...]         nudge: lower its priority
     delete <id> [k=v...]       remove it
     use <name>                 set and persist the current plugin
@@ -28,9 +26,6 @@ Self-contained: nothing here imports or reads from outside harness/.
     refresh                    run the plugin's list now
     describe                   print the plugin's describe, validated
     undo <action-id>           replay a recorded undo through the plugin
-
---contract v1 is for game builds that only speak v1: `get` prints v1 (no
-header version 2, no grade) and `wound`/`kill` are accepted for post/delete.
 
 The root holds `current` and `plugins/<name>.json`; it is --root, else
 $PS_HARNESS_ROOT, else ~/.config/ps-harness. A plugin's state defaults to
@@ -53,7 +48,7 @@ import unicodedata
 PROTOCOL = 1
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# The games' ladders (v1 contract, "Size ladder" / "Load ladder").
+# The games' ladders (the script contract's "Size ladder" / "Load ladder").
 SIZE_LADDER = [0, 16777216, 67108864, 201326592, 536870912, 1610612736,
                4294967296]
 LOAD_LADDER = [0, 5, 25, 60, 120, 250, 500]
@@ -64,11 +59,8 @@ KEY_MAX = 1024            # longest plugin key the harness accepts
 OUTPUT_CAP = 8 * 1024 * 1024  # max bytes read from one plugin call
 ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
 
-# The CLI's words (and the v2 game's) map to plugin verbs. The v1 game's
-# wound/kill are accepted only under --contract v1.
+# The words the game (and you) send map to plugin verbs.
 VERB_MAP = {"post": "nudge", "delete": "remove"}
-V1_VERB_MAP = {"wound": "nudge", "kill": "remove"}
-CONTRACTS = ("v1", "v2")
 
 PLUGIN_NAME_RE = None   # compiled below, after `import re`
 ROOT_ENV = "PS_HARNESS_ROOT"
@@ -117,8 +109,23 @@ def load_config(path, default_state=None, self_args=None):
     if not path:
         raise HarnessError("--config is required")
     path = os.path.abspath(path)
-    check_private(path, "config")
-    with open(path, "r", encoding="utf-8") as f:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise HarnessError("config is a symlink: %s" % path)
+        raise
+    with os.fdopen(fd, "r", encoding="utf-8") as f:
+        # Check the file actually opened, not the path again: nothing can be
+        # swapped in between.
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise HarnessError("config is not a regular file: %s" % path)
+        if st.st_uid != os.getuid():
+            raise HarnessError("config is not owned by this user: %s" % path)
+        if st.st_mode & 0o022:
+            raise HarnessError("config is writable by group or others: %s"
+                               % path)
         try:
             raw = json.load(f)
         except ValueError:
@@ -176,13 +183,23 @@ def config_from_dict(raw, path, default_state, self_args):
     return cfg
 
 
+def make_private_dirs(d):
+    """makedirs with every directory it creates at 0700, whatever the umask
+    (os.makedirs applies its mode to the last one only)."""
+    old = os.umask(0o077)
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    finally:
+        os.umask(old)
+
+
 def ensure_state_dir(cfg):
     """Create the state dir 0700, then refuse it unless it is a real
     directory (not a symlink) owned by this user and not writable by group
     or others, so nobody else can plant a cache, an id map or an undo
     record that respond would trust."""
     d = cfg["state_dir"]
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    make_private_dirs(d)
     st = os.lstat(d)
     if not stat.S_ISDIR(st.st_mode):
         raise HarnessError("state_dir is not a directory (or is a symlink)")
@@ -367,7 +384,7 @@ def sanitize_label(name, limit=LABEL_MAX):
     """Plugin name -> what the games draw: printable ASCII, whitespace
     (TAB and newline included) collapsed to single spaces, at most `limit`
     bytes. A TAB or newline can never survive, so a name can never add a
-    field or a record to the v1 output."""
+    field or a record to the poll output."""
     if name is None:
         return ""
     s = unicodedata.normalize("NFKD", str(name))
@@ -490,7 +507,9 @@ def normalize(items, desc, cfg):
         v = it.get("size")
         sizes.append(float(v) if _is_num(v) and v >= 0 else None)
     size_spec = desc.get("size") or {}
-    if all(v is None for v in sizes):
+    has_size = [v is not None for v in sizes]
+    rank_based = not any(has_size)
+    if rank_based:
         # No sizes at all: the top-ranked item is the biggest.
         size_spec = {"scale": "relative"}
         sizes = [float(n - pos) for pos in range(n)]
@@ -502,24 +521,35 @@ def normalize(items, desc, cfg):
     load_spec = desc.get("load") or {}
     weights = scale_metric(sizes, size_spec, SIZE_LADDER, max_tier)
     load_vals = scale_metric(loads, load_spec, LOAD_LADDER, 6)
-    # Contract v2 grade, 0..1 over the item's own range: the plugin's own
-    # `grade` if it sent one, else from size (or rank), else load, with the
-    # declared scale. A native scale is already in the game's units, so it
-    # gets no grade and the game's Classify by applies, as with the native
-    # backend.
-    grades = scale_fraction(sizes, size_spec)
-    load_grades = scale_fraction(loads, load_spec)
+    # The grade, 0..1 over the item's own range: the plugin's own `grade` if
+    # it sent one; else its size on the declared scale; else its load; else
+    # its rank. A native size scale is already in the game's units, so those
+    # items get no computed grade and the game's Classify by applies, as
+    # with the native backend. max_tier scales every grade, so a cap on the
+    # ladder also caps what a grade can reach.
+    none = [None] * n
+    if (desc.get("size") or {}).get("scale") == "native":
+        computed = none
+    else:
+        size_g = none if rank_based else scale_fraction(sizes, size_spec)
+        load_g = none if load_spec.get("scale") == "native" \
+            else scale_fraction(loads, load_spec)
+        rank_g = scale_fraction(sizes, size_spec) if rank_based else none
+        computed = [a if a is not None else (b if b is not None else c)
+                    for a, b, c in zip(size_g, load_g, rank_g)]
+    cap = max_tier / 6.0
+    grades = []
     for i, it in enumerate(ordered):
         g = it.get("grade")
         if _is_num(g):
             g = min(1.0, max(0.0, float(g)))
-            grades[i] = g
-            if sizes[i] is None:
+            if not has_size[i]:
                 weights[i] = tier_value(g, SIZE_LADDER, max_tier)
             if loads[i] is None:
                 load_vals[i] = tier_value(g, LOAD_LADDER, 6)
-        elif grades[i] is None:
-            grades[i] = load_grades[i]
+        else:
+            g = computed[i]
+        grades.append(None if g is None else g * cap)
 
     out = []
     for i, it in enumerate(ordered):
@@ -539,6 +569,14 @@ def normalize(items, desc, cfg):
 
 # ----------------------------------------------------------------- id map --
 
+class _NoLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def assign_ids(cfg, items, now):
     """Give every item a stable id from the persisted map. Ids are handed out
     from a counter that never goes back, so an id is never reused for a
@@ -556,16 +594,25 @@ def assign_ids(cfg, items, now):
         raise HarnessError("ids.json is missing or damaged; ids could be "
                            "reused. Delete the whole state_dir to start over.")
     keys = m["keys"]
-    for it in items:
-        rec = keys.get(it["key"])
-        if rec is None:
-            if m["next"] > ID_MAX:
-                raise HarnessError("id space exhausted")
-            rec = {"id": m["next"]}
-            m["next"] += 1
-            keys[it["key"]] = rec
-        rec["seen"] = now
-        it["id"] = rec["id"]
+    counter = cfg.get("id_counter")
+    with Locked(counter + ".lock") if counter else _NoLock():
+        if counter:
+            shared = read_json(counter, {})
+            nxt = shared.get("next") if isinstance(shared, dict) else None
+            if isinstance(nxt, int) and nxt > m["next"]:
+                m["next"] = nxt
+        for it in items:
+            rec = keys.get(it["key"])
+            if rec is None:
+                if m["next"] > ID_MAX:
+                    raise HarnessError("id space exhausted")
+                rec = {"id": m["next"]}
+                m["next"] += 1
+                keys[it["key"]] = rec
+            rec["seen"] = now
+            it["id"] = rec["id"]
+        if counter:
+            write_json_atomic(counter, {"next": m["next"]})
     if len(keys) > ID_MAP_CAP:
         drop = sorted(keys, key=lambda k: keys[k].get("seen", 0))
         for k in drop[:len(keys) - ID_MAP_CAP]:
@@ -637,20 +684,11 @@ def spawn_refresher(cfg):
         os.close(log)
 
 
-def render_v1(items):
-    lines = ["#!psdoom v1"]
-    for it in items:
-        lines.append("id=%d\tparent=%d\tweight=%d\tload=%d\tflags=%d\tlabel=%s"
-                     % (it["id"], it["parent"], it["weight"], it["load"],
-                        it["flags"], it["label"]))
-    return "\n".join(lines) + "\n"
-
-
-def render_v2(items):
-    """v1's fields, plus `grade` (0..1) where the item has one, under a
-    `#!psdoom v2` first line. The label stays last so it never hides a
-    field from a reader that splits on TAB."""
-    lines = ["#!psdoom v2"]
+def render(items):
+    """One TAB-separated key=value line per item, with `grade` (0..1) where
+    the item has one. The label stays last so it never hides a field from a
+    reader that splits on TAB."""
+    lines = []
     for it in items:
         g = it.get("grade")
         grade = "" if g is None else "\tgrade=%.4f" % g
@@ -658,14 +696,10 @@ def render_v2(items):
                      "\tlabel=%s"
                      % (it["id"], it["parent"], it["weight"], it["load"],
                         it["flags"], grade, it["label"]))
-    return "\n".join(lines) + "\n"
+    return "".join(line + "\n" for line in lines)
 
 
-def render(items, contract):
-    return render_v1(items) if contract == "v1" else render_v2(items)
-
-
-def cmd_poll(cfg, contract="v2"):
+def cmd_poll(cfg):
     ensure_state_dir(cfg)
     cache = read_cache(cfg)
     now = time.time()
@@ -685,7 +719,7 @@ def cmd_poll(cfg, contract="v2"):
         while cache is None and time.monotonic() < deadline:
             time.sleep(0.02)
             cache = read_cache(cfg)
-    sys.stdout.write(render(cache["items"] if cache else [], contract))
+    sys.stdout.write(render(cache["items"] if cache else []))
     return 0
 
 
@@ -719,12 +753,12 @@ def parse_extras(extras):
 ID_RE = re.compile(r"[0-9]{1,10}\Z")
 
 
-def cmd_respond(cfg, argv, contract="v2"):
+def cmd_respond(cfg, argv):
     """Never raises; psDoom does not read the exit code, the audit log is the
     record of what happened."""
     ensure_state_dir(cfg)
     try:
-        return _respond(cfg, argv, contract)
+        return _respond(cfg, argv)
     except Exception as e:
         audit(cfg, {"verb": (argv[0] if argv else "")[:32],
                     "id": (argv[1] if len(argv) > 1 else "")[:16],
@@ -732,15 +766,13 @@ def cmd_respond(cfg, argv, contract="v2"):
         return 0
 
 
-def _respond(cfg, argv, contract="v2"):
+def _respond(cfg, argv):
     verb = argv[0] if argv else ""
     ident = argv[1] if len(argv) > 1 else ""
     extras = parse_extras(argv[2:])
     entry = {"verb": verb[:32], "id": ident[:16],
              "game_label": extras.get("label", "")[:64]}
     pverb = VERB_MAP.get(verb)
-    if pverb is None and contract == "v1":
-        pverb = V1_VERB_MAP.get(verb)
     if pverb is None:
         audit(cfg, dict(entry, outcome="ignored-verb"))
         return 0
@@ -755,6 +787,12 @@ def _respond(cfg, argv, contract="v2"):
         audit(cfg, dict(entry, outcome="unknown-id"))
         return 0
     entry.update(action=pverb, key=item["key"], name=item["name"])
+    game_label = extras.get("label")
+    if game_label is not None and game_label != item["label"]:
+        # The game names the monster it hit; if this id now lists something
+        # else (another plugin, a stale snapshot), act on nothing.
+        audit(cfg, dict(entry, outcome="label-mismatch"))
+        return 0
     key = item["key"]
     if not isinstance(key, str) or not key or key.startswith("-") or \
             "\x00" in key or len(key) > KEY_MAX:
@@ -858,8 +896,8 @@ def _undo(cfg, action_id):
 PLUGIN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
 
 USAGE = ("usage: ps-harness [--root DIR] [--plugin NAME | --config FILE] "
-         "[--contract v1|v2] (get | post ID [k=v...] | delete ID [k=v...] | "
-         "use NAME | plugins | refresh | describe | undo ACTION_ID)")
+         "(get | post ID [k=v...] | delete ID [k=v...] | use NAME | plugins "
+         "| refresh | describe | undo ACTION_ID)")
 
 
 def resolve_root(opt_root):
@@ -915,14 +953,23 @@ def load_named(root, name):
     """A named plugin: <root>/plugins/<name>.json, else a built-in."""
     check_name(name)
     check_root(root)
+    plugins_dir = os.path.join(root, "plugins")
+    if os.path.exists(plugins_dir):
+        check_private(plugins_dir, "plugins directory")
     path = plugin_config_path(root, name)
     default_state = os.path.join(root, "state", name)
     self_args = ["--root", root, "--plugin", name]
-    if os.path.exists(path):
-        return load_config(path, default_state, self_args)
-    if name in BUILTINS:
-        return config_from_dict(json.loads(json.dumps(BUILTINS[name])),
-                                path, default_state, self_args)
+    cfg = None
+    if os.path.lexists(path):
+        cfg = load_config(path, default_state, self_args)
+    elif name in BUILTINS:
+        cfg = config_from_dict(json.loads(json.dumps(BUILTINS[name])),
+                               path, default_state, self_args)
+    if cfg is not None:
+        # One id counter for the whole root, so switching plugins mid-game
+        # never hands a held id to another plugin's item.
+        cfg["id_counter"] = os.path.join(root, "ids-next.json")
+        return cfg
     raise HarnessError("unknown plugin %r: no %s, and it is not built in "
                        "(known: %s)" % (name, path,
                                         ", ".join(known_plugins(root))))
@@ -930,18 +977,15 @@ def load_named(root, name):
 
 def parse_global(argv):
     """Leading options, then the command and its arguments."""
-    opts = {"root": None, "plugin": None, "config": None, "contract": "v2"}
+    opts = {"root": None, "plugin": None, "config": None}
     i = 0
-    while i < len(argv) and argv[i] in ("--root", "--plugin", "--config",
-                                        "--contract"):
+    while i < len(argv) and argv[i] in ("--root", "--plugin", "--config"):
         if i + 1 >= len(argv):
             raise HarnessError("%s needs a value" % argv[i])
         opts[argv[i][2:]] = argv[i + 1]
         i += 2
     if opts["plugin"] and opts["config"]:
         raise HarnessError("give --plugin or --config, not both")
-    if opts["contract"] not in CONTRACTS:
-        raise HarnessError("--contract must be v1 or v2")
     return opts, argv[i:]
 
 
@@ -960,7 +1004,7 @@ def cmd_use(opts, rest):
         raise HarnessError("use takes no --plugin or --config")
     root = resolve_root(opts["root"])
     load_named(root, rest[0])          # refuse a name that cannot load
-    os.makedirs(root, mode=0o700, exist_ok=True)
+    make_private_dirs(root)
     check_root(root)
     path = os.path.join(root, "current")
     tmp = "%s.tmp.%d" % (path, os.getpid())
@@ -984,9 +1028,8 @@ def cmd_plugins(opts):
     return 0
 
 
-def poll_error(e, contract="v2"):
-    sys.stdout.write("#!psdoom %s\n# harness error: %s\n"
-                     % (contract, sanitize_label(e, 200)))
+def poll_error(e):
+    sys.stdout.write("# harness error: %s\n" % sanitize_label(e, 200))
     return 0
 
 
@@ -1000,17 +1043,16 @@ def main(argv):
         sys.stderr.write(USAGE + "\n")
         return 2
     cmd, rest = rest[0], rest[1:]
-    contract = opts["contract"]
     if cmd == "get":
         try:
-            return cmd_poll(select_config(opts), contract)
+            return cmd_poll(select_config(opts))
         except Exception as e:   # never break the game's poll
-            return poll_error(e, contract)
-    if cmd in VERB_MAP or (contract == "v1" and cmd in V1_VERB_MAP):
+            return poll_error(e)
+    if cmd in VERB_MAP:
         # post/delete never fail loudly: the game does not read the exit
         # code; the audit log is the record.
         try:
-            return cmd_respond(select_config(opts), [cmd] + rest, contract)
+            return cmd_respond(select_config(opts), [cmd] + rest)
         except Exception as e:
             sys.stderr.write("ps-harness: %s\n" % e)
             return 0
@@ -1034,12 +1076,12 @@ def main(argv):
         sys.stderr.write("ps-harness: %s\n" % e)
         return 1
     # Any other word: a newer game's verb, or a typo. A no-op that exits 0,
-    # as the v1 contract asks of responders; audited as ignored-verb when
+    # as the script contract asks of responders; audited as ignored-verb when
     # a plugin config loads.
     sys.stderr.write("ps-harness: unknown command %r (ignored)\n%s\n"
                      % (cmd, USAGE))
     try:
-        cmd_respond(select_config(opts), [cmd] + rest, contract)
+        cmd_respond(select_config(opts), [cmd] + rest)
     except Exception:
         pass
     return 0

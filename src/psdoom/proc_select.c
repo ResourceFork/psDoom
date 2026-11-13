@@ -255,7 +255,13 @@ int psd_select_triage(const psd_proc_t *raw, int n_raw,
 
 int psd_select_collect(psd_proc_t *out, int max)
 {
-    int n_raw = proc_backend()->list(select_raw, PSD_RAW_MAX);
+    int n_raw;
+
+    /* Zero the scratch first: a backend fills only the fields it knows (the
+     * native one never sets has_grade), so nothing may carry over from an
+     * earlier list or another backend. */
+    memset(select_raw, 0, sizeof(select_raw));
+    n_raw = proc_backend()->list(select_raw, PSD_RAW_MAX);
 
     select_raw_count = n_raw;   /* remember for psd_select_child_count() */
 

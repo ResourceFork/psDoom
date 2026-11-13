@@ -45,7 +45,7 @@ int psdoom_all_users_enabled(void) { return stub_all_users; }
 
 void iwad_select_tests(int *checks_run, int *checks_failed); /* iwad_select_test.c */
 void harness_e2e_tests(int *checks_run, int *checks_failed); /* harness_e2e_test.c */
-void script_v2_tests(int *checks_run, int *checks_failed); /* script_v2_test.c */
+void script_grade_tests(int *checks_run, int *checks_failed); /* script_grade_test.c */
 
 /* ---- tiny check harness -------------------------------------------------- */
 static int checks_run;
@@ -224,7 +224,6 @@ static void test_child_count(void)
 static void test_script_parse(void)
 {
     const char *buf =
-        "#!psdoom v1\n"
         "# a comment\n"
         "\n"
         "id=4123\tlabel=web frontend\tweight=734003200\tload=140\tparent=4000\n"
@@ -237,6 +236,7 @@ static void test_script_parse(void)
 
     CHECK(n == 3);
 
+    CHECK(out[0].has_grade == 0);       /* no grade field: weight/load */
     CHECK(out[0].pid == 4123);
     CHECK(out[0].ppid == 4000);
     CHECK(out[0].footprint == 734003200ULL);
@@ -373,13 +373,13 @@ static void test_script_backend_roundtrip(void)
     CHECK(index_of(out, n, 4124) >= 0);
     CHECK(index_of(out, n, 4000) >= 0);
 
-    /* kill -> respond `kill 4124` (no label: that entity emitted none). */
+    /* kill -> respond `delete 4124` (no label: that entity emitted none). */
     (void) proc_backend()->kill(4124);
-    CHECK(wait_for_contains(result, "kill 4124", 3000));
+    CHECK(wait_for_contains(result, "delete 4124", 3000));
 
-    /* wound -> respond `wound 4123 amount=4 label=web frontend`. */
+    /* wound -> respond `post 4123 amount=4 label=web frontend`. */
     proc_backend()->renice(4123, 4);
-    CHECK(wait_for_contains(result, "wound 4123 amount=4", 3000));
+    CHECK(wait_for_contains(result, "post 4123 amount=4", 3000));
 
     /* Checked actions in script mode: "now" is the latest poll. An id the poll
      * no longer lists gets no response at all; the id alone is the identity
@@ -387,15 +387,15 @@ static void test_script_backend_roundtrip(void)
     CHECK(psd_proc_kill_checked(4999, 0, "") == PSD_ACT_GONE);
     CHECK(psd_proc_renice_checked(4123, 0, "renamed", 4) == PSD_ACT_DONE);
     CHECK(psd_proc_kill_checked(4000, 0, "supervisor") == PSD_ACT_DONE);
-    CHECK(wait_for_contains(result, "kill 4000", 3000));
+    CHECK(wait_for_contains(result, "delete 4000", 3000));
     {
         int waited = 0;   /* the raw wound above, plus the checked one */
-        while (file_count(result, "wound 4123") < 2 && waited < 3000)
+        while (file_count(result, "post 4123") < 2 && waited < 3000)
         {
             usleep(10000);
             waited += 10;
         }
-        CHECK(file_count(result, "wound 4123") == 2);
+        CHECK(file_count(result, "post 4123") == 2);
     }
     usleep(500000);   /* give any wrongly dispatched responder time to land */
     CHECK(!file_contains(result, "4999"));
@@ -427,7 +427,7 @@ static const char *test_tmpdir(void)
 
 /* An id outside 2..INT_MAX, or anything but plain decimal digits, drops the
  * line: it must never become an entity whose id wraps (4294967295 -> -1 would
- * turn a responder's `kill "$id"` into `kill -1`). */
+ * turn a responder's `kill "$id"` for a `delete` into `kill -1`). */
 static void test_script_parse_rejects_bad_ids(void)
 {
     static const char *bad[] =
@@ -500,13 +500,13 @@ static void test_script_respond_refuses_reserved_ids(void)
     proc_backend()->renice(-1, 4);
     proc_backend()->renice(1, 4);
     (void) proc_backend()->kill(4242);           /* control: dispatched */
-    CHECK(wait_for_contains(result, "<kill 4242", 3000));
+    CHECK(wait_for_contains(result, "<delete 4242", 3000));
     usleep(300000);   /* give any wrongly dispatched responder time to land */
-    CHECK(!file_contains(result, "<kill -1"));
-    CHECK(!file_contains(result, "<kill 0"));
-    CHECK(!file_contains(result, "<kill 1>"));
-    CHECK(!file_contains(result, "<wound -1"));
-    CHECK(!file_contains(result, "<wound 1 "));
+    CHECK(!file_contains(result, "<delete -1"));
+    CHECK(!file_contains(result, "<delete 0"));
+    CHECK(!file_contains(result, "<delete 1>"));
+    CHECK(!file_contains(result, "<post -1"));
+    CHECK(!file_contains(result, "<post 1 "));
 
     unlink(poll);
     unlink(respond);
@@ -1150,7 +1150,7 @@ int main(int argc, char **argv)
     test_macos_zombie_readonly();
     test_macos_renice_refuses_reserved();
 #endif
-    script_v2_tests(&checks_run, &checks_failed);
+    script_grade_tests(&checks_run, &checks_failed);
     harness_e2e_tests(&checks_run, &checks_failed);
     iwad_select_tests(&checks_run, &checks_failed);
 

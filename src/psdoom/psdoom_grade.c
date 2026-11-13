@@ -1,5 +1,5 @@
 /*
- * psDoom -- grade -> monster tier (script contract v2). See psdoom_grade.h.
+ * psDoom -- grade -> monster tier (script backend). See psdoom_grade.h.
  */
 
 #include "psdoom_grade.h"

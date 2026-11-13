@@ -42,22 +42,6 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
  */
 int psd_script_parse(const char *buf, psd_proc_t *out, int max);
 
-/*
- * As psd_script_parse, and report the contract version the output declares
- * (see psd_script_version) in *version_out when it is not NULL. Under v2 the
- * `grade` field is read; under v1 it is ignored. A refused version (-1)
- * yields no entities.
- */
-int psd_script_parse_versioned(const char *buf, psd_proc_t *out, int max,
-                               int *version_out);
-
-/*
- * The contract version a poll output declares on its first line:
- * 1 (`#!psdoom v1`, or no `#!psdoom ` header), 2 (`#!psdoom v2`), or -1 for
- * any other `#!psdoom ` version, which is refused rather than misread.
- */
-int psd_script_version(const char *buf);
-
 #ifdef __cplusplus
 }
 #endif

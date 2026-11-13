@@ -5,8 +5,9 @@
  * psDoom's own proc_script backend runs the harness exactly as the setup
  * PSDOOM_POLL_CMD="ps-harness get", PSDOOM_RESPOND_CMD="ps-harness" would:
  * the poll through `sh -c` under the 1-second timeout, the responder exec'd
- * detached with `verb id [key=value...]`. Contract v2 (post/delete, grade) is
- * checked live; contract v1 (wound/kill) through `--contract v1`, dry run. The
+ * detached with `verb id [key=value...]`: grades arrive, a kill sends
+ * `delete` and a wound `post`, live; then the default dry run leaves the CSV
+ * alone. The
  * harness drives the CSV plugin on a CSV file this test writes, so the real
  * action path is proven on that file only. No process is ever signalled.
  *
@@ -235,17 +236,16 @@ static void clear_root(const char *root)
 
 /* The human's setup: PSDOOM_POLL_CMD="ps-harness get" and
  * PSDOOM_RESPOND_CMD="ps-harness", with the launcher by its path and an
- * explicit --root (never the home directory). `contract` is "" for the
- * default (v2) or "--contract v1 " for an older game build. */
-static void install(const char *root, const char *contract)
+ * explicit --root (never the home directory). */
+static void install(const char *root)
 {
     char poll[2048];
     char respond[2048];
-    snprintf(poll, sizeof(poll), "'%s/ps-harness' --root '%s' %sget",
-             PSD_HARNESS_DIR, root, contract);
+    snprintf(poll, sizeof(poll), "'%s/ps-harness' --root '%s' get",
+             PSD_HARNESS_DIR, root);
     /* PSDOOM_RESPOND_CMD is split on whitespace, never run by a shell. */
-    snprintf(respond, sizeof(respond), "%s/ps-harness --root %s %s",
-             PSD_HARNESS_DIR, root, contract);
+    snprintf(respond, sizeof(respond), "%s/ps-harness --root %s",
+             PSD_HARNESS_DIR, root);
     proc_script_install(poll, respond, 1000);
     psd_select_init();
 }
@@ -284,8 +284,8 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     write_root(root, csv, 1);
     write_root(root_dry, csv, 0);
 
-    /* ---- contract v2, live plugin: real post/delete on the test CSV ---- */
-    install(root, "");
+    /* ---- live plugin: real post/delete on the test CSV ---- */
+    install(root);
     n = collect_until(out, 16, 3, 50);
     E2E_CHECK(n == 3);
     a = find_named(out, n, "Alpha");
@@ -296,7 +296,7 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     {
         goto done;
     }
-    /* Priority 9/5/1 -> grade 1, 0.5, 0 (and the v1 weights alongside). */
+    /* Priority 9/5/1 -> grade 1, 0.5, 0 (and the weights alongside). */
     E2E_CHECK(out[b].has_grade && out[b].grade == 1.0);
     E2E_CHECK(out[a].has_grade && out[a].grade == 0.5);
     E2E_CHECK(out[c].has_grade && out[c].grade == 0.0);
@@ -322,18 +322,18 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     E2E_CHECK(n == 2);
     E2E_CHECK(find_named(out, n, "Bravo") < 0);
 
-    /* ---- contract v1 (an older game build), default dry run ---- */
-    install(root_dry, "--contract v1 ");
+    /* ---- default config: dry run, the CSV is left alone ---- */
+    install(root_dry);
     n = collect_until(out, 16, 2, 50);
     E2E_CHECK(n == 2);
     c = find_named(out, n, "Charlie");
     E2E_CHECK(c >= 0);
     if (c >= 0)
     {
-        E2E_CHECK(!out[c].has_grade);   /* v1 output carries no grade */
+        E2E_CHECK(out[c].has_grade);
         E2E_CHECK(psd_proc_kill_checked(out[c].pid, 0, "Charlie") == PSD_ACT_DONE);
         E2E_CHECK(wait_file(audit_dry, "\"outcome\": \"dry-run\"", 1, 5000));
-        E2E_CHECK(file_has(audit_dry, "\"verb\": \"kill\""));
+        E2E_CHECK(file_has(audit_dry, "\"verb\": \"delete\""));
         E2E_CHECK(file_has(csv, "r3,Charlie,1"));
     }
 

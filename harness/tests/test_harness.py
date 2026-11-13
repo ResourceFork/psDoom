@@ -159,14 +159,10 @@ class Base(unittest.TestCase):
 
     def harness(self, cfg, *args, timeout=20):
         args = list(args)
-        pre = []
         if args and args[0] == "poll":
-            args[0] = "get"
-        elif args and args[0] == "respond":
-            # the v1 game's call: `wound|kill <id>`, under --contract v1
-            pre, args = ["--contract", "v1"], args[1:] or [""]
+            args[0] = "get"          # the tests' shorthand for the game's get
         t0 = time.monotonic()
-        r = subprocess.run([PY, HARNESS, "--config", cfg] + pre + args,
+        r = subprocess.run([PY, HARNESS, "--config", cfg] + args,
                            stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=timeout, cwd=self.root,
                            env=self.env())
@@ -346,7 +342,7 @@ class ConfigTests(Base):
             f.write("{")
         r, _ = self.harness(path, "poll")
         self.assertEqual(r.returncode, 0)
-        self.assertTrue(r.stdout.startswith("#!psdoom v2\n"))
+        self.assertFalse(r.stdout.startswith("#!"))   # no header
         self.assertEqual(parse_v1(r.stdout), [])
 
     def test_shipped_examples_need_a_real_state_dir(self):
@@ -428,7 +424,7 @@ class CacheTests(Base):
         r, took = self.harness(cfg, "poll")
         self.assertLess(took, 1.0)
         self.assertEqual(parse_v1(r.stdout), [])
-        self.assertTrue(r.stdout.startswith("#!psdoom v2\n"))
+        self.assertFalse(r.stdout.startswith("#!"))   # no header
         # The detached refresher finishes on its own.
         deadline = time.monotonic() + 10
         rows = []
@@ -474,14 +470,14 @@ class RespondTests(Base):
         return cfg
 
     def respond(self, cfg, *args):
-        r, _ = self.harness(cfg, "respond", *args)
+        r, _ = self.harness(cfg, *args)
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_dry_run_is_the_default(self):
         cfg = self.csv_config(plugin={"allow_remove": True})
         rows = self.poll(cfg)
-        self.respond(cfg, "kill", self.id_for(rows, "Bravo"))
-        self.respond(cfg, "wound", self.id_for(rows, "Alpha"), "amount=4")
+        self.respond(cfg, "delete", self.id_for(rows, "Bravo"))
+        self.respond(cfg, "post", self.id_for(rows, "Alpha"), "amount=4")
         self.assertEqual(self.read(self.csv), self.original)
         self.assertEqual([e["outcome"] for e in self.audit()],
                          ["dry-run", "dry-run"])
@@ -489,18 +485,18 @@ class RespondTests(Base):
     def test_remove_needs_opt_in(self):
         cfg = self.csv_config(dry_run=False)
         rows = self.poll(cfg)
-        self.respond(cfg, "kill", self.id_for(rows, "Bravo"))
+        self.respond(cfg, "delete", self.id_for(rows, "Bravo"))
         self.assertEqual(self.read(self.csv), self.original)
         self.assertEqual(self.audit()[-1]["outcome"], "blocked")
         # nudge is not gated by allow_remove
-        self.respond(cfg, "wound", self.id_for(rows, "Bravo"), "amount=4")
+        self.respond(cfg, "post", self.id_for(rows, "Bravo"), "amount=4")
         self.assertIn("b,Bravo,5", self.read(self.csv))
         self.assertEqual(self.audit()[-1]["outcome"], "ok")
 
     def test_remove_when_enabled(self):
         cfg = self.csv_config(dry_run=False, plugin={"allow_remove": True})
         rows = self.poll(cfg)
-        self.respond(cfg, "kill", self.id_for(rows, "Bravo"))
+        self.respond(cfg, "delete", self.id_for(rows, "Bravo"))
         self.assertNotIn("Bravo", self.read(self.csv))
         # gone from the very next poll, before any refresh
         self.assertNotIn("Bravo", [r["label"] for r in self.poll(cfg)])
@@ -513,9 +509,9 @@ class RespondTests(Base):
         before = len(self.calls())
         self.respond(cfg, "explode", ident, "amount=9")
         self.respond(cfg, "", ident)
-        self.respond(cfg, "kill", "99999")
-        self.respond(cfg, "kill", "not-a-number")
-        self.respond(cfg)
+        self.respond(cfg, "delete", "99999")
+        self.respond(cfg, "delete", "not-a-number")
+        self.respond(cfg, "wound", ident, "amount=4")   # not a verb now
         self.assertEqual(len(self.calls()), before)   # plugin never called
         self.assertEqual([e["outcome"] for e in self.audit()],
                          ["ignored-verb", "ignored-verb", "unknown-id",
@@ -527,7 +523,7 @@ class RespondTests(Base):
         cfg = self.config(cmd, dry_run=False, plugin={"allow_remove": True})
         self.refresh(cfg)
         before = len(self.calls())
-        self.respond(cfg, "kill", self.poll(cfg)[0]["id"])
+        self.respond(cfg, "delete", self.poll(cfg)[0]["id"])
         self.assertEqual(len(self.calls()), before)
         self.assertEqual(self.audit()[-1]["outcome"], "unsupported")
 
@@ -536,7 +532,7 @@ class RespondTests(Base):
                               rate_limit={"actions": 2, "per_s": 60})
         ident = self.id_for(self.poll(cfg), "Alpha")
         for _ in range(4):
-            self.respond(cfg, "wound", ident, "amount=1")
+            self.respond(cfg, "post", ident, "amount=1")
         self.assertEqual([e["outcome"] for e in self.audit()],
                          ["ok", "ok", "rate-limited", "rate-limited"])
         self.assertIn("a,Alpha,3", self.read(self.csv))
@@ -544,18 +540,18 @@ class RespondTests(Base):
     def test_audit_log_records_every_action(self):
         cfg = self.csv_config(dry_run=False, plugin={"allow_remove": True})
         rows = self.poll(cfg)
-        self.respond(cfg, "wound", self.id_for(rows, "Alpha"), "amount=2",
+        self.respond(cfg, "post", self.id_for(rows, "Alpha"), "amount=2",
                      "label=Alpha")
-        self.respond(cfg, "kill", self.id_for(rows, "Charlie"))
+        self.respond(cfg, "delete", self.id_for(rows, "Charlie"))
         log = self.audit()
         self.assertEqual(len(log), 2)
         w, k = log
         self.assertEqual((w["verb"], w["action"], w["key"], w["amount"],
-                          w["outcome"]), ("wound", "nudge", "a", 2, "ok"))
+                          w["outcome"]), ("post", "nudge", "a", 2, "ok"))
         self.assertEqual(w["undo"], {"op": "priority", "key": "a",
                                      "old": "5"})
         self.assertEqual((k["verb"], k["action"], k["key"], k["outcome"]),
-                         ("kill", "remove", "c", "ok"))
+                         ("delete", "remove", "c", "ok"))
         for e in log:
             self.assertEqual(e["plugin"], "csv")
             self.assertTrue(e["action_id"])
@@ -564,8 +560,8 @@ class RespondTests(Base):
     def test_amount_is_clamped(self):
         cfg = self.csv_config(dry_run=False)
         ident = self.id_for(self.poll(cfg), "Bravo")
-        self.respond(cfg, "wound", ident, "amount=100000")
-        self.respond(cfg, "wound", ident, "amount=-3")
+        self.respond(cfg, "post", ident, "amount=100000")
+        self.respond(cfg, "post", ident, "amount=-3")
         self.assertEqual([e["amount"] for e in self.audit()], [100, 1])
 
 
@@ -595,7 +591,7 @@ class CsvPluginTests(Base):
                           plugin={"allow_remove": True})
         self.refresh(cfg)
         ident = self.id_for(self.poll(cfg), "B, quoted")
-        r, _ = self.harness(cfg, "respond", "kill", ident)
+        r, _ = self.harness(cfg, "delete", ident)
         self.assertNotIn("quoted", self.read(path))
         action = self.audit()[-1]["action_id"]
         r, _ = self.harness(cfg, "undo", action)
@@ -612,7 +608,7 @@ class CsvPluginTests(Base):
         cfg = self.config(self.csv_cmd(path, "--priority-column", "priority"),
                           name="csv", dry_run=False)
         self.refresh(cfg)
-        self.harness(cfg, "respond", "wound", self.poll(cfg)[0]["id"],
+        self.harness(cfg, "post", self.poll(cfg)[0]["id"],
                      "amount=4")
         self.assertEqual(self.read(path), "id,name,priority\na,A,3\n")
         r, _ = self.harness(cfg, "undo", self.audit()[-1]["action_id"])
@@ -713,32 +709,25 @@ class CliTests(Base):
         self.assertEqual(self.r("refresh").returncode, 0)
         rows = self.get()
         ident = rows[0]["id"]
-        cases = (([], ["post", ident, "amount=2"]),
-                 ([], ["delete", ident]),
-                 # the v1 game's verbs, only under --contract v1
-                 (["--contract", "v1"], ["wound", ident]),
-                 (["--contract", "v1"], ["kill", ident]),
-                 # the CLI's own words work under v1 too
-                 (["--contract", "v1"], ["post", ident, "amount=3"]))
-        for pre, args in cases:
+        for args in (["post", ident, "amount=2"], ["delete", ident],
+                     ["post", ident, "label=A"], ["delete", ident, "label=A"]):
             # A removed item leaves the cache at once; the fake still lists
             # it, so a refresh brings it back (same key, same id).
             self.assertEqual(self.r("refresh").returncode, 0)
             self.assertEqual(self.get()[0]["id"], ident)
-            res = self.r(*(pre + args))
+            res = self.r(*args)
             self.assertEqual(res.returncode, 0, res.stderr)
-        # Under v2, wound/kill and the dropped aliases are unknown: no-ops.
+        # wound/kill, the old aliases and anything else: no-ops, exit 0.
         for args in (["wound", ident], ["kill", ident], ["explode", ident],
-                     ["respond", "kill", ident], ["poll"]):
+                     ["respond", "delete", ident], ["poll"]):
             res = self.r(*args)
             self.assertEqual(res.returncode, 0, args)
-            self.assertEqual(res.stdout, "", args)   # `poll` prints nothing
+            self.assertEqual(res.stdout, "", args)
         log = self.audit()
         self.assertEqual([(e["verb"], e.get("action"), e["outcome"])
                           for e in log],
                          [("post", "nudge", "ok"), ("delete", "remove", "ok"),
-                          ("wound", "nudge", "ok"), ("kill", "remove", "ok"),
-                          ("post", "nudge", "ok"),
+                          ("post", "nudge", "ok"), ("delete", "remove", "ok"),
                           ("wound", None, "ignored-verb"),
                           ("kill", None, "ignored-verb"),
                           ("explode", None, "ignored-verb"),
@@ -746,8 +735,7 @@ class CliTests(Base):
                           ("poll", None, "ignored-verb")])
         acts = [c for c in self.calls() if c and c[0] in ("nudge", "remove")]
         self.assertEqual(acts, [["nudge", "a", "amount=2"], ["remove", "a"],
-                                ["nudge", "a", "amount=1"], ["remove", "a"],
-                                ["nudge", "a", "amount=3"]])
+                                ["nudge", "a", "amount=1"], ["remove", "a"]])
         res = self.r("describe")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("verbs", json.loads(res.stdout))
@@ -761,29 +749,106 @@ class CliTests(Base):
         res = self.r()
         self.assertEqual(res.returncode, 2)               # no command
         self.assertIn("usage", res.stderr)
-        res = self.r("--contract", "v3", "get")
-        self.assertEqual(res.returncode, 2)
-        self.assertIn("v1 or v2", res.stderr)
+        res = self.r("--contract", "v1", "get")           # no such switch
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout, "")
 
-    def test_get_speaks_v2_with_grade_and_v1_on_request(self):
+    def test_get_carries_grade(self):
         self.named("fake", [{"key": "a", "name": "Top", "size": 9},
                             {"key": "b", "name": "Mid", "size": 5},
                             {"key": "c", "name": "Low", "size": 1}])
         self.r("use", "fake")
         self.r("refresh")
         res = self.r("get")
-        self.assertTrue(res.stdout.startswith("#!psdoom v2\n"))
+        self.assertFalse(res.stdout.startswith("#"))       # no header
         rows = {r["label"]: r for r in parse_v1(res.stdout)}
         self.assertEqual({k: float(v["grade"]) for k, v in rows.items()},
                          {"Top": 1.0, "Mid": 0.5, "Low": 0.0})
-        for line in res.stdout.splitlines()[1:]:
+        for line in res.stdout.splitlines():
             self.assertTrue(line.split("\t")[-1].startswith("label="))
-        res = self.r("--contract", "v1", "get")
-        self.assertTrue(res.stdout.startswith("#!psdoom v1\n"))
-        self.assertNotIn("grade=", res.stdout)
-        self.assertEqual(len(parse_v1(res.stdout)), 3)
-        res = self.r("--plugin", "nope", "--contract", "v1", "get")
-        self.assertTrue(res.stdout.startswith("#!psdoom v1\n# harness error"))
+        res = self.r("--plugin", "nope", "get")
+        self.assertTrue(res.stdout.startswith("# harness error"))
+        self.assertEqual(parse_v1(res.stdout), [])
+
+    def test_grade_source_order_and_max_tier(self):
+        # load only (no sizes): the load decides, not the rank
+        self.named("loads", [{"key": "a", "name": "Busy", "load": 90},
+                             {"key": "b", "name": "Idle", "load": 5}])
+        rows = {r["label"]: r for r in self.wait_rows("--plugin", "loads")}
+        self.assertEqual(float(rows["Busy"]["grade"]), 1.0)
+        self.assertEqual(float(rows["Idle"]["grade"]), 0.0)
+        # native size + relative load: no computed grade at all
+        self.named("nat", [{"key": "a", "name": "N1", "size": 5, "load": 90},
+                           {"key": "b", "name": "N2", "size": 9, "load": 5}],
+                   spec={"describe": {"verbs": ["list"],
+                                      "size": {"scale": "native"},
+                                      "load": {"scale": "relative"}}})
+        res = self.wait_rows("--plugin", "nat")
+        self.assertTrue(all("grade" not in r for r in res))
+        # max_tier scales every grade: 5 of 6 rungs -> top grade 5/6
+        self.named("capped", [{"key": "a", "name": "Big", "size": 9},
+                              {"key": "b", "name": "Given", "grade": 1},
+                              {"key": "c", "name": "Small", "size": 1}],
+                   max_tier=5)
+        rows = {r["label"]: r for r in self.wait_rows("--plugin", "capped")}
+        self.assertAlmostEqual(float(rows["Big"]["grade"]), 5 / 6, places=3)
+        self.assertAlmostEqual(float(rows["Given"]["grade"]), 5 / 6,
+                               places=3)
+        # psDoom's tier for that grade on a full ladder (N = 7): the Baron
+        self.assertEqual(min(int(float(rows["Big"]["grade"]) * 7), 6), 5)
+
+    def test_switching_plugins_never_reuses_a_held_id(self):
+        self.named("a", [{"key": "x", "name": "alpha"}])
+        self.named("b", [{"key": "x1", "name": "important"}], dry_run=False,
+                   plugin={"allow_remove": True})
+        self.r("use", "a")
+        held = self.wait_rows()[0]["id"]
+        self.r("use", "b")
+        self.state = os.path.join(self.hroot, "state", "b")
+        rows = self.wait_rows()
+        self.assertNotEqual(rows[0]["id"], held)          # one counter per root
+        # the game still holds `held` for "alpha" and hits it: nothing acts
+        self.assertEqual(self.r("delete", held, "label=alpha").returncode, 0)
+        self.assertEqual([e["outcome"] for e in self.audit()], ["unknown-id"])
+        # even an id that does map, with another item's label, is refused
+        self.assertEqual(self.r("delete", rows[0]["id"],
+                                "label=alpha").returncode, 0)
+        self.assertEqual(self.audit()[-1]["outcome"], "label-mismatch")
+        self.assertEqual([c for c in self.calls() if c and c[0] == "remove"],
+                         [])
+
+    def test_loose_umask_still_makes_private_dirs(self):
+        root = os.path.join(self.root, "umaskroot")
+        res = subprocess.run(
+            ["/bin/sh", "-c", 'umask 002; exec "$0" "$@"', PY, PS_HARNESS,
+             "--root", root, "get"],
+            capture_output=True, text=True, env=self.env(), cwd=self.root)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.configs.append(self._ps_reap_at(root))
+        for d in (root, os.path.join(root, "state"),
+                  os.path.join(root, "state", "ps")):
+            self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
+        res = self.cli("--root", root, "get")
+        self.assertNotIn("harness error", res.stdout)
+
+    def _ps_reap_at(self, root):
+        path = os.path.join(self.root, "reap-%d.json" % len(self.configs))
+        with open(path, "w") as f:
+            json.dump({"state_dir": os.path.join(root, "state", "ps")}, f)
+        return path
+
+    def test_config_symlink_and_loose_plugins_dir_refused(self):
+        real = self.named("fake", [{"key": "a"}])
+        link = os.path.join(self.hroot, "plugins", "linked.json")
+        os.symlink(real, link)
+        res = self.r("--plugin", "linked", "refresh")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("symlink", res.stderr)
+        os.chmod(os.path.join(self.hroot, "plugins"), 0o777)
+        res = self.r("--plugin", "fake", "refresh")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("plugins directory is writable", res.stderr)
+        os.chmod(os.path.join(self.hroot, "plugins"), 0o755)
 
     def test_plugin_grade_wins_and_is_clamped(self):
         self.named("fake", [{"key": "a", "name": "Given", "grade": 0.3,
@@ -814,7 +879,6 @@ class CliTests(Base):
         self.r("use", "fake")
         self.r("refresh")
         res = self.r("get")
-        self.assertTrue(res.stdout.startswith("#!psdoom v2\n"))
         self.assertNotIn("grade=", res.stdout)
         row = parse_v1(res.stdout)[0]
         self.assertEqual((row["weight"], row["load"]), ("70000000", "30"))
@@ -888,7 +952,7 @@ class CliTests(Base):
         self.assertFalse(os.path.exists(os.path.join(self.hroot, "current")))
         res = self.r("--plugin", "nope", "get")
         self.assertEqual(res.returncode, 0)                # never break poll
-        self.assertTrue(res.stdout.startswith("#!psdoom v2\n"))
+        self.assertTrue(res.stdout.startswith("# harness error"))
         self.assertIn("unknown plugin", res.stdout)
         self.assertEqual(parse_v1(res.stdout), [])
         self.assertEqual(self.r("--plugin", "nope", "delete", "5").returncode,
@@ -961,7 +1025,7 @@ class ReviewFixTests(Base):
         self.refresh(cfg)
         rows = self.poll(cfg)
         self.assertNotIn("SecondRow", [r["label"] for r in rows])
-        self.harness(cfg, "respond", "kill", self.id_for(rows, "FirstRow"))
+        self.harness(cfg, "delete", self.id_for(rows, "FirstRow"))
         text = self.read(path)
         self.assertNotIn("FirstRow", text)
         self.assertIn("SecondRow", text)
@@ -1012,10 +1076,10 @@ class ReviewFixTests(Base):
     def test_odd_ids_and_bad_rate_state_are_audited(self):
         cfg = self.config(self.fake([{"key": "a"}]), dry_run=False)
         self.refresh(cfg)
-        self.harness(cfg, "respond", "kill", "²")
+        self.harness(cfg, "delete", "²")
         with open(os.path.join(self.state, "rate.json"), "w") as f:
             json.dump(["x", None, 1], f)
-        self.harness(cfg, "respond", "wound", self.poll(cfg)[0]["id"])
+        self.harness(cfg, "post", self.poll(cfg)[0]["id"])
         self.assertEqual([e["outcome"] for e in self.audit()],
                          ["unknown-id", "ok"])
 
@@ -1048,7 +1112,7 @@ class HostileTests(Base):
         "$(touch PWNED_SUBST)",
         "`touch PWNED_TICK`",
         "; touch PWNED_SEMI; rm -rf ~",
-        "#!psdoom v2",
+        "#!psdoom header-looking name",
         "\x1b[2J\x07bell",
     ]
 
@@ -1091,20 +1155,28 @@ class HostileTests(Base):
         cfg = self.config(self.csv_cmd(path), name="csv", dry_run=False,
                           plugin={"allow_remove": True})
         self.refresh(cfg)
-        for rec in self.poll(cfg):
-            self.harness(cfg, "respond", "kill", rec["id"],
+        rows = self.poll(cfg)
+        for rec in rows:
+            # A label that is not the item's: refused, nothing happens.
+            self.harness(cfg, "delete", rec["id"],
                          "label=$(touch PWNED_L)", "amount=`touch PWNED_A`")
+        self.assertEqual({e["outcome"] for e in self.audit()},
+                         {"label-mismatch"})
+        self.assertEqual(self.read(path).count("\n"), len(keys) + 1)
+        for rec in rows:
+            self.harness(cfg, "delete", rec["id"], "label=" + rec["label"],
+                         "amount=`touch PWNED_A`")
         # every row removed by its exact key, nothing executed
         self.assertEqual(self.read(path), "id,name\n")
-        self.assertEqual(sorted(e["key"] for e in self.audit()),
-                         sorted(keys))
+        self.assertEqual(sorted(e["key"] for e in self.audit()
+                                if e["outcome"] == "ok"), sorted(keys))
         self.assert_no_pwned()
 
     def test_audit_lines_stay_one_per_entry(self):
         cfg = self.config(self.fake([{"key": "k\nforged", "name": "a\nb"}]),
                           dry_run=True)
         self.refresh(cfg)
-        self.harness(cfg, "respond", "kill", self.poll(cfg)[0]["id"],
+        self.harness(cfg, "delete", self.poll(cfg)[0]["id"],
                      "label=x\ny")
         with open(os.path.join(self.state, "audit.jsonl")) as f:
             text = f.read()
@@ -1174,8 +1246,8 @@ class ProcessesPluginTests(Base):
         with open(cfg, "w") as f:
             json.dump(c, f)
         for r in rows[:3]:
-            self.harness(cfg, "respond", "kill", r["id"])
-            self.harness(cfg, "respond", "wound", r["id"], "amount=4")
+            self.harness(cfg, "delete", r["id"])
+            self.harness(cfg, "post", r["id"], "amount=4")
         outcomes = [e["outcome"] for e in self.audit()]
         self.assertEqual(set(outcomes), {"dry-run"})
         self.assertEqual(len(outcomes), 2 * min(3, len(rows)))

@@ -264,7 +264,7 @@ add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/proc_select_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/iwad_select_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/harness_e2e_test.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_v2_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_grade_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_grade.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos/iwad_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"

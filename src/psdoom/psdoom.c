@@ -26,7 +26,7 @@
 #include "proc_script.h"     /* optional external-script backend (env-driven) */
 #include "proc_select.h"    /* curated process collection */
 #include "psdoom_lifecycle.h" /* psd_pid tags; save and retire rules */
-#include "psdoom_grade.h"   /* script v2 grade -> drawable tier */
+#include "psdoom_grade.h"   /* script grade -> drawable tier */
 #include "psdoom_options.h" /* user-tunable settings (menu / CLI / config) */
 
 #include <ctype.h>
@@ -497,7 +497,7 @@ static mobjtype_t PSD_ClassifyByTiers(unsigned long long metric,
     return tiers[0].type;
 }
 
-/* Script contract v2: a graded entity takes the tier its grade (0..1) picks
+/* Script backend: a graded entity takes the tier its grade (0..1) picks
  * over the tiers this WAD can draw, whatever Classify by says, so 1.0 is the
  * top drawable monster (Baron on a WAD without Cyberdemon). The memory and
  * CPU ladders list the same monsters in the same order. */
