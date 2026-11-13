@@ -89,9 +89,25 @@ class Base(unittest.TestCase):
     def tearDown(self):
         for cfg_path in self.configs:
             self._reap_refresher(cfg_path)
+        # A refresher the last poll spawned may not hold its lock yet; wait
+        # (read-only, nothing is signalled) until no process still names
+        # this test's own folder, so nothing writes into it during removal.
+        self._wait_for_quiet(self.root)
         root = os.path.realpath(self.root)
         assert root.startswith(os.path.realpath(SCRATCH) + os.sep), root
         shutil.rmtree(root)
+
+    def _wait_for_quiet(self, path, seconds=15):
+        me = str(os.getpid())
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            out = subprocess.run(["ps", "-xo", "pid=,command="],
+                                 capture_output=True, text=True).stdout
+            busy = [ln for ln in out.splitlines()
+                    if path in ln and ln.split(None, 1)[0] != me]
+            if not busy:
+                return
+            time.sleep(0.05)
 
     def _reap_refresher(self, cfg_path):
         with open(cfg_path) as f:
