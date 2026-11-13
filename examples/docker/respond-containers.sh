@@ -5,7 +5,8 @@
 #   respond-containers.sh <verb> <id> [amount=<n>] [label=<text>]
 #
 # `id` is the container's main PID (what the poller emitted). We map it back to
-# a container, then: wound = throttle its CPU shares, kill = `docker kill`.
+# a container, then: post (a wound) = throttle its CPU shares, delete (a
+# kill) = `docker kill`.
 
 command -v docker >/dev/null 2>&1 || exit 0
 
@@ -25,11 +26,11 @@ done
 [ -n "$cid" ] || exit 0
 
 case "$verb" in
-    wound)
+    post)
         # Lower the container's CPU weight (the renice analogue).
         docker update --cpu-shares 256 "$cid" >/dev/null 2>&1
         ;;
-    kill)
+    delete)
         docker kill "$cid" >/dev/null 2>&1
         ;;
     *)

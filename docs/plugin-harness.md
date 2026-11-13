@@ -19,10 +19,9 @@ down* (POST), *get rid of this one* (DELETE).
  you, at a terminal  ────────▶  undo <action-id> ────────────────────┴─▶  restore  (stdin)
 ```
 
-The harness speaks the apps' [script contract](script-backend.md): **v2** by default (a
-`#!psdoom v2` header, a 0..1 `grade` per item, and the game sends `post` / `delete`), or **v1**
-with `--contract v1` for an older game build (no grade; the game sends `wound` / `kill`). To
-the game, the harness is just a poll command and a responder. Further contract ideas are in
+The harness speaks the apps' [script contract](script-backend.md): TAB-separated
+`key=value` lines with a 0..1 `grade` per item, and the game sends `post` / `delete`. To the
+game, the harness is just a poll command and a responder. Further contract ideas are in
 the [appendix](#appendix-contract-proposals), as proposals only.
 
 ## Where it lives and what it needs
@@ -45,14 +44,14 @@ apart from `scripts/` (the copy-me `sh` reference pair) and `tools/` (build-time
 a runtime component with its own tests.
 
 **Self-contained.** Nothing in `harness/` imports or reads from psDoom's source or build, and
-its tests need only Python, and it carries its own `.gitignore` and a summary of the v1
+its tests need only Python, and it carries its own `.gitignore` and a summary of the script
 contract in its README, so the folder can later move to its own repository unchanged.
 psDoom keeps only two hooks into it: the `ctest` registration and the conformance test.
 
 ## One contract for every ps-app
 
 The harness's poll output and its responder calls *are* the
-[script-backend contract](script-backend.md) (v2, or v1 for older builds). That is the single
+[script-backend contract](script-backend.md). That is the single
 contract every ps-app recognizes, whatever plugin sits behind the harness:
 
 ```
@@ -68,14 +67,14 @@ That splits the testing in two:
 - **Each app** proves its side once with a conformance test: the app's real script backend runs
   the harness's poll command, sees the listed entities, and its injure and kill reach the
   harness's responder and land on a test file. For psDoom that is `tests/harness_e2e_test.c`
-  (inside `psdoom_tests`): the human's setup (`ps-harness get` and `ps-harness`) under v2,
-  with grades arriving and a live `delete` and `post` against a CSV it writes, then
-  `--contract v1` with the default dry run leaving the CSV alone.
+  (inside `psdoom_tests`): the human's setup (`ps-harness get` and `ps-harness`), with
+  grades arriving and a live `delete` and `post` against a CSV it writes, then the default
+  dry run leaving the CSV alone.
 
 **psQuake, or any later app, gets the same conformance test**: drive its own script backend
 against the harness and the CSV plugin on a CSV it creates, with an explicit state root, and
 check the same things (entities listed with the expected labels and grades, `delete` removes
-the row, `post` lowers the priority, dry run changes nothing, and `--contract v1` still works). No plugin needs an app-specific
+the row, `post` lowers the priority, dry run changes nothing). No plugin needs an app-specific
 change, and a new plugin needs no app test.
 
 ## Plugin contract
@@ -122,12 +121,12 @@ or `relative` (the default). The `meaning` strings are for people (`describe` pr
 | --- | --- | --- | --- |
 | `key` | string | yes | The plugin's own stable identity for the item. 1 to 1024 characters, no NUL, must not start with `-`. Unique; later duplicates are dropped. |
 | `name` | string | no | Shown above the monster (the harness trims it). Default: the key. |
-| `grade` | number 0..1 | no | Where the item sits on *its own* range (0 = least, 1 = most). Clamped. Wins over size and load for the v2 `grade` the game sees. |
+| `grade` | number 0..1 | no | Where the item sits on *its own* range (0 = least, 1 = most). Clamped. Wins over size and load for the `grade` the game sees. |
 | `size` | number ≥ 0 | no | Drives toughness by *weight*. If no item has a size, rank decides (top rank = biggest). |
 | `load` | number ≥ 0 | no | Drives toughness by *CPU/load*. |
 | `rank` | number | no | Lower = more important. Default: line order. Used to sort and to keep the top `max_items`. |
 | `parent` | string | no | Key of a parent item (fork-bomb grouping). Unknown parents become `0`. |
-| `background` | bool | no | `true` sets v1 `flags` bit 0 (ranked below interactive entities). |
+| `background` | bool | no | `true` sets the poll's `flags` bit 0 (ranked below interactive entities). |
 
 Unknown fields are ignored, so a plugin can carry extra data for its own use.
 
@@ -142,13 +141,13 @@ The last non-empty stdout line, a JSON object:
 `undo` is opaque to the harness. It is stored in the audit log and handed back to `restore`
 on stdin. `null` means "not undoable".
 
-### Why JSON Lines, not the v1 TAB format
+### Why JSON Lines, not the poll's TAB format
 
 Plugin names come from spreadsheets, issue titles and agent prompts, and contain TABs,
-newlines and `=` signs. The v1 format cannot carry those; JSON escapes anything. Every
+newlines and `=` signs. The poll format cannot carry those; JSON escapes anything. Every
 language parses it without a library (`json` in Python, `jq` or `python3 -c` in shell, built
 in for Node). Typed numbers and booleans avoid "is `1e3` a weight?" questions. The harness
-does the one translation to v1, so the TAB framing rules live in one place.
+does the one translation to the poll format, so the TAB framing rules live in one place.
 
 ## What the harness adds
 
@@ -159,7 +158,7 @@ psDoom needs integer ids that never name two things. The harness keeps
 
 - A new key gets `next`, then `next` increments. The counter **never goes back**, so an id is
   never reused for a different key, even after the key is forgotten. Ids start at 2 (0 and 1
-  are reserved by v1).
+  are reserved by the contract).
 - A key that comes back gets its old id.
 - At most 100 000 keys are remembered (least recently seen dropped); the counter is kept.
 - If `ids.json` is missing (while a cache exists) or damaged, refresh **fails closed**
@@ -167,7 +166,7 @@ psDoom needs integer ids that never name two things. The harness keeps
   still holds to a different item. To start over, delete the whole `state_dir`.
 - Writes are atomic (temp file + rename) under an `flock` on `state_dir/state.lock`.
 
-Rejected: hashing the key to an id. It needs no state, but two keys can collide, and v1 says
+Rejected: hashing the key to an id. It needs no state, but two keys can collide, and the contract says
 an id must never name two entities at once.
 
 The processes plugin keys a process as `<pid>@<start time>`, so a pid the OS reuses becomes a
@@ -175,7 +174,7 @@ new key, a new id and a new monster, and the plugin re-checks the start time bef
 
 ### Normalisation
 
-v1 ladders (from [script-backend.md](script-backend.md)):
+The ladders (from [script-backend.md](script-backend.md)):
 
 - size: `0`, 16 MB, 64 MB, 192 MB, 512 MB, 1.5 GB, 4 GB (7 tiers);
 - load: `0`, 5, 25, 60, 120, 250, 500 percent.
@@ -189,14 +188,16 @@ v1 ladders (from [script-backend.md](script-backend.md)):
 `max_tier` (default 6) caps the size ladder, for example at 5 to keep Cyberdemons out, or
 lower for the shareware WAD. Relative and linear values always land exactly on a rung.
 
-**Grade (contract v2).** Each item also gets a `grade` from 0 to 1, so neither side needs to
+**Grade.** Each item also gets a `grade` from 0 to 1, so neither side needs to
 know the other's scale: the plugin (or the harness for it) maps onto 0..1, and the game maps
 0..1 onto however many monsters it can draw (`min(floor(grade × N), N − 1)`). The grade is
 the plugin's own `grade` if it sent one, else the item's size (or its rank, when no item has
 a size) on the declared `linear` or `relative` scale, else its load. A `native` scale (the
 processes plugin: bytes and CPU percent) is already in the game's own units, so those items
 carry **no grade** and the game's *Classify by* option decides, exactly as with psDoom's native
-backend. When a plugin sends only a grade, `weight` and `load` are set from it too, for v1.
+backend. The order is: the plugin's `grade`, else size, else load, else rank. `max_tier` scales
+every grade (grade × `max_tier` / 6), so capping the ladder also caps what a grade can reach.
+When a plugin sends only a grade, `weight` and `load` are set from it too.
 
 Labels become what the games can draw: Unicode is folded to ASCII where it can be (`Café` →
 `Cafe`), anything else becomes a space, all whitespace (TAB and newline included) collapses
@@ -229,10 +230,11 @@ This tool can delete things. The defaults assume a mistake.
 | Guard | Default | Effect |
 | --- | --- | --- |
 | `dry_run` | `true` | No plugin action runs. Each hit is audited as `dry-run`. |
-| `plugin.allow_remove` | `false` | With `dry_run: false`, `kill` is audited as `blocked`; only `nudge` runs. |
+| `plugin.allow_remove` | `false` | With `dry_run: false`, `delete` is audited as `blocked`; only `post` (nudge) runs. |
 | `rate_limit` | 10 actions / 60 s | Executed actions over the limit are audited as `rate-limited` and skipped. |
-| Listed-only | always | `respond` acts only on an id in the current cache, and passes the plugin the key it listed. Unknown ids are `unknown-id` no-ops. |
-| Verb map | always | `post` → `nudge`, `delete` → `remove`; the v1 game's `wound` / `kill` only under `--contract v1`. Any other word is an `ignored-verb` no-op that exits 0 (forward compatibility). A verb the plugin does not list is `unsupported`. |
+| Listed-only | always | `post` / `delete` act only on an id in the current cache, and pass the plugin the key it listed. Unknown ids are `unknown-id` no-ops. |
+| Label check | always | When the game sends `label=`, it must match the item's label, or the call is a `label-mismatch` no-op: an id the game still holds can never act on a different item. Named plugins in one root also share one id counter, so switching with `use` never reuses an id. |
+| Verb map | always | `post` → `nudge`, `delete` → `remove`. Any other word is an `ignored-verb` no-op that exits 0 (forward compatibility). A verb the plugin does not list is `unsupported`. |
 | `amount` | clamped 1..100 | psDoom sends `amount=4`. |
 | No shell | always | Plugins get an argument vector; keys and labels are data. |
 | Audit log | always | `state_dir/audit.jsonl`: one JSON line per call, with outcome, key, name, amount, action id, plugin message and undo record. JSON escaping keeps hostile text on one line. |
@@ -242,10 +244,9 @@ This tool can delete things. The defaults assume a mistake.
 | Private state | always | `state_dir` must be a real directory (not a symlink) owned by you and not writable by group or others; it is created `0700`. Otherwise every command refuses, because `respond` trusts the cache in it to map ids to keys. |
 
 `post` and `delete` always exit 0 (the game does not read it); the audit log is the record.
-`get` always prints a valid poll (v2, or v1 under `--contract v1`), with a `#` comment on
-error.
+`get` always prints a valid poll, with a `#` comment on error.
 
-The harness does not decide what is *safe to list*. That stays the plugin's job, as in v1: the
+The harness does not decide what is *safe to list*. That stays the plugin's job, as in a hand-written script: the
 processes plugin keeps the session-critical deny-list from `scripts/poll-processes.sh`, plus
 the game and the Terminal and iTerm2 apps. It has no launcher-chain guard like the native
 backend, and its pid-reuse check compares a start time with 1-second resolution, so a pid
@@ -254,7 +255,7 @@ reused within the same second would pass it.
 ## Configuration
 
 ```
-ps-harness [--root DIR] [--plugin NAME | --config FILE] [--contract v1|v2] COMMAND ...
+ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 ```
 
 | Command | What it does |
@@ -308,14 +309,12 @@ has starting points (they carry a `state_dir` placeholder for `--config` use; dr
 for a file under `<root>/plugins/`).
 
 **Wire it to psDoom** (put `harness/` on PATH, or use the launcher's full path; paths must not
-contain spaces, because the respond command is split on whitespace):
+contain spaces, `--root` included, because the respond command is split on whitespace):
 
 ```sh
 export PSDOOM_POLL_CMD="ps-harness get"
 export PSDOOM_RESPOND_CMD="ps-harness"          # psDoom appends post|delete <id> ...
 ```
-
-For a game build that only speaks v1, add `--contract v1` to both.
 
 ### No-kill run against psDoom (dry run, your processes)
 
@@ -401,9 +400,9 @@ a line above it goes. Rules of thumb:
 
 ## Appendix: contract proposals
 
-**Done in v2** (now in [script-backend.md](script-backend.md#contract-v2)): the 0..1 `grade`
-field, and the neutral response verbs `post` / `delete`, both behind the `#!psdoom v2` header
-so v1 scripts are untouched.
+**Done** (now in [script-backend.md](script-backend.md)): the 0..1 `grade` field, and the
+neutral response verbs `post` / `delete`, which replaced `wound` / `kill`. There is one contract;
+the repo's scripts were ported to it.
 
 **Proposals only.** The script contract is a reserved surface; none of the following is
 implemented, and each needs the project owner's go before any change to
@@ -417,7 +416,7 @@ implemented, and each needs the project owner's go before any change to
    monster that silently comes back.
 4. **`rank=` poll field.** Let the game's cap truncation use the plugin's order directly
    instead of only `flags` bit 0.
-5. **Declared capabilities.** A `#!psdoom v2 verbs=post,delete undo` header, so the game can
+5. **Declared capabilities.** A `# capabilities: post delete undo` first line, so the game can
    grey out actions a backend does not support, and offer an in-game "resurrect" (undo).
 6. **`dry=1` respond extra** from a game-side no-kill toggle, so the safe mode can be set in
    the menu rather than in each config.

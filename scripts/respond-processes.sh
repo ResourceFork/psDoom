@@ -3,13 +3,14 @@
 # psDoom reference responder -- act on a process.
 #
 # Reproduces psDoom's native response as a script: wounding renices the
-# process (lower priority), killing sends SIGTERM. Invoked by psDoom as:
+# process (lower priority), killing sends SIGTERM. psDoom sends `post` for a
+# wound and `delete` for a kill. Invoked by psDoom as:
 #
 #   respond-processes.sh <verb> <id> [amount=<n>] [label=<text>]
 #
-#   verb  : wound | kill   (unknown verbs are a no-op -- forward compatibility)
+#   verb  : post | delete   (unknown verbs are a no-op -- forward compatibility)
 #   id    : the pid from the poller
-#   amount: nice step for `wound` (psDoom sends 4; absent for `kill`)
+#   amount: nice step for `post` (psDoom sends 4; absent for `delete`)
 #   label : the process name, when known (used only for logging here)
 #
 # psDoom execs this directly (no shell), so $id/$label are inert arguments.
@@ -27,13 +28,13 @@ for kv in "$@"; do
 done
 
 case "$verb" in
-    wound)
+    post)
         # Lower the process's scheduling priority. (BSD `renice` sets an
         # absolute niceness; psDoom's native backend adds cumulatively. Close
         # enough for a wound -- bump `amount` for a harder hit.)
         renice "$amount" -p "$id" >/dev/null 2>&1
         ;;
-    kill)
+    delete)
         kill "$id" >/dev/null 2>&1      # SIGTERM, like the native backend
         ;;
     *)

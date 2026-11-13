@@ -18,6 +18,9 @@ rnd() { awk 'BEGIN { srand(); print int(rand() * '"$1"') }'; }
 printf 'id=101\tlabel=idle-svc\tweight=8000000\tload=%s\n'                "$(rnd 5)"
 printf 'id=102\tlabel=web-worker\tweight=120000000\tload=%s\tparent=101\n' "$(rnd 220)"
 printf 'id=103\tlabel=database\tweight=2000000000\tload=%s\n'              "$(rnd 400)"
+# A graded entity: grade (0..1) picks its monster over the tiers the WAD can
+# draw, whatever Classify by says. It drifts a little each poll.
+printf 'id=104\tlabel=graded-job\tgrade=0.%s\n'                          "$(( 50 + $(rnd 50) ))"
 
 # Fork-bomb demo: emit no children most of the time, then a burst of 8 for ~2s
 # every ~10s. The 0 -> 8 jump in `database`'s child count trips the detector

@@ -3,12 +3,12 @@
 This pair reproduces psDoom's **native** behavior through the
 [script backend](../docs/script-backend.md), so it doubles as the canonical, copy-me example of
 the protocol: enumerate the processes you own, size them by memory and CPU, and on a hit renice
-(wound) or `SIGTERM` (kill).
+(`post`, a wound) or `SIGTERM` (`delete`, a kill).
 
 | Script | Role | Env var |
-|---|---|---|
+| --- | --- | --- |
 | [`poll-processes.sh`](poll-processes.sh) | enumerate your processes (stdout) | `PSDOOM_POLL_CMD` |
-| [`respond-processes.sh`](respond-processes.sh) | wound = renice, kill = SIGTERM | `PSDOOM_RESPOND_CMD` |
+| [`respond-processes.sh`](respond-processes.sh) | post = renice, delete = SIGTERM | `PSDOOM_RESPOND_CMD` |
 
 ## Use
 
@@ -25,8 +25,9 @@ process is ever signalled.
 
 `poll-processes.sh` emits one TAB-separated `key=value` line per process: `id`=pid,
 `parent`=ppid, `weight`=resident bytes, `load`=%CPU, `flags` bit 0 = no controlling tty,
-`label`=process name. `respond-processes.sh` dispatches on the `verb` ($1) and reads `amount=`
-for the renice step. Full field/verb reference: [`../docs/script-backend.md`](../docs/script-backend.md).
+`label`=process name. It sends no `grade`, so the game's *Classify by* picks each monster from
+`weight` or `load`, as natively. `respond-processes.sh` dispatches on the `verb` ($1: `post` or
+`delete`) and reads `amount=` for the renice step. Full field/verb reference: [`../docs/script-backend.md`](../docs/script-backend.md).
 
 ## Safety
 

@@ -22,7 +22,7 @@ tests need only Python, so it can move to its own repository unchanged.
 ## Commands
 
 ```
-ps-harness [--root DIR] [--plugin NAME | --config FILE] [--contract v1|v2] COMMAND ...
+ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
 get                         the poll output: what the game reads
 post <id> [key=value ...]   nudge it (lower its priority)
@@ -36,8 +36,6 @@ refresh | describe | undo <action-id>
   `current`, `plugins/<name>.json` and `state/<name>/` (ids, cache, `audit.jsonl`).
 - **Plugin**: `--config FILE`, else `--plugin NAME`, else the current one, else `ps`. `ps` is
   built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`.
-- **Contract**: v2 by default. `--contract v1` prints v1 and accepts the v1 game's
-  `wound`/`kill`, for older game builds.
 - Any other word exits 0 and does nothing (it is audited as `ignored-verb`).
 
 ## Put it on PATH
@@ -64,7 +62,7 @@ build/psDoom.app/Contents/MacOS/psDoom
 
 Every shot is then written to `~/.config/ps-harness/state/ps/audit.jsonl` as `dry-run`, and
 nothing is signalled. Start psDoom from that shell: Finder and `open` give it a minimal PATH.
-Paths must not contain spaces (the respond command is split on whitespace).
+Paths, a `--root` included, must not contain spaces (the respond command is split on whitespace).
 
 ## The script contract in brief (what the apps read)
 
@@ -74,14 +72,12 @@ The full contract is psDoom's `docs/script-backend.md`; this is the part the har
   default): stdout, one entity per line of TAB-separated `key=value` fields: `id` (integer
   2..2147483647, stable, never reused), `parent` (an id or 0), `weight` (bytes; ladder 0, 16M,
   64M, 192M, 512M, 1.5G, 4G), `load` (percent; ladder 0, 5, 25, 60, 120, 250, 500), `flags`
-  (bit 0 = background), `label` (at most 31 bytes drawn, no TAB or newline). Lines starting
-  with `#` are comments.
-- **v2** (first line exactly `#!psdoom v2`): adds `grade` (0..1, clamped), which picks the
-  monster over the tiers the game can draw (`min(floor(grade × N), N − 1)`). Without the
-  header, or with `#!psdoom v1`, it is v1 and `grade` is ignored.
+  (bit 0 = background), `label` (at most 31 bytes drawn, no TAB or newline), `grade` (0..1,
+  clamped), which picks the monster over the tiers the game can draw
+  (`min(floor(grade × N), N − 1)`). Lines starting with `#` are comments.
 - **Respond** (`PSDOOM_RESPOND_CMD`, split on whitespace, exec'd without a shell, detached,
-  exit code ignored): `<cmd> <verb> <id> [key=value...]`. v2: `post` (with `amount=N`) or
-  `delete`; v1: `wound` or `kill`; optional `label=`. Unknown verbs and keys must be no-ops.
+  exit code ignored): `<cmd> <verb> <id> [key=value...]`: `post` (with `amount=N`) for a
+  wound, `delete` for a kill; optional `label=`. Unknown verbs and keys must be no-ops.
 
 ## One contract for the apps
 
