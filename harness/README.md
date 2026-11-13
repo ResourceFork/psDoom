@@ -33,7 +33,8 @@ refresh | describe | undo <action-id>
 ```
 
 - **Root**: `--root DIR`, else `$PS_HARNESS_ROOT`, else `~/.config/ps-harness`. It holds
-  `current`, `plugins/<name>.json` and `state/<name>/` (ids, cache, `audit.jsonl`).
+  `current`, `plugins/<name>.json`, `ids.json` (one id map for all plugins) and
+  `state/<name>/` (cache, `audit.jsonl`).
 - **Plugin**: `--config FILE`, else `--plugin NAME`, else the current one, else `ps`. `ps` is
   built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`.
 - Any other word exits 0 and does nothing (it is audited as `ignored-verb`).

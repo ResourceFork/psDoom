@@ -11,8 +11,8 @@ and parses defensively; scripts can rely on it not changing underneath them. See
 [forward-compatibility rules](#forward-compatibility) for how it evolves.
 
 > **Runnable scripts.** [`../scripts/`](../scripts/) holds the reference pair that reproduces
-> psDoom's native behavior (your processes, sized by RAM/CPU; a wound sends `post` = renice, a
-> kill sends `delete` = SIGTERM).
+> psDoom's native behavior as a script (your processes, sized by RAM/CPU; it answers `post` with
+> a renice and `delete` with SIGTERM).
 > [`../examples/`](../examples/) wires psDoom to other things (a dependency-free synthetic demo,
 > and Docker containers). Each is a small `sh` script implementing the contract below.
 

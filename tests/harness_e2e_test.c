@@ -256,7 +256,7 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     char        csv[1024], csvlock[1024], root[1024], root_dry[1024];
     char        audit[1024], audit_dry[1024];
     psd_proc_t  out[16];
-    int         n, a, b, c;
+    int         n, a, b, c, d;
 
     e2e_run = checks_run;
     e2e_failed = checks_failed;
@@ -280,19 +280,21 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     clear_root(root_dry);
 
     E2E_CHECK(write_text(csv, "id,name,priority\n"
-                              "r1,Alpha,5\nr2,Bravo,9\nr3,Charlie,1\n"));
+                              "r1,Alpha,5\nr2,Bravo,9\nr3,Charlie,1\n"
+                              "r4,A task name well past thirty-one bytes long,5\n"));
     write_root(root, csv, 1);
     write_root(root_dry, csv, 0);
 
     /* ---- live plugin: real post/delete on the test CSV ---- */
     install(root);
-    n = collect_until(out, 16, 3, 50);
-    E2E_CHECK(n == 3);
+    n = collect_until(out, 16, 4, 50);
+    E2E_CHECK(n == 4);
     a = find_named(out, n, "Alpha");
     b = find_named(out, n, "Bravo");
     c = find_named(out, n, "Charlie");
-    E2E_CHECK(a >= 0 && b >= 0 && c >= 0);
-    if (a < 0 || b < 0 || c < 0)
+    d = find_named(out, n, "A task name well past thirty-on");
+    E2E_CHECK(a >= 0 && b >= 0 && c >= 0 && d >= 0);
+    if (a < 0 || b < 0 || c < 0 || d < 0)
     {
         goto done;
     }
@@ -312,6 +314,14 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     E2E_CHECK(wait_file(csv, "r1,Alpha,1", 1, 5000));
     E2E_CHECK(wait_file(audit, "\"action\": \"nudge\"", 1, 3000));
     E2E_CHECK(count_in(audit, "\"outcome\": \"ok\"") == 2);
+
+    /* A label cut at 31 bytes: psDoom sends back exactly what the harness
+     * listed, so the harness's label check lets the real kill through. */
+    E2E_CHECK(strlen(out[d].name) == 31);
+    E2E_CHECK(psd_proc_kill_checked(out[d].pid, 0, out[d].name) == PSD_ACT_DONE);
+    E2E_CHECK(wait_file(csv, "thirty-one", 0, 5000));
+    E2E_CHECK(count_in(audit, "\"outcome\": \"ok\"") == 3);
+    E2E_CHECK(!file_has(audit, "label-mismatch"));
     E2E_CHECK(file_has(audit, "\"verb\": \"delete\""));
     E2E_CHECK(file_has(audit, "\"verb\": \"post\""));
     E2E_CHECK(!file_has(audit, "\"verb\": \"kill\""));

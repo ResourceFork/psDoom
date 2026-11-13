@@ -785,17 +785,64 @@ class CliTests(Base):
                                       "load": {"scale": "relative"}}})
         res = self.wait_rows("--plugin", "nat")
         self.assertTrue(all("grade" not in r for r in res))
-        # max_tier scales every grade: 5 of 6 rungs -> top grade 5/6
+        # max_tier 5 (no Cyberdemon) scales every grade by 5.5 / 7
         self.named("capped", [{"key": "a", "name": "Big", "size": 9},
                               {"key": "b", "name": "Given", "grade": 1},
                               {"key": "c", "name": "Small", "size": 1}],
                    max_tier=5)
         rows = {r["label"]: r for r in self.wait_rows("--plugin", "capped")}
-        self.assertAlmostEqual(float(rows["Big"]["grade"]), 5 / 6, places=3)
-        self.assertAlmostEqual(float(rows["Given"]["grade"]), 5 / 6,
+        self.assertAlmostEqual(float(rows["Big"]["grade"]), 5.5 / 7, places=3)
+        self.assertAlmostEqual(float(rows["Given"]["grade"]), 5.5 / 7,
                                places=3)
-        # psDoom's tier for that grade on a full ladder (N = 7): the Baron
-        self.assertEqual(min(int(float(rows["Big"]["grade"]) * 7), 6), 5)
+        # the default (6) leaves grades alone
+        self.named("open", [{"key": "a", "name": "Top", "grade": 1}])
+        rows = self.wait_rows("--plugin", "open")
+        self.assertEqual(float(rows[0]["grade"]), 1.0)
+
+    def test_max_tier_never_exceeds_the_cap_on_any_wad(self):
+        # psDoom's mapping (psdoom_grade.c), mirrored: tier over drawable.
+        def pick(grade, drawable):
+            idx = [i for i in range(7) if i == 0 or drawable[i]]
+            n = len(idx)
+            t = n - 1 if grade >= 1 else min(int(grade * n), n - 1)
+            return idx[t]
+
+        def capped_at(cap_tier, drawable):
+            # what the v1 ladder's cap degrades to on this WAD
+            return max(i for i in range(cap_tier + 1)
+                       if i == 0 or drawable[i])
+
+        wads = {"full": [1] * 7,
+                "no-knight": [1, 1, 1, 1, 0, 1, 1],
+                "shareware": [1, 1, 1, 1, 0, 1, 0]}
+        for name, drawable in wads.items():
+            for max_tier in range(7):
+                cap = 1.0 if max_tier >= 6 else (max_tier + 0.5) / 7.0
+                top = pick(round(1.0 * cap, 4), drawable)
+                self.assertLessEqual(top, capped_at(max_tier, drawable),
+                                     (name, max_tier))
+                if name == "full":
+                    self.assertEqual(top, max_tier, max_tier)   # exact
+
+    def test_root_id_map_is_shared_and_fails_closed(self):
+        self.named("a", [{"key": "x", "name": "alpha"}])
+        self.named("b", [{"key": "x", "name": "bravo"}])   # same key
+        ida = self.wait_rows("--plugin", "a")[0]["id"]
+        idb = self.wait_rows("--plugin", "b")[0]["id"]
+        self.assertNotEqual(ida, idb)
+        with open(os.path.join(self.hroot, "ids.json")) as f:
+            keys = json.load(f)["keys"]
+        self.assertEqual(sorted(keys), ["a/x", "b/x"])
+        # no per-plugin maps for named plugins
+        self.assertFalse(os.path.exists(
+            os.path.join(self.hroot, "state", "a", "ids.json")))
+        # losing the root map while any plugin has listed: refused
+        os.unlink(os.path.join(self.hroot, "ids.json"))
+        res = self.r("--plugin", "a", "refresh")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("ids could be reused", res.stderr)
+        res = self.r("--plugin", "b", "refresh")
+        self.assertEqual(res.returncode, 1)
 
     def test_switching_plugins_never_reuses_a_held_id(self):
         self.named("a", [{"key": "x", "name": "alpha"}])

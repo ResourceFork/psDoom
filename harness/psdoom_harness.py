@@ -525,8 +525,9 @@ def normalize(items, desc, cfg):
     # it sent one; else its size on the declared scale; else its load; else
     # its rank. A native size scale is already in the game's units, so those
     # items get no computed grade and the game's Classify by applies, as
-    # with the native backend. max_tier scales every grade, so a cap on the
-    # ladder also caps what a grade can reach.
+    # with the native backend. Below 6, max_tier scales every grade by
+    # (max_tier + 0.5) / 7: exact on the full ladder, and never above the
+    # capped monster on a WAD with fewer drawable tiers (it may land lower).
     none = [None] * n
     if (desc.get("size") or {}).get("scale") == "native":
         computed = none
@@ -537,7 +538,7 @@ def normalize(items, desc, cfg):
         rank_g = scale_fraction(sizes, size_spec) if rank_based else none
         computed = [a if a is not None else (b if b is not None else c)
                     for a, b, c in zip(size_g, load_g, rank_g)]
-    cap = max_tier / 6.0
+    cap = 1.0 if max_tier >= 6 else (max_tier + 0.5) / 7.0
     grades = []
     for i, it in enumerate(ordered):
         g = it.get("grade")
@@ -577,47 +578,79 @@ class _NoLock:
         return False
 
 
+def _id_map_is_fresh(cfg, path):
+    """A missing id map is only new if nothing was ever listed with it: no
+    cache in this state dir, and for a root-wide map, none in any plugin's
+    state dir under the root."""
+    if os.path.exists(path):
+        return False
+    if os.path.exists(state_path(cfg, "cache.json")):
+        return False
+    root = cfg.get("root")
+    if root:
+        state_root = os.path.join(root, "state")
+        try:
+            for name in os.listdir(state_root):
+                if os.path.exists(os.path.join(state_root, name,
+                                               "cache.json")):
+                    return False
+        except FileNotFoundError:
+            pass
+    return True
+
+
 def assign_ids(cfg, items, now):
     """Give every item a stable id from the persisted map. Ids are handed out
     from a counter that never goes back, so an id is never reused for a
-    different key, even after the key is forgotten. Call under state.lock."""
-    path = state_path(cfg, "ids.json")
-    m = read_json(path, None)
-    if m is None and not os.path.exists(path) and \
-            not os.path.exists(state_path(cfg, "cache.json")):
-        m = {"version": 1, "next": ID_MIN, "keys": {}}   # a fresh state dir
-    if not isinstance(m, dict) or m.get("version") != 1 or \
-            not isinstance(m.get("next"), int) or \
-            not isinstance(m.get("keys"), dict):
-        # Fail closed: restarting the counter could hand an id the game
-        # still holds to a different item.
-        raise HarnessError("ids.json is missing or damaged; ids could be "
-                           "reused. Delete the whole state_dir to start over.")
-    keys = m["keys"]
-    counter = cfg.get("id_counter")
-    with Locked(counter + ".lock") if counter else _NoLock():
-        if counter:
-            shared = read_json(counter, {})
-            nxt = shared.get("next") if isinstance(shared, dict) else None
-            if isinstance(nxt, int) and nxt > m["next"]:
-                m["next"] = nxt
+    different key, even after the key is forgotten. Call under state.lock.
+
+    Named plugins share one map for the whole root (<root>/ids.json, keys
+    namespaced "<plugin>/<key>"), so ids are unique across plugins: after
+    `use` switches plugin, an id the game still holds is simply not listed
+    any more, and the game sends nothing for it. A bare --config file keeps
+    its own map in its state dir."""
+    root = cfg.get("root")
+    path = os.path.join(root, "ids.json") if root \
+        else state_path(cfg, "ids.json")
+    ns = (cfg["plugin"]["name"] + "/") if root else ""
+    with Locked(path + ".lock") if root else _NoLock():
+        m = read_json(path, None)
+        if m is None and _id_map_is_fresh(cfg, path):
+            m = {"version": 1, "next": ID_MIN, "keys": {}}
+        if not isinstance(m, dict) or m.get("version") != 1 or \
+                not isinstance(m.get("next"), int) or \
+                not isinstance(m.get("keys"), dict):
+            # Fail closed: restarting the counter could hand an id the game
+            # still holds to a different item.
+            raise HarnessError(
+                "%s is missing or damaged; ids could be reused. Delete %s "
+                "to start over." % (path, "the root's state/ and ids.json"
+                                    if root else "the whole state_dir"))
+        keys = m["keys"]
         for it in items:
-            rec = keys.get(it["key"])
+            k = ns + it["key"]
+            rec = keys.get(k)
             if rec is None:
                 if m["next"] > ID_MAX:
                     raise HarnessError("id space exhausted")
                 rec = {"id": m["next"]}
                 m["next"] += 1
-                keys[it["key"]] = rec
+                keys[k] = rec
             rec["seen"] = now
             it["id"] = rec["id"]
-        if counter:
-            write_json_atomic(counter, {"next": m["next"]})
+        _finish_id_map(m, keys, path)
+    _link_parents(items)
+
+
+def _finish_id_map(m, keys, path):
     if len(keys) > ID_MAP_CAP:
         drop = sorted(keys, key=lambda k: keys[k].get("seen", 0))
         for k in drop[:len(keys) - ID_MAP_CAP]:
             del keys[k]
     write_json_atomic(path, m)
+
+
+def _link_parents(items):
     by_key = {it["key"]: it["id"] for it in items}
     for it in items:
         it["parent"] = by_key.get(it.pop("parent_key"), 0)
@@ -966,9 +999,8 @@ def load_named(root, name):
         cfg = config_from_dict(json.loads(json.dumps(BUILTINS[name])),
                                path, default_state, self_args)
     if cfg is not None:
-        # One id counter for the whole root, so switching plugins mid-game
-        # never hands a held id to another plugin's item.
-        cfg["id_counter"] = os.path.join(root, "ids-next.json")
+        # One id map for the whole root (see assign_ids).
+        cfg["root"] = root
         return cfg
     raise HarnessError("unknown plugin %r: no %s, and it is not built in "
                        "(known: %s)" % (name, path,

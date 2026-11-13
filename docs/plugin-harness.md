@@ -153,8 +153,10 @@ does the one translation to the poll format, so the TAB framing rules live in on
 
 ### Stable ids
 
-psDoom needs integer ids that never name two things. The harness keeps
-`state_dir/ids.json`: `{"version": 1, "next": N, "keys": {key: {"id": n, "seen": t}}}`.
+psDoom needs integer ids that never name two things. The harness keeps one map for the whole
+root, `<root>/ids.json` (`{"version": 1, "next": N, "keys": {"<plugin>/<key>": {"id": n, "seen":
+t}}}`), so ids are unique across every plugin in it. A bare `--config` file keeps its own map in
+its `state_dir`.
 
 - A new key gets `next`, then `next` increments. The counter **never goes back**, so an id is
   never reused for a different key, even after the key is forgotten. Ids start at 2 (0 and 1
@@ -163,8 +165,9 @@ psDoom needs integer ids that never name two things. The harness keeps
 - At most 100 000 keys are remembered (least recently seen dropped); the counter is kept.
 - If `ids.json` is missing (while a cache exists) or damaged, refresh **fails closed**
   rather than restart the counter, because a restarted counter could give an id the game
-  still holds to a different item. To start over, delete the whole `state_dir`.
-- Writes are atomic (temp file + rename) under an `flock` on `state_dir/state.lock`.
+  still holds to a different item. To start over, delete the root's `state/` and `ids.json`
+  (or a `--config` file's whole `state_dir`).
+- Writes are atomic (temp file + rename) under an `flock` (`<root>/ids.json.lock`).
 
 Rejected: hashing the key to an id. It needs no state, but two keys can collide, and the contract says
 an id must never name two entities at once.
@@ -195,8 +198,10 @@ the plugin's own `grade` if it sent one, else the item's size (or its rank, when
 a size) on the declared `linear` or `relative` scale, else its load. A `native` scale (the
 processes plugin: bytes and CPU percent) is already in the game's own units, so those items
 carry **no grade** and the game's *Classify by* option decides, exactly as with psDoom's native
-backend. The order is: the plugin's `grade`, else size, else load, else rank. `max_tier` scales
-every grade (grade × `max_tier` / 6), so capping the ladder also caps what a grade can reach.
+backend. The order is: the plugin's `grade`, else size, else load, else rank. Below 6, `max_tier`
+scales every grade by (`max_tier` + 0.5) / 7: on the full ladder the top grade lands exactly on
+the capped monster, and on a WAD with fewer drawable tiers it never lands above it (it may land
+a tier lower). At the default 6, grades pass through unchanged.
 When a plugin sends only a grade, `weight` and `load` are set from it too.
 
 Labels become what the games can draw: Unicode is folded to ASCII where it can be (`Café` →
@@ -233,7 +238,8 @@ This tool can delete things. The defaults assume a mistake.
 | `plugin.allow_remove` | `false` | With `dry_run: false`, `delete` is audited as `blocked`; only `post` (nudge) runs. |
 | `rate_limit` | 10 actions / 60 s | Executed actions over the limit are audited as `rate-limited` and skipped. |
 | Listed-only | always | `post` / `delete` act only on an id in the current cache, and pass the plugin the key it listed. Unknown ids are `unknown-id` no-ops. |
-| Label check | always | When the game sends `label=`, it must match the item's label, or the call is a `label-mismatch` no-op: an id the game still holds can never act on a different item. Named plugins in one root also share one id counter, so switching with `use` never reuses an id. |
+| Unique ids | always | Named plugins share one id map per root, so after `use` switches plugin, the old ids are no longer listed and psDoom's checked actions send nothing for them. |
+| Label check | always | When the game sends `label=`, it must equal the item's current label, or the call is a `label-mismatch` no-op. psDoom sends the label from its own latest poll, so this guards a stale or mixed-up snapshot; it does not stand in for unique ids. An item renamed between psDoom's poll and the hit is refused until psDoom polls again (safe). With no label (an empty name), there is nothing to check. |
 | Verb map | always | `post` → `nudge`, `delete` → `remove`. Any other word is an `ignored-verb` no-op that exits 0 (forward compatibility). A verb the plugin does not list is `unsupported`. |
 | `amount` | clamped 1..100 | psDoom sends `amount=4`. |
 | No shell | always | Plugins get an argument vector; keys and labels are data. |
@@ -274,7 +280,8 @@ ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 ```
 <root>/current               the current plugin's name (written by `use`)
 <root>/plugins/<name>.json   that plugin's config
-<root>/state/<name>/         its ids, cache, audit log and rate limit
+<root>/ids.json              one id map for every plugin in the root
+<root>/state/<name>/         its cache, audit log and rate limit
 ```
 
 It is `--root DIR`, else `$PS_HARNESS_ROOT`, else `~/.config/ps-harness`. `--root` beats the
