@@ -844,6 +844,34 @@ class CliTests(Base):
         res = self.r("--plugin", "b", "refresh")
         self.assertEqual(res.returncode, 1)
 
+    def test_namespace_is_the_file_name_not_plugin_name(self):
+        # Two configs copied from one example keep "name": "csv" inside.
+        self.named("alpha", [{"key": "row1", "name": "A row"}],
+                   plugin={"name": "shared"})
+        self.named("beta", [{"key": "row1", "name": "B row"}],
+                   plugin={"name": "shared"})
+        ida = self.wait_rows("--plugin", "alpha")[0]["id"]
+        idb = self.wait_rows("--plugin", "beta")[0]["id"]
+        self.assertNotEqual(ida, idb)
+        with open(os.path.join(self.hroot, "ids.json")) as f:
+            self.assertEqual(sorted(json.load(f)["keys"]),
+                             ["alpha/row1", "beta/row1"])
+
+    def test_named_plugin_may_not_move_its_state(self):
+        path = self.named("gamma", [{"key": "a"}],
+                          state_dir=os.path.join(self.root, "elsewhere"))
+        self.assertTrue(path.endswith("gamma.json"))
+        res = self.r("--plugin", "gamma", "refresh")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("remove state_dir", res.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "elsewhere")))
+
+    def test_old_counter_file_is_never_gone_below(self):
+        with open(os.path.join(self.hroot, "ids-next.json"), "w") as f:
+            json.dump({"next": 500}, f)
+        self.named("a", [{"key": "x"}])
+        self.assertEqual(self.wait_rows("--plugin", "a")[0]["id"], "500")
+
     def test_switching_plugins_never_reuses_a_held_id(self):
         self.named("a", [{"key": "x", "name": "alpha"}])
         self.named("b", [{"key": "x1", "name": "important"}], dry_run=False,

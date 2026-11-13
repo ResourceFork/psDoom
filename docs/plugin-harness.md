@@ -155,14 +155,20 @@ does the one translation to the poll format, so the TAB framing rules live in on
 
 psDoom needs integer ids that never name two things. The harness keeps one map for the whole
 root, `<root>/ids.json` (`{"version": 1, "next": N, "keys": {"<plugin>/<key>": {"id": n, "seen":
-t}}}`), so ids are unique across every plugin in it. A bare `--config` file keeps its own map in
-its `state_dir`.
+t}}}`), so ids are unique across every plugin in it. `<plugin>` is the plugin's file name
+(`plugins/<plugin>.json`, or `ps`), which cannot contain `/`, never the free-text `plugin.name`
+inside the config, so two configs copied from one example cannot share ids. A named plugin's
+state is always `<root>/state/<plugin>/` (a `state_dir` in its config is refused), so the
+fail-closed check below sees every plugin. A bare `--config` file keeps its own map in its
+`state_dir`.
 
 - A new key gets `next`, then `next` increments. The counter **never goes back**, so an id is
   never reused for a different key, even after the key is forgotten. Ids start at 2 (0 and 1
   are reserved by the contract).
 - A key that comes back gets its old id.
-- At most 100 000 keys are remembered (least recently seen dropped); the counter is kept.
+- At most 100 000 keys are remembered across the root (least recently seen dropped); the
+  counter is kept. A plugin whose keys churn (`ps`) can push out an idle plugin's keys, which
+  then get new ids (new monsters) when you switch back: safe, never a reused id.
 - If `ids.json` is missing (while a cache exists) or damaged, refresh **fails closed**
   rather than restart the counter, because a restarted counter could give an id the game
   still holds to a different item. To start over, delete the root's `state/` and `ids.json`
@@ -245,7 +251,7 @@ This tool can delete things. The defaults assume a mistake.
 | No shell | always | Plugins get an argument vector; keys and labels are data. |
 | Audit log | always | `state_dir/audit.jsonl`: one JSON line per call, with outcome, key, name, amount, action id, plugin message and undo record. JSON escaping keeps hostile text on one line. |
 | Undo | where the plugin lists `restore` | `ps-harness undo <action-id>` feeds the stored record to `restore`, once (under a lock). A record holds the value *before* that action, so undo several actions on one item newest first. |
-| State location | always | A named plugin's state is `<root>/state/<name>` unless its config names a `state_dir`; a bare `--config` file must name one. It must be absolute and not `/`. |
+| State location | always | A named plugin's state is always `<root>/state/<name>` (a `state_dir` in its config is refused); a bare `--config` file must name one, absolute and not `/`. |
 | Private root and configs | always | The root, and every config file, must be owned by you and not writable by group or others: a config names a command to run. |
 | Private state | always | `state_dir` must be a real directory (not a symlink) owned by you and not writable by group or others; it is created `0700`. Otherwise every command refuses, because `respond` trusts the cache in it to map ids to keys. |
 
@@ -312,8 +318,8 @@ names it knows. `ps` (your own processes) is built in, dry run, remove off; a
 ```
 
 `${HARNESS_DIR}` in `plugin.command` expands to the harness directory. `harness/examples/`
-has starting points (they carry a `state_dir` placeholder for `--config` use; drop that line
-for a file under `<root>/plugins/`).
+has starting points (they carry a `state_dir` placeholder for `--config` use; remove that line
+for a file under `<root>/plugins/`, where it is refused).
 
 **Wire it to psDoom** (put `harness/` on PATH, or use the launcher's full path; paths must not
 contain spaces, `--root` included, because the respond command is split on whitespace):

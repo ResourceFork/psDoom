@@ -36,7 +36,8 @@ refresh | describe | undo <action-id>
   `current`, `plugins/<name>.json`, `ids.json` (one id map for all plugins) and
   `state/<name>/` (cache, `audit.jsonl`).
 - **Plugin**: `--config FILE`, else `--plugin NAME`, else the current one, else `ps`. `ps` is
-  built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`.
+  built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`, with no
+  `state_dir` in it (named plugins always keep state under `<root>/state/`).
 - Any other word exits 0 and does nothing (it is audited as `ignored-verb`).
 
 ## Put it on PATH

@@ -612,11 +612,20 @@ def assign_ids(cfg, items, now):
     root = cfg.get("root")
     path = os.path.join(root, "ids.json") if root \
         else state_path(cfg, "ids.json")
-    ns = (cfg["plugin"]["name"] + "/") if root else ""
+    # The namespace is the validated plugin file name (no "/"), never the
+    # free-text plugin.name inside the config, which two configs may share.
+    ns = (cfg["plugin_id"] + "/") if root else ""
     with Locked(path + ".lock") if root else _NoLock():
         m = read_json(path, None)
         if m is None and _id_map_is_fresh(cfg, path):
             m = {"version": 1, "next": ID_MIN, "keys": {}}
+            # A counter from an earlier layout is never gone back below.
+            old = read_json(os.path.join(root, "ids-next.json"), {}) \
+                if root else {}
+            nxt = old.get("next") if isinstance(old, dict) else None
+            if isinstance(nxt, int) and not isinstance(nxt, bool) and \
+                    ID_MIN < nxt <= ID_MAX + 1:
+                m["next"] = nxt
         if not isinstance(m, dict) or m.get("version") != 1 or \
                 not isinstance(m.get("next"), int) or \
                 not isinstance(m.get("keys"), dict):
@@ -995,12 +1004,19 @@ def load_named(root, name):
     cfg = None
     if os.path.lexists(path):
         cfg = load_config(path, default_state, self_args)
+        if cfg.get("state_dir") != os.path.normpath(default_state):
+            # Every named plugin keeps its state under <root>/state/, so the
+            # root's fail-closed id-map check can see all of it.
+            raise HarnessError("%s: a named plugin's state is always %s; "
+                               "remove state_dir from it (or use --config)"
+                               % (path, default_state))
     elif name in BUILTINS:
         cfg = config_from_dict(json.loads(json.dumps(BUILTINS[name])),
                                path, default_state, self_args)
     if cfg is not None:
         # One id map for the whole root (see assign_ids).
         cfg["root"] = root
+        cfg["plugin_id"] = name
         return cfg
     raise HarnessError("unknown plugin %r: no %s, and it is not built in "
                        "(known: %s)" % (name, path,

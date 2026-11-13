@@ -231,6 +231,10 @@ static void clear_root(const char *root)
     (void) rmdir(p);
     path_join(p, sizeof(p), root, "current");
     (void) unlink(p);
+    path_join(p, sizeof(p), root, "ids.json");
+    (void) unlink(p);
+    path_join(p, sizeof(p), root, "ids.json.lock");
+    (void) unlink(p);
     (void) rmdir(root);
 }
 
