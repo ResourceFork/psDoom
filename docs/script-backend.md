@@ -10,6 +10,10 @@ This document is the stable contract between psDoom and those scripts. The game 
 and parses defensively; scripts can rely on it not changing underneath them. See the
 [forward-compatibility rules](#forward-compatibility) for how it evolves.
 
+There are two versions. **v1** (everything up to [Contract v2](#contract-v2)) is the default
+and is unchanged. **v2** is opt-in per backend: a poll output whose first line is
+`#!psdoom v2` gets a 0..1 `grade` field and the response verbs `post` / `delete`.
+
 > **Runnable scripts.** [`../scripts/`](../scripts/) holds the reference pair that reproduces
 > psDoom's native behavior (your processes, sized by RAM/CPU; wound = renice, kill = SIGTERM).
 > [`../examples/`](../examples/) wires psDoom to other things (a dependency-free synthetic demo,
@@ -176,3 +180,60 @@ working on older game builds:
 - An optional first poll line `#!psdoom v1` may declare the protocol version. It is a comment
   to current parsers; absence means v1. A future incompatible revision would bump this and the
   game would refuse a version it doesn't understand rather than misread it.
+- **Versions this build understands:** v1 and [v2](#contract-v2). Any other `#!psdoom ` first
+  line (`v3`, `v2x`, ...) is refused: that poll yields no entities. Older builds read a
+  `#!psdoom v2` line as a comment and treat the output as v1.
+
+## Contract v2
+
+v2 lets a source say *where an entity sits on its own range* without knowing anything about
+the game's monsters, and gives the responder neutral verbs. It is **opt-in per poll** and
+leaves v1 exactly as documented above, so every existing v1 script keeps working.
+
+### Selecting v2
+
+The poll output's **first line** must be exactly `#!psdoom v2` (trailing spaces, tabs or a CR
+are allowed). A `#!psdoom v2` anywhere else is just a comment. Each successful poll sets the
+version psDoom uses for the next responses: a v2 poll makes them v2, a v1 poll (or no header)
+makes them v1 again. A refused version leaves the previous one in place.
+
+### Poll fields
+
+Every v1 field, with the same rules, plus:
+
+| key | type | required | default | meaning |
+|---|---|---|---|---|
+| `grade` | decimal number | no | — | Where the entity sits on its source's full range: `0` = least, `1` = most. Values below 0 or above 1 are clamped. A value that is not a finite decimal number (empty, `abc`, `0.5x`, `nan`, `inf`, a leading space) is ignored, and the last valid `grade` on a line wins. |
+
+When `grade` is present it **picks the monster, overriding *Classify by***. psDoom takes the
+tiers of its ladder that the loaded WAD can actually draw (N of them; Zombieman is always one)
+and uses tier `min(floor(grade × N), N − 1)`, counting from the weakest. So `1.0` is always the
+top drawable monster: the Cyberdemon with a WAD that has its sprite, the Baron with the shareware WAD,
+whose five drawable tiers put `0.8`–`1.0` on the Baron. `weight` and `load` still apply when
+`grade` is absent, and still feed the ranking that picks which entities are shown.
+
+Under v1, `grade` is an unknown key and is ignored.
+
+### Responses
+
+psDoom runs the same command the same way (exec'd directly, never through a shell, detached,
+exit code not read), with neutral verbs:
+
+```
+$PSDOOM_RESPOND_CMD post <id> [amount=<int>] [label=<string>]     # the monster was wounded
+$PSDOOM_RESPOND_CMD delete <id> [label=<string>]                 # the monster was killed
+```
+
+`amount` and `label` mean what they mean in v1. A v1 poll still gets `wound` and `kill`.
+Unknown verbs are still a no-op that exits 0.
+
+### Example
+
+```
+#!psdoom v2
+id=4123	label=web-frontend	weight=734003200	load=140	grade=0.9
+id=4124	label=postgres	grade=0.25
+id=4000	label=supervisor	flags=1
+```
+
+The first two pick their monster by grade; the supervisor has none, so *Classify by* decides.

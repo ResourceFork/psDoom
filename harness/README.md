@@ -1,60 +1,91 @@
-# harness/ — psDoom plugin harness
+# harness/ — ps-harness, the plugin harness
 
-A v1 poll/respond pair ([`../docs/script-backend.md`](../docs/script-backend.md)) that hands
-each call to a small *plugin* with four subcommands (`describe`, `list`, `nudge`, `remove`,
-plus optional `restore` for undo). It adds stable ids, ladder scaling, 31-byte labels,
-background caching, and a safety layer: dry run by default, remove off by default, a rate
-limit, an audit log and undo. Design and plugin contract:
-[`../docs/plugin-harness.md`](../docs/plugin-harness.md).
+`ps-harness` is a poll command and a responder for the ps-apps' script contract (psDoom's
+`docs/script-backend.md`). It hands each call to a small *plugin* (`describe`, `list`,
+`nudge`, `remove`, plus optional `restore` for undo) and adds stable ids, a 0..1 grade, ladder
+scaling, 31-byte labels, background caching, and a safety layer: dry run by default, remove off
+by default, a rate limit, an audit log and undo. Design and plugin contract: psDoom's
+`docs/plugin-harness.md`.
 
 | Path | What |
 | --- | --- |
+| [`ps-harness`](ps-harness) | the command (a thin launcher; put this folder on PATH or symlink it) |
 | [`psdoom_harness.py`](psdoom_harness.py) | the harness (Python 3.10+, standard library only) |
-| [`plugins/processes.py`](plugins/processes.py) | your own processes, like the native backend |
+| [`plugins/processes.py`](plugins/processes.py) | `ps`: your own processes, like the native backend |
 | [`plugins/csv_rows.py`](plugins/csv_rows.py) | rows of a CSV file, with undo |
-| [`examples/`](examples/) | config files; replace the `state_dir` placeholder first |
+| [`examples/`](examples/) | config files to start from |
 | [`tests/`](tests/) | `python3 -I harness/tests/run_tests.py` (no build needed); psDoom's `ctest` also runs them as `psdoom_harness_tests` |
 
-This folder is self-contained: nothing in it imports or reads files outside `harness/`,
-and its tests need only Python, so it can move to its own repository unchanged. The two links
-above point into the psDoom repository that hosts it today.
+This folder is self-contained: nothing in it imports or reads files outside `harness/`, and its
+tests need only Python, so it can move to its own repository unchanged.
 
-## The v1 contract in brief (what the apps read)
+## Commands
 
-The apps' contract lives in psDoom's `docs/script-backend.md`; this is the part the harness
-implements, so the folder stands on its own:
+```
+ps-harness [--root DIR] [--plugin NAME | --config FILE] [--contract v1|v2] COMMAND ...
+
+get                         the poll output: what the game reads
+post <id> [key=value ...]   nudge it (lower its priority)
+delete <id> [key=value ...] remove it (only if its config allows)
+use <name>                  set the current plugin, remembered
+plugins                     list known plugins; * marks the current one
+refresh | describe | undo <action-id>
+```
+
+- **Root**: `--root DIR`, else `$PS_HARNESS_ROOT`, else `~/.config/ps-harness`. It holds
+  `current`, `plugins/<name>.json` and `state/<name>/` (ids, cache, `audit.jsonl`).
+- **Plugin**: `--config FILE`, else `--plugin NAME`, else the current one, else `ps`. `ps` is
+  built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`.
+- **Contract**: v2 by default. `--contract v1` prints v1 and accepts the v1 game's
+  `wound`/`kill`, for older game builds.
+- Any other word exits 0 and does nothing (it is audited as `ignored-verb`).
+
+## Put it on PATH
+
+```sh
+export PATH="$PWD/harness:$PATH"                 # this shell only
+# or, once:  mkdir -p ~/bin && ln -s "$PWD/harness/ps-harness" ~/bin/ps-harness
+```
+
+The symlink is followed back here, so the plugins are found next to the real file. Nothing is
+installed for you.
+
+## No-kill run against psDoom (dry run, your processes)
+
+```sh
+cd ~/Source/psDoom-plugin-harness
+export PATH="$PWD/harness:$PATH"
+ps-harness use ps
+ps-harness get | head            # the first call may be empty while the cache fills
+export PSDOOM_POLL_CMD="ps-harness get"
+export PSDOOM_RESPOND_CMD="ps-harness"
+build/psDoom.app/Contents/MacOS/psDoom
+```
+
+Every shot is then written to `~/.config/ps-harness/state/ps/audit.jsonl` as `dry-run`, and
+nothing is signalled. Start psDoom from that shell: Finder and `open` give it a minimal PATH.
+Paths must not contain spaces (the respond command is split on whitespace).
+
+## The script contract in brief (what the apps read)
+
+The full contract is psDoom's `docs/script-backend.md`; this is the part the harness speaks:
 
 - **Poll** (`PSDOOM_POLL_CMD`, run via `sh`, killed with its process group after 1 s by
-  default): stdout, first line `#!psdoom v1`, then one entity per line of TAB-separated
-  `key=value` fields: `id` (integer 2..2147483647, stable, never reused), `parent` (an
-  id or 0), `weight` (bytes; ladder 0, 16M, 64M, 192M, 512M, 1.5G, 4G), `load` (percent;
-  ladder 0, 5, 25, 60, 120, 250, 500), `flags` (bit 0 = background), `label` (at most
-  31 bytes drawn, no TAB or newline). Lines starting with `#` are comments.
+  default): stdout, one entity per line of TAB-separated `key=value` fields: `id` (integer
+  2..2147483647, stable, never reused), `parent` (an id or 0), `weight` (bytes; ladder 0, 16M,
+  64M, 192M, 512M, 1.5G, 4G), `load` (percent; ladder 0, 5, 25, 60, 120, 250, 500), `flags`
+  (bit 0 = background), `label` (at most 31 bytes drawn, no TAB or newline). Lines starting
+  with `#` are comments.
+- **v2** (first line exactly `#!psdoom v2`): adds `grade` (0..1, clamped), which picks the
+  monster over the tiers the game can draw (`min(floor(grade × N), N − 1)`). Without the
+  header, or with `#!psdoom v1`, it is v1 and `grade` is ignored.
 - **Respond** (`PSDOOM_RESPOND_CMD`, split on whitespace, exec'd without a shell, detached,
-  exit code ignored): `<cmd> <verb> <id> [key=value...]`, verb `wound` (with
-  `amount=N`) or `kill`, optional `label=`. Unknown verbs and keys must be no-ops.
+  exit code ignored): `<cmd> <verb> <id> [key=value...]`. v2: `post` (with `amount=N`) or
+  `delete`; v1: `wound` or `kill`; optional `label=`. Unknown verbs and keys must be no-ops.
 
 ## One contract for the apps
 
-The harness's poll output and responder calls are exactly the v1 script-backend contract. Any
-ps-app (psDoom, psQuake, later ones) that speaks v1 works with every plugin behind the
-harness, and plugins never see the app. Plugins are tested against the harness alone
-(`tests/`); each app proves its side with its own conformance test (psDoom:
-`tests/harness_e2e_test.c`).
-
-## Quick start (no-kill: dry run)
-
-```sh
-mkdir -p "$HOME/psdoom-harness"
-sed "s|REPLACE-WITH-AN-ABSOLUTE-PATH|$HOME/psdoom-harness/processes|" \
-    harness/examples/processes.json > "$HOME/psdoom-harness/processes.json"
-CFG="$HOME/psdoom-harness/processes.json"
-python3 harness/psdoom_harness.py --config "$CFG" refresh
-python3 harness/psdoom_harness.py --config "$CFG" poll | head
-export PSDOOM_POLL_CMD="python3 $PWD/harness/psdoom_harness.py --config $CFG poll"
-export PSDOOM_RESPOND_CMD="python3 $PWD/harness/psdoom_harness.py --config $CFG respond"
-```
-
-Every shot is then written to `$HOME/psdoom-harness/processes/audit.jsonl` as `dry-run`, and
-nothing is signalled. Paths must not contain spaces (v1 splits the respond command on
-whitespace).
+The harness's poll output and responder calls are exactly that script contract. Any ps-app
+(psDoom, psQuake, later ones) that speaks it works with every plugin behind the harness, and
+plugins never see the app. Plugins are tested against the harness alone (`tests/`); each app
+proves its side with its own conformance test (psDoom: `tests/harness_e2e_test.c`).
