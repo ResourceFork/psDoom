@@ -2,9 +2,11 @@
  * psDoom -- end-to-end check of the plugin harness (harness/) through the
  * real script backend.
  *
- * psDoom's own proc_script backend runs the harness as PSDOOM_POLL_CMD and
- * PSDOOM_RESPOND_CMD would: the poll through `sh -c` under the 1-second
- * timeout, the responder exec'd detached with `verb id [key=value...]`. The
+ * psDoom's own proc_script backend runs the harness exactly as the setup
+ * PSDOOM_POLL_CMD="ps-harness get", PSDOOM_RESPOND_CMD="ps-harness" would:
+ * the poll through `sh -c` under the 1-second timeout, the responder exec'd
+ * detached with `verb id [key=value...]`. Contract v2 (post/delete, grade) is
+ * checked live; contract v1 (wound/kill) through `--contract v1`, dry run. The
  * harness drives the CSV plugin on a CSV file this test writes, so the real
  * action path is proven on that file only. No process is ever signalled.
  *
@@ -189,30 +191,61 @@ static int collect_until(psd_proc_t *out, int max, int want, int tries)
     return n;
 }
 
-static void write_config(const char *path, const char *state,
-                         const char *csv, int live)
+/* One ps-harness root: <root>/plugins/csv.json (the CSV plugin on this test's
+ * CSV; no state_dir, so state goes to <root>/state/csv) and <root>/current
+ * naming it, as `ps-harness use csv` would. */
+static void write_root(const char *root, const char *csv, int live)
 {
+    char path[1024];
     char cfg[4096];
+
+    (void) mkdir(root, 0700);
+    path_join(path, sizeof(path), root, "plugins");
+    (void) mkdir(path, 0700);
+    path_join(path, sizeof(path), root, "plugins/csv.json");
     snprintf(cfg, sizeof(cfg),
-             "{\"state_dir\": \"%s\", %s \"cache_ttl_s\": 0,\n"
+             "{%s \"cache_ttl_s\": 0,\n"
              " \"plugin\": {\"name\": \"csv\", %s\n"
              "  \"command\": [\"%s\", \"%s/plugins/csv_rows.py\",\n"
              "   \"--file\", \"%s\", \"--priority-column\", \"priority\"]}}\n",
-             state, live ? "\"dry_run\": false," : "",
+             live ? "\"dry_run\": false," : "",
              live ? "\"allow_remove\": true," : "",
              PSD_PYTHON3, PSD_HARNESS_DIR, csv);
-    write_text(path, cfg);
+    E2E_CHECK(write_text(path, cfg));
+    path_join(path, sizeof(path), root, "current");
+    E2E_CHECK(write_text(path, "csv\n"));
 }
 
-static void install(const char *cfg)
+static void clear_root(const char *root)
+{
+    char p[1024];
+
+    path_join(p, sizeof(p), root, "state/csv");
+    clear_state(p);
+    path_join(p, sizeof(p), root, "state");
+    (void) rmdir(p);
+    path_join(p, sizeof(p), root, "plugins/csv.json");
+    (void) unlink(p);
+    path_join(p, sizeof(p), root, "plugins");
+    (void) rmdir(p);
+    path_join(p, sizeof(p), root, "current");
+    (void) unlink(p);
+    (void) rmdir(root);
+}
+
+/* The human's setup: PSDOOM_POLL_CMD="ps-harness get" and
+ * PSDOOM_RESPOND_CMD="ps-harness", with the launcher by its path and an
+ * explicit --root (never the home directory). `contract` is "" for the
+ * default (v2) or "--contract v1 " for an older game build. */
+static void install(const char *root, const char *contract)
 {
     char poll[2048];
     char respond[2048];
-    snprintf(poll, sizeof(poll), "'%s' '%s/psdoom_harness.py' --config '%s' poll",
-             PSD_PYTHON3, PSD_HARNESS_DIR, cfg);
+    snprintf(poll, sizeof(poll), "'%s/ps-harness' --root '%s' %sget",
+             PSD_HARNESS_DIR, root, contract);
     /* PSDOOM_RESPOND_CMD is split on whitespace, never run by a shell. */
-    snprintf(respond, sizeof(respond), "%s %s/psdoom_harness.py --config %s respond",
-             PSD_PYTHON3, PSD_HARNESS_DIR, cfg);
+    snprintf(respond, sizeof(respond), "%s/ps-harness --root %s %s",
+             PSD_HARNESS_DIR, root, contract);
     proc_script_install(poll, respond, 1000);
     psd_select_init();
 }
@@ -220,8 +253,8 @@ static void install(const char *cfg)
 void harness_e2e_tests(int *checks_run, int *checks_failed)
 {
     const char *dir = PSD_E2E_SCRATCH;
-    char        csv[1024], csvlock[1024], cfg[1024], cfg_dry[1024];
-    char        state[1024], state_dry[1024], audit[1024], audit_dry[1024];
+    char        csv[1024], csvlock[1024], root[1024], root_dry[1024];
+    char        audit[1024], audit_dry[1024];
     psd_proc_t  out[16];
     int         n, a, b, c;
 
@@ -230,7 +263,7 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
 
     /* The responder command is split on whitespace (docs/script-backend.md). */
     /* ...and the paths are pasted into a JSON config unescaped. */
-    E2E_CHECK(strpbrk(PSD_PYTHON3 PSD_HARNESS_DIR PSD_E2E_SCRATCH, " \t\"\\") == NULL);
+    E2E_CHECK(strpbrk(PSD_PYTHON3 PSD_HARNESS_DIR PSD_E2E_SCRATCH, " \t\"\\'") == NULL);
     E2E_CHECK(dir[0] == '/' && strlen(dir) > 1);
     if (mkdir(dir, 0700) != 0 && errno != EEXIST)
     {
@@ -239,22 +272,20 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     }
     path_join(csv,       sizeof(csv),       dir, "list.csv");
     path_join(csvlock,   sizeof(csvlock),   dir, ".list.csv.lock");
-    path_join(cfg,       sizeof(cfg),       dir, "live.json");
-    path_join(cfg_dry,   sizeof(cfg_dry),   dir, "dry.json");
-    path_join(state,     sizeof(state),     dir, "state-live");
-    path_join(state_dry, sizeof(state_dry), dir, "state-dry");
-    path_join(audit,     sizeof(audit),     state, "audit.jsonl");
-    path_join(audit_dry, sizeof(audit_dry), state_dry, "audit.jsonl");
-    clear_state(state);
-    clear_state(state_dry);
+    path_join(root,      sizeof(root),      dir, "root-live");
+    path_join(root_dry,  sizeof(root_dry),  dir, "root-dry");
+    path_join(audit,     sizeof(audit),     root, "state/csv/audit.jsonl");
+    path_join(audit_dry, sizeof(audit_dry), root_dry, "state/csv/audit.jsonl");
+    clear_root(root);
+    clear_root(root_dry);
 
     E2E_CHECK(write_text(csv, "id,name,priority\n"
                               "r1,Alpha,5\nr2,Bravo,9\nr3,Charlie,1\n"));
-    write_config(cfg, state, csv, 1);
-    write_config(cfg_dry, state_dry, csv, 0);
+    write_root(root, csv, 1);
+    write_root(root_dry, csv, 0);
 
-    /* ---- live config: real nudge/remove on the test CSV ---- */
-    install(cfg);
+    /* ---- contract v2, live plugin: real post/delete on the test CSV ---- */
+    install(root, "");
     n = collect_until(out, 16, 3, 50);
     E2E_CHECK(n == 3);
     a = find_named(out, n, "Alpha");
@@ -265,45 +296,52 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     {
         goto done;
     }
-    /* Priority 9/5/1 spans the size ladder: top, middle, bottom rung. */
+    /* Priority 9/5/1 -> grade 1, 0.5, 0 (and the v1 weights alongside). */
+    E2E_CHECK(out[b].has_grade && out[b].grade == 1.0);
+    E2E_CHECK(out[a].has_grade && out[a].grade == 0.5);
+    E2E_CHECK(out[c].has_grade && out[c].grade == 0.0);
     E2E_CHECK(out[b].footprint == 4294967296ULL);
     E2E_CHECK(out[a].footprint == 201326592ULL);
     E2E_CHECK(out[c].footprint == 0);
 
-    /* kill -> harness remove -> the row is deleted from the CSV. */
+    /* kill -> `ps-harness delete <id>` -> the row is deleted from the CSV. */
     E2E_CHECK(psd_proc_kill_checked(out[b].pid, 0, "Bravo") == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "Bravo", 0, 5000));
-    /* wound (amount=4) -> harness nudge -> priority 5 becomes 1. */
+    /* wound (amount=4) -> `ps-harness post <id> amount=4` -> 5 becomes 1. */
     E2E_CHECK(psd_proc_renice_checked(out[a].pid, 0, "Alpha", 4) == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "r1,Alpha,1", 1, 5000));
     E2E_CHECK(wait_file(audit, "\"action\": \"nudge\"", 1, 3000));
     E2E_CHECK(count_in(audit, "\"outcome\": \"ok\"") == 2);
+    E2E_CHECK(file_has(audit, "\"verb\": \"delete\""));
+    E2E_CHECK(file_has(audit, "\"verb\": \"post\""));
+    E2E_CHECK(!file_has(audit, "\"verb\": \"kill\""));
+    E2E_CHECK(!file_has(audit, "\"verb\": \"wound\""));
 
     /* The next polls no longer list the removed row. */
     n = collect_until(out, 16, 2, 50);
     E2E_CHECK(n == 2);
     E2E_CHECK(find_named(out, n, "Bravo") < 0);
 
-    /* ---- default config: dry run, the CSV is left alone ---- */
-    install(cfg_dry);
+    /* ---- contract v1 (an older game build), default dry run ---- */
+    install(root_dry, "--contract v1 ");
     n = collect_until(out, 16, 2, 50);
     E2E_CHECK(n == 2);
     c = find_named(out, n, "Charlie");
     E2E_CHECK(c >= 0);
     if (c >= 0)
     {
+        E2E_CHECK(!out[c].has_grade);   /* v1 output carries no grade */
         E2E_CHECK(psd_proc_kill_checked(out[c].pid, 0, "Charlie") == PSD_ACT_DONE);
         E2E_CHECK(wait_file(audit_dry, "\"outcome\": \"dry-run\"", 1, 5000));
+        E2E_CHECK(file_has(audit_dry, "\"verb\": \"kill\""));
         E2E_CHECK(file_has(csv, "r3,Charlie,1"));
     }
 
 done:
     proc_backend_set(NULL);
-    clear_state(state);
-    clear_state(state_dry);
+    clear_root(root);
+    clear_root(root_dry);
     (void) unlink(csv);
     (void) unlink(csvlock);
-    (void) unlink(cfg);
-    (void) unlink(cfg_dry);
     (void) rmdir(dir);
 }

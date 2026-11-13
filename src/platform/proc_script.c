@@ -7,7 +7,8 @@
  *   tab-separated key=value lines into psd_proc_t. An id outside 2..INT_MAX,
  *   or not plain decimal digits, drops the line.
  * - Act: run PSDOOM_RESPOND_CMD *directly* (no shell) as
- *   `<verb> <id> [key=value...]`, double-forked so it never blocks the game and
+ *   `<verb> <id> [key=value...]` (verb wound/kill under contract v1,
+ *   post/delete when the last poll declared `#!psdoom v2`), double-forked so it never blocks the game and
  *   never leaks a zombie. Direct exec means an entity's label/id can't be
  *   interpreted as shell syntax. An id <= 1 is never handed to it.
  * - Both commands run in a process group of their own, get /dev/null as
@@ -26,6 +27,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -54,6 +56,10 @@ static int  script_timeout_ms = 1000;
  * (the vtable's renice/kill receive only an id). */
 static psd_proc_t script_last[SCRIPT_SNAPSHOT_MAX];
 static int        script_last_n;
+
+/* Contract version of the last successful poll (1 or 2). It picks the verbs
+ * a response uses: v1 `wound`/`kill`, v2 `post`/`delete`. */
+static int        script_last_version = 1;
 
 /* --------------------------------------------------------------- pure parse */
 
@@ -92,9 +98,40 @@ static int script_parse_int(const char *val, int min, int *out)
     return 1;
 }
 
+/* Parse a v2 `grade` value: a finite decimal number, clamped to [0, 1].
+ * Returns 1 and sets *out, or 0 (malformed: no digits, trailing characters,
+ * NaN or infinity) so the field is ignored. */
+static int script_parse_grade(const char *val, double *out)
+{
+    char  *end = NULL;
+    double v;
+
+    if (val == NULL || *val == '\0' || isspace((unsigned char) *val))
+    {
+        return 0;
+    }
+    errno = 0;
+    v = strtod(val, &end);
+    if (end == val || *end != '\0' || !isfinite(v))
+    {
+        return 0;
+    }
+    if (v < 0.0)
+    {
+        v = 0.0;
+    }
+    if (v > 1.0)
+    {
+        v = 1.0;
+    }
+    *out = v;
+    return 1;
+}
+
 /* Parse one already-isolated line into `p`. Returns 1 if it carries a valid
- * entity (a usable `id`), 0 otherwise. */
-static int script_parse_line(const char *line, psd_proc_t *p)
+ * entity (a usable `id`), 0 otherwise. `version` 2 also reads `grade`; under
+ * v1 it is an unknown key, ignored as before. */
+static int script_parse_line(const char *line, psd_proc_t *p, int version)
 {
     char        work[SCRIPT_LINE_MAX];
     const char *s;
@@ -176,20 +213,86 @@ static int script_parse_line(const char *line, psd_proc_t *p)
             strncpy(p->name, val, sizeof(p->name) - 1);
             p->name[sizeof(p->name) - 1] = '\0';
         }
+        else if (version >= 2 && strcmp(key, "grade") == 0)
+        {
+            double g;
+
+            /* The last valid grade wins; a malformed one is ignored. */
+            if (script_parse_grade(val, &g))
+            {
+                p->grade     = g;
+                p->has_grade = 1;
+            }
+        }
         /* unknown keys: ignored (forward-compatibility) */
     }
 
     return have_id;
 }
 
+/* The version a poll output declares on its first line: `#!psdoom v1` or no
+ * header -> 1, `#!psdoom v2` -> 2 (trailing spaces, tabs or CR allowed). Any
+ * other `#!psdoom ` version -> -1: a version this build does not understand
+ * is refused rather than misread (docs/script-backend.md, forward
+ * compatibility). Anything else on the first line -> 1. */
+int psd_script_version(const char *buf)
+{
+    static const char tag[] = "#!psdoom ";
+    const char *p;
+    const char *e;
+    size_t      len;
+
+    if (buf == NULL || strncmp(buf, tag, sizeof(tag) - 1) != 0)
+    {
+        return 1;
+    }
+    p = buf + sizeof(tag) - 1;
+    e = strchr(p, '\n');
+    len = (e != NULL) ? (size_t) (e - p) : strlen(p);
+    while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t'
+                       || p[len - 1] == '\r'))
+    {
+        len--;
+    }
+    if (len == 2 && p[0] == 'v' && p[1] == '1')
+    {
+        return 1;
+    }
+    if (len == 2 && p[0] == 'v' && p[1] == '2')
+    {
+        return 2;
+    }
+    return -1;
+}
+
 int psd_script_parse(const char *buf, psd_proc_t *out, int max)
+{
+    return psd_script_parse_versioned(buf, out, max, NULL);
+}
+
+int psd_script_parse_versioned(const char *buf, psd_proc_t *out, int max,
+                               int *version_out)
 {
     const char *line;
     int         count = 0;
+    int         version;
 
+    if (version_out != NULL)
+    {
+        *version_out = 1;
+    }
     if (buf == NULL || out == NULL || max <= 0)
     {
         return 0;
+    }
+    version = psd_script_version(buf);
+    if (version_out != NULL)
+    {
+        *version_out = version;
+    }
+    if (version < 0)
+    {
+        return 0;   /* refused: an unknown contract version */
     }
 
     line = buf;
@@ -219,7 +322,7 @@ int psd_script_parse(const char *buf, psd_proc_t *out, int max)
             linebuf[len - 1] = '\0';
         }
 
-        if (script_parse_line(linebuf, &out[count]))
+        if (script_parse_line(linebuf, &out[count], version))
         {
             count++;
         }
@@ -713,7 +816,17 @@ static int script_list(psd_proc_t *out, int max)
         return 0;
     }
 
-    n = psd_script_parse(buf, out, max);
+    {
+        int version = 1;
+
+        n = psd_script_parse_versioned(buf, out, max, &version);
+        /* A refused (unknown) version lists nothing and keeps the previous
+         * verbs; v1 and v2 set them. */
+        if (version > 0)
+        {
+            script_last_version = version;
+        }
+    }
 
     /* Stamp the current uid so script entities pass the (uid) triage filter,
      * and cache the snapshot for label lookup during a response. */
@@ -736,7 +849,8 @@ static unsigned int script_current_uid(void)
 
 static void script_renice(int pid, int nice_delta)
 {
-    (void) script_run_respond("wound", pid, 1, nice_delta, script_label_for(pid));
+    (void) script_run_respond(script_last_version >= 2 ? "post" : "wound",
+                              pid, 1, nice_delta, script_label_for(pid));
 }
 
 static int script_kill(int pid)
@@ -744,7 +858,8 @@ static int script_kill(int pid)
     /* Fire-and-forget: we can't synchronously know the script's exit, so report
      * "dispatched". A still-present entity simply reappears on the next poll.
      * 0 only when refused (an id <= 1). */
-    return script_run_respond("kill", pid, 0, 0, script_label_for(pid));
+    return script_run_respond(script_last_version >= 2 ? "delete" : "kill",
+                              pid, 0, 0, script_label_for(pid));
 }
 
 /* Script entities can't be re-read without running the poll command (slow, and
@@ -791,6 +906,7 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
              respond_cmd != NULL ? respond_cmd : "");
     script_timeout_ms = (timeout_ms > 0) ? timeout_ms : 1000;
     script_last_n     = 0;
+    script_last_version = 1;
 
     proc_backend_set(&script_backend);
 }

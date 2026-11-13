@@ -26,6 +26,7 @@
 #include "proc_script.h"     /* optional external-script backend (env-driven) */
 #include "proc_select.h"    /* curated process collection */
 #include "psdoom_lifecycle.h" /* psd_pid tags; save and retire rules */
+#include "psdoom_grade.h"   /* script v2 grade -> drawable tier */
 #include "psdoom_options.h" /* user-tunable settings (menu / CLI / config) */
 
 #include <ctype.h>
@@ -496,8 +497,29 @@ static mobjtype_t PSD_ClassifyByTiers(unsigned long long metric,
     return tiers[0].type;
 }
 
+/* Script contract v2: a graded entity takes the tier its grade (0..1) picks
+ * over the tiers this WAD can draw, whatever Classify by says, so 1.0 is the
+ * top drawable monster (Baron on a WAD without Cyberdemon). The memory and
+ * CPU ladders list the same monsters in the same order. */
+static mobjtype_t PSD_ClassifyByGrade(double grade)
+{
+    enum { NTIERS = (int) (sizeof(psd_mem_tiers) / sizeof(psd_mem_tiers[0])) };
+    int drawable[NTIERS];
+    int i;
+
+    for (i = 0; i < NTIERS; i++)
+    {
+        drawable[i] = PSD_MonsterDrawable(psd_mem_tiers[i].type) ? 1 : 0;
+    }
+    return psd_mem_tiers[psd_grade_pick(grade, drawable, NTIERS)].type;
+}
+
 static mobjtype_t PSD_ClassifyMonster(const psd_proc_t *p)
 {
+    if (p->has_grade)
+    {
+        return PSD_ClassifyByGrade(p->grade);
+    }
     if (psdoom_classify_by == PSD_CLASSIFY_CPU)
     {
         return PSD_ClassifyByTiers((unsigned long long) p->cpu_percent,

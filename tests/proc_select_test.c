@@ -45,6 +45,7 @@ int psdoom_all_users_enabled(void) { return stub_all_users; }
 
 void iwad_select_tests(int *checks_run, int *checks_failed); /* iwad_select_test.c */
 void harness_e2e_tests(int *checks_run, int *checks_failed); /* harness_e2e_test.c */
+void script_v2_tests(int *checks_run, int *checks_failed); /* script_v2_test.c */
 
 /* ---- tiny check harness -------------------------------------------------- */
 static int checks_run;
@@ -1149,6 +1150,7 @@ int main(int argc, char **argv)
     test_macos_zombie_readonly();
     test_macos_renice_refuses_reserved();
 #endif
+    script_v2_tests(&checks_run, &checks_failed);
     harness_e2e_tests(&checks_run, &checks_failed);
     iwad_select_tests(&checks_run, &checks_failed);
 

@@ -142,8 +142,15 @@ class Base(unittest.TestCase):
         return env
 
     def harness(self, cfg, *args, timeout=20):
+        args = list(args)
+        pre = []
+        if args and args[0] == "poll":
+            args[0] = "get"
+        elif args and args[0] == "respond":
+            # the v1 game's call: `wound|kill <id>`, under --contract v1
+            pre, args = ["--contract", "v1"], args[1:] or [""]
         t0 = time.monotonic()
-        r = subprocess.run([PY, HARNESS, "--config", cfg] + list(args),
+        r = subprocess.run([PY, HARNESS, "--config", cfg] + pre + args,
                            stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=timeout, cwd=self.root,
                            env=self.env())
@@ -317,13 +324,13 @@ class ConfigTests(Base):
             with self.assertRaises(H.HarnessError):
                 H.load_config(path)
 
-    def test_bad_config_poll_still_speaks_v1(self):
+    def test_bad_config_poll_still_speaks_the_contract(self):
         path = os.path.join(self.root, "bad.json")
         with open(path, "w") as f:
             f.write("{")
         r, _ = self.harness(path, "poll")
         self.assertEqual(r.returncode, 0)
-        self.assertTrue(r.stdout.startswith("#!psdoom v1\n"))
+        self.assertTrue(r.stdout.startswith("#!psdoom v2\n"))
         self.assertEqual(parse_v1(r.stdout), [])
 
     def test_shipped_examples_need_a_real_state_dir(self):
@@ -405,7 +412,7 @@ class CacheTests(Base):
         r, took = self.harness(cfg, "poll")
         self.assertLess(took, 1.0)
         self.assertEqual(parse_v1(r.stdout), [])
-        self.assertTrue(r.stdout.startswith("#!psdoom v1\n"))
+        self.assertTrue(r.stdout.startswith("#!psdoom v2\n"))
         # The detached refresher finishes on its own.
         deadline = time.monotonic() + 10
         rows = []
@@ -683,38 +690,48 @@ class CliTests(Base):
                 time.sleep(0.1)
         return rows
 
-    def test_every_command_and_alias(self):
+    def test_every_command(self):
         self.named("fake", [{"key": "a", "name": "A"}], dry_run=False,
                    plugin={"allow_remove": True})
         self.assertEqual(self.r("use", "fake").returncode, 0)
         self.assertEqual(self.r("refresh").returncode, 0)
         rows = self.get()
-        self.assertEqual(rows, parse_v1(self.r("poll").stdout))   # alias
         ident = rows[0]["id"]
-        for args in (["post", ident, "amount=2"], ["wound", ident],
-                     ["delete", ident], ["kill", ident],
-                     ["respond", "wound", ident, "amount=3"],
-                     ["respond", "kill", ident]):
+        cases = (([], ["post", ident, "amount=2"]),
+                 ([], ["delete", ident]),
+                 # the v1 game's verbs, only under --contract v1
+                 (["--contract", "v1"], ["wound", ident]),
+                 (["--contract", "v1"], ["kill", ident]),
+                 # the CLI's own words work under v1 too
+                 (["--contract", "v1"], ["post", ident, "amount=3"]))
+        for pre, args in cases:
             # A removed item leaves the cache at once; the fake still lists
             # it, so a refresh brings it back (same key, same id).
             self.assertEqual(self.r("refresh").returncode, 0)
             self.assertEqual(self.get()[0]["id"], ident)
-            res = self.r(*args)
+            res = self.r(*(pre + args))
             self.assertEqual(res.returncode, 0, res.stderr)
-        res = self.r("explode", ident)
-        self.assertEqual(res.returncode, 0)            # unknown verb: no-op
+        # Under v2, wound/kill and the dropped aliases are unknown: no-ops.
+        for args in (["wound", ident], ["kill", ident], ["explode", ident],
+                     ["respond", "kill", ident], ["poll"]):
+            res = self.r(*args)
+            self.assertEqual(res.returncode, 0, args)
+            self.assertEqual(res.stdout, "", args)   # `poll` prints nothing
         log = self.audit()
         self.assertEqual([(e["verb"], e.get("action"), e["outcome"])
                           for e in log],
-                         [("post", "nudge", "ok"), ("wound", "nudge", "ok"),
-                          ("delete", "remove", "ok"), ("kill", "remove", "ok"),
+                         [("post", "nudge", "ok"), ("delete", "remove", "ok"),
                           ("wound", "nudge", "ok"), ("kill", "remove", "ok"),
-                          ("explode", None, "ignored-verb")])
+                          ("post", "nudge", "ok"),
+                          ("wound", None, "ignored-verb"),
+                          ("kill", None, "ignored-verb"),
+                          ("explode", None, "ignored-verb"),
+                          ("respond", None, "ignored-verb"),
+                          ("poll", None, "ignored-verb")])
         acts = [c for c in self.calls() if c and c[0] in ("nudge", "remove")]
-        self.assertEqual(acts, [["nudge", "a", "amount=2"],
-                                ["nudge", "a", "amount=1"],
-                                ["remove", "a"], ["remove", "a"],
-                                ["nudge", "a", "amount=3"], ["remove", "a"]])
+        self.assertEqual(acts, [["nudge", "a", "amount=2"], ["remove", "a"],
+                                ["nudge", "a", "amount=1"], ["remove", "a"],
+                                ["nudge", "a", "amount=3"]])
         res = self.r("describe")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("verbs", json.loads(res.stdout))
@@ -728,6 +745,63 @@ class CliTests(Base):
         res = self.r()
         self.assertEqual(res.returncode, 2)               # no command
         self.assertIn("usage", res.stderr)
+        res = self.r("--contract", "v3", "get")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("v1 or v2", res.stderr)
+
+    def test_get_speaks_v2_with_grade_and_v1_on_request(self):
+        self.named("fake", [{"key": "a", "name": "Top", "size": 9},
+                            {"key": "b", "name": "Mid", "size": 5},
+                            {"key": "c", "name": "Low", "size": 1}])
+        self.r("use", "fake")
+        self.r("refresh")
+        res = self.r("get")
+        self.assertTrue(res.stdout.startswith("#!psdoom v2\n"))
+        rows = {r["label"]: r for r in parse_v1(res.stdout)}
+        self.assertEqual({k: float(v["grade"]) for k, v in rows.items()},
+                         {"Top": 1.0, "Mid": 0.5, "Low": 0.0})
+        for line in res.stdout.splitlines()[1:]:
+            self.assertTrue(line.split("\t")[-1].startswith("label="))
+        res = self.r("--contract", "v1", "get")
+        self.assertTrue(res.stdout.startswith("#!psdoom v1\n"))
+        self.assertNotIn("grade=", res.stdout)
+        self.assertEqual(len(parse_v1(res.stdout)), 3)
+        res = self.r("--plugin", "nope", "--contract", "v1", "get")
+        self.assertTrue(res.stdout.startswith("#!psdoom v1\n# harness error"))
+
+    def test_plugin_grade_wins_and_is_clamped(self):
+        self.named("fake", [{"key": "a", "name": "Given", "grade": 0.3,
+                             "size": 999},
+                            {"key": "b", "name": "Over", "grade": 7},
+                            {"key": "c", "name": "Under", "grade": -2},
+                            {"key": "d", "name": "Junk", "grade": "x",
+                             "size": 1}])
+        self.r("use", "fake")
+        self.r("refresh")
+        rows = {r["label"]: r for r in self.get()}
+        self.assertEqual(float(rows["Given"]["grade"]), 0.3)
+        self.assertEqual(float(rows["Over"]["grade"]), 1.0)
+        self.assertEqual(float(rows["Under"]["grade"]), 0.0)
+        # a junk grade falls back to the size-derived one
+        self.assertIn(float(rows["Junk"]["grade"]), (0.0,))
+        # weight/load follow the grade when the plugin sent no size/load
+        self.assertEqual(int(rows["Over"]["weight"]), H.SIZE_LADDER[6])
+        self.assertEqual(int(rows["Over"]["load"]), H.LOAD_LADDER[6])
+        self.assertEqual(int(rows["Under"]["weight"]), 0)
+
+    def test_native_scale_gets_no_grade(self):
+        self.named("fake", [{"key": "a", "name": "N", "size": 70000000,
+                             "load": 30}],
+                   spec={"describe": {"verbs": ["list"],
+                                      "size": {"scale": "native"},
+                                      "load": {"scale": "native"}}})
+        self.r("use", "fake")
+        self.r("refresh")
+        res = self.r("get")
+        self.assertTrue(res.stdout.startswith("#!psdoom v2\n"))
+        self.assertNotIn("grade=", res.stdout)
+        row = parse_v1(res.stdout)[0]
+        self.assertEqual((row["weight"], row["load"]), ("70000000", "30"))
 
     def test_post_and_delete_are_dry_run_by_default(self):
         self.named("fake", [{"key": "a", "name": "A"}],
@@ -798,7 +872,7 @@ class CliTests(Base):
         self.assertFalse(os.path.exists(os.path.join(self.hroot, "current")))
         res = self.r("--plugin", "nope", "get")
         self.assertEqual(res.returncode, 0)                # never break poll
-        self.assertTrue(res.stdout.startswith("#!psdoom v1\n"))
+        self.assertTrue(res.stdout.startswith("#!psdoom v2\n"))
         self.assertIn("unknown plugin", res.stdout)
         self.assertEqual(parse_v1(res.stdout), [])
         self.assertEqual(self.r("--plugin", "nope", "delete", "5").returncode,
@@ -978,9 +1052,11 @@ class HostileTests(Base):
         self.assertEqual(len(lines), len(self.HOSTILE))   # no forged records
         for ln in lines:
             fields = ln.split("\t")
-            self.assertEqual([f.split("=", 1)[0] for f in fields],
+            keys = [f.split("=", 1)[0] for f in fields]
+            self.assertEqual([k for k in keys if k != "grade"],
                              ["id", "parent", "weight", "load", "flags",
                               "label"])
+            self.assertEqual(keys[-1], "label")
             self.assertTrue(all(0x20 <= ord(c) < 0x7F for c in ln
                                 if c != "\t"))
         ids = [rec["id"] for rec in parse_v1(r.stdout)]

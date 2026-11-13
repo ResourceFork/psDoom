@@ -6,7 +6,7 @@ unchanged; psDoom's docs/script-backend.md) and a *plugin*: a small
 executable that can list items, nudge one, and remove one. psDoom runs:
 
     PSDOOM_POLL_CMD    = ps-harness get
-    PSDOOM_RESPOND_CMD = ps-harness          (psDoom appends wound|kill <id>)
+    PSDOOM_RESPOND_CMD = ps-harness          (psDoom appends post|delete <id>)
 
 and the harness adds what every plugin would otherwise rewrite: stable
 integer ids, size/load scaling onto the games' ladders, 31-byte labels,
@@ -16,17 +16,21 @@ background caching under the 1-second poll timeout, and a safety layer
 Design: psDoom docs/plugin-harness.md. Python 3.10+ standard library only.
 Self-contained: nothing here imports or reads from outside harness/.
 
-    ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
+    ps-harness [--root DIR] [--plugin NAME | --config FILE]
+               [--contract v1|v2] COMMAND ...
 
-    get                        print the v1 poll output (alias: poll)
-    post <id> [k=v...]         nudge: lower its priority (alias: wound)
-    delete <id> [k=v...]       remove it (alias: kill)
+    get                        print the poll output (contract v2: a
+                               `#!psdoom v2` header and a 0..1 `grade`)
+    post <id> [k=v...]         nudge: lower its priority
+    delete <id> [k=v...]       remove it
     use <name>                 set and persist the current plugin
     plugins                    list known plugins, marking the current one
     refresh                    run the plugin's list now
     describe                   print the plugin's describe, validated
     undo <action-id>           replay a recorded undo through the plugin
-    respond <verb> <id> ...    the earlier respond form (alias)
+
+--contract v1 is for game builds that only speak v1: `get` prints v1 (no
+header version 2, no grade) and `wound`/`kill` are accepted for post/delete.
 
 The root holds `current` and `plugins/<name>.json`; it is --root, else
 $PS_HARNESS_ROOT, else ~/.config/ps-harness. A plugin's state defaults to
@@ -60,9 +64,11 @@ KEY_MAX = 1024            # longest plugin key the harness accepts
 OUTPUT_CAP = 8 * 1024 * 1024  # max bytes read from one plugin call
 ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
 
-# Game verbs (v1) and the CLI's own words map to plugin verbs.
-VERB_MAP = {"wound": "nudge", "post": "nudge",
-            "kill": "remove", "delete": "remove"}
+# The CLI's words (and the v2 game's) map to plugin verbs. The v1 game's
+# wound/kill are accepted only under --contract v1.
+VERB_MAP = {"post": "nudge", "delete": "remove"}
+V1_VERB_MAP = {"wound": "nudge", "kill": "remove"}
+CONTRACTS = ("v1", "v2")
 
 PLUGIN_NAME_RE = None   # compiled below, after `import re`
 ROOT_ENV = "PS_HARNESS_ROOT"
@@ -410,6 +416,32 @@ def scale_metric(values, spec, ladder, max_tier):
     return out
 
 
+def scale_fraction(values, spec):
+    """values -> 0..1 per item with the declared scale (None where there is
+    no value, and for a native scale, which has no range of its own)."""
+    spec = spec or {}
+    scale = spec.get("scale", "relative")
+    if scale == "native":
+        return [None] * len(values)
+    if scale == "linear":
+        lo = float(spec.get("min", 0))
+        hi = float(spec["max"])
+    else:
+        present = [v for v in values if v is not None]
+        lo = min(present) if present else 0.0
+        hi = max(present) if present else 0.0
+    span = hi - lo
+    out = []
+    for v in values:
+        if v is None:
+            out.append(None)
+        elif span <= 0:
+            out.append(0.0)
+        else:
+            out.append(min(1.0, max(0.0, (v - lo) / span)))
+    return out
+
+
 def parse_list(text):
     """Plugin `list` output: JSON Lines, one object per item. Bad lines and
     items without a usable key are skipped; the first copy of a key wins."""
@@ -467,8 +499,27 @@ def normalize(items, desc, cfg):
         v = it.get("load")
         loads.append(float(v) if _is_num(v) and v >= 0 else None)
 
+    load_spec = desc.get("load") or {}
     weights = scale_metric(sizes, size_spec, SIZE_LADDER, max_tier)
-    load_vals = scale_metric(loads, desc.get("load"), LOAD_LADDER, 6)
+    load_vals = scale_metric(loads, load_spec, LOAD_LADDER, 6)
+    # Contract v2 grade, 0..1 over the item's own range: the plugin's own
+    # `grade` if it sent one, else from size (or rank), else load, with the
+    # declared scale. A native scale is already in the game's units, so it
+    # gets no grade and the game's Classify by applies, as with the native
+    # backend.
+    grades = scale_fraction(sizes, size_spec)
+    load_grades = scale_fraction(loads, load_spec)
+    for i, it in enumerate(ordered):
+        g = it.get("grade")
+        if _is_num(g):
+            g = min(1.0, max(0.0, float(g)))
+            grades[i] = g
+            if sizes[i] is None:
+                weights[i] = tier_value(g, SIZE_LADDER, max_tier)
+            if loads[i] is None:
+                load_vals[i] = tier_value(g, LOAD_LADDER, 6)
+        elif grades[i] is None:
+            grades[i] = load_grades[i]
 
     out = []
     for i, it in enumerate(ordered):
@@ -480,6 +531,7 @@ def normalize(items, desc, cfg):
             "weight": weights[i],
             "load": load_vals[i],
             "flags": 1 if it.get("background") is True else 0,
+            "grade": None if grades[i] is None else round(grades[i], 4),
             "parent_key": parent if isinstance(parent, str) else None,
         })
     return out
@@ -594,7 +646,26 @@ def render_v1(items):
     return "\n".join(lines) + "\n"
 
 
-def cmd_poll(cfg):
+def render_v2(items):
+    """v1's fields, plus `grade` (0..1) where the item has one, under a
+    `#!psdoom v2` first line. The label stays last so it never hides a
+    field from a reader that splits on TAB."""
+    lines = ["#!psdoom v2"]
+    for it in items:
+        g = it.get("grade")
+        grade = "" if g is None else "\tgrade=%.4f" % g
+        lines.append("id=%d\tparent=%d\tweight=%d\tload=%d\tflags=%d%s"
+                     "\tlabel=%s"
+                     % (it["id"], it["parent"], it["weight"], it["load"],
+                        it["flags"], grade, it["label"]))
+    return "\n".join(lines) + "\n"
+
+
+def render(items, contract):
+    return render_v1(items) if contract == "v1" else render_v2(items)
+
+
+def cmd_poll(cfg, contract="v2"):
     ensure_state_dir(cfg)
     cache = read_cache(cfg)
     now = time.time()
@@ -614,7 +685,7 @@ def cmd_poll(cfg):
         while cache is None and time.monotonic() < deadline:
             time.sleep(0.02)
             cache = read_cache(cfg)
-    sys.stdout.write(render_v1(cache["items"] if cache else []))
+    sys.stdout.write(render(cache["items"] if cache else [], contract))
     return 0
 
 
@@ -648,12 +719,12 @@ def parse_extras(extras):
 ID_RE = re.compile(r"[0-9]{1,10}\Z")
 
 
-def cmd_respond(cfg, argv):
+def cmd_respond(cfg, argv, contract="v2"):
     """Never raises; psDoom does not read the exit code, the audit log is the
     record of what happened."""
     ensure_state_dir(cfg)
     try:
-        return _respond(cfg, argv)
+        return _respond(cfg, argv, contract)
     except Exception as e:
         audit(cfg, {"verb": (argv[0] if argv else "")[:32],
                     "id": (argv[1] if len(argv) > 1 else "")[:16],
@@ -661,13 +732,15 @@ def cmd_respond(cfg, argv):
         return 0
 
 
-def _respond(cfg, argv):
+def _respond(cfg, argv, contract="v2"):
     verb = argv[0] if argv else ""
     ident = argv[1] if len(argv) > 1 else ""
     extras = parse_extras(argv[2:])
     entry = {"verb": verb[:32], "id": ident[:16],
              "game_label": extras.get("label", "")[:64]}
     pverb = VERB_MAP.get(verb)
+    if pverb is None and contract == "v1":
+        pverb = V1_VERB_MAP.get(verb)
     if pverb is None:
         audit(cfg, dict(entry, outcome="ignored-verb"))
         return 0
@@ -785,8 +858,8 @@ def _undo(cfg, action_id):
 PLUGIN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
 
 USAGE = ("usage: ps-harness [--root DIR] [--plugin NAME | --config FILE] "
-         "(get | post ID [k=v...] | delete ID [k=v...] | use NAME | plugins "
-         "| refresh | describe | undo ACTION_ID)")
+         "[--contract v1|v2] (get | post ID [k=v...] | delete ID [k=v...] | "
+         "use NAME | plugins | refresh | describe | undo ACTION_ID)")
 
 
 def resolve_root(opt_root):
@@ -857,15 +930,18 @@ def load_named(root, name):
 
 def parse_global(argv):
     """Leading options, then the command and its arguments."""
-    opts = {"root": None, "plugin": None, "config": None}
+    opts = {"root": None, "plugin": None, "config": None, "contract": "v2"}
     i = 0
-    while i < len(argv) and argv[i] in ("--root", "--plugin", "--config"):
+    while i < len(argv) and argv[i] in ("--root", "--plugin", "--config",
+                                        "--contract"):
         if i + 1 >= len(argv):
             raise HarnessError("%s needs a value" % argv[i])
         opts[argv[i][2:]] = argv[i + 1]
         i += 2
     if opts["plugin"] and opts["config"]:
         raise HarnessError("give --plugin or --config, not both")
+    if opts["contract"] not in CONTRACTS:
+        raise HarnessError("--contract must be v1 or v2")
     return opts, argv[i:]
 
 
@@ -908,9 +984,9 @@ def cmd_plugins(opts):
     return 0
 
 
-def poll_error(e):
-    sys.stdout.write("#!psdoom v1\n# harness error: %s\n"
-                     % sanitize_label(e, 200))
+def poll_error(e, contract="v2"):
+    sys.stdout.write("#!psdoom %s\n# harness error: %s\n"
+                     % (contract, sanitize_label(e, 200)))
     return 0
 
 
@@ -924,17 +1000,17 @@ def main(argv):
         sys.stderr.write(USAGE + "\n")
         return 2
     cmd, rest = rest[0], rest[1:]
-    if cmd in ("get", "poll"):
+    contract = opts["contract"]
+    if cmd == "get":
         try:
-            return cmd_poll(select_config(opts))
+            return cmd_poll(select_config(opts), contract)
         except Exception as e:   # never break the game's poll
-            return poll_error(e)
-    if cmd in VERB_MAP or cmd == "respond":
-        # post/delete (and the game's wound/kill) never fail loudly:
-        # psDoom does not read the exit code; the audit log is the record.
-        verb_args = rest if cmd == "respond" else [cmd] + rest
+            return poll_error(e, contract)
+    if cmd in VERB_MAP or (contract == "v1" and cmd in V1_VERB_MAP):
+        # post/delete never fail loudly: the game does not read the exit
+        # code; the audit log is the record.
         try:
-            return cmd_respond(select_config(opts), verb_args)
+            return cmd_respond(select_config(opts), [cmd] + rest, contract)
         except Exception as e:
             sys.stderr.write("ps-harness: %s\n" % e)
             return 0
@@ -963,7 +1039,7 @@ def main(argv):
     sys.stderr.write("ps-harness: unknown command %r (ignored)\n%s\n"
                      % (cmd, USAGE))
     try:
-        cmd_respond(select_config(opts), [cmd] + rest)
+        cmd_respond(select_config(opts), [cmd] + rest, contract)
     except Exception:
         pass
     return 0
