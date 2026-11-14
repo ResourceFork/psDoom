@@ -7,7 +7,8 @@
 - psDoom never touches processes itself. Summoner (`summoner/`, bundled in the app) is the
   only path to them (see [process-access](docs/spec/process-access.md)). Do not add
   `kill`, `setpriority`, `sysctl`/`proc_pid*` reads or a native backend to `src/`:
-  `tests/no_native_process_access.cmake` fails if you do.
+  `tests/no_native_process_access.cmake` is a tripwire for the obvious calls, not a
+  proof.
 
 ## Gate
 

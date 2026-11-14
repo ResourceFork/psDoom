@@ -317,7 +317,8 @@ add_test(NAME psdoom_no_native_process_access
     COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/no_native_process_access.cmake")
 
-# The built app bundles Summoner, and the bundled copy runs (read-only).
+# The built app bundles Summoner, and the bundled copy runs (describe/get only,
+# scratch root and HOME, -B: nothing is written into the app).
 add_test(NAME psdoom_app_bundle
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_bundle_test.sh"
             "$<TARGET_BUNDLE_DIR:psDoom>"

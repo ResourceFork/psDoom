@@ -30,11 +30,11 @@ foreach(_f IN LISTS _psd_sources)
         endif()
         string(REGEX REPLACE "/\\*.*\\*/" "" _code "${_l}")
         string(REGEX REPLACE "//.*$" "" _code "${_code}")
-        if(_code MATCHES "(setpriority|proc_pid_rusage|proc_listpids|KERN_PROC_ALL|KERN_PROC_PID|proc_macos)")
+        if(_code MATCHES "(setpriority|proc_pid_rusage|proc_listpids|proc_listallpids|KERN_PROC|sysctl|killpg|sigqueue|proc_macos|/bin/kill|bin/renice)")
             list(APPEND _psd_bad "${_f}:${_ln}: ${_l}")
         endif()
         # kill(): only the script backend's own child group teardown.
-        if(_code MATCHES "[^_a-zA-Z>.]kill[ \t]*\\(")
+        if(_code MATCHES "(^|[^_a-zA-Z>.])kill[ \t]*\\(")
             if(NOT _f MATCHES "/src/platform/proc_script\\.c$"
                OR NOT _code MATCHES "kill\\((-pgid|pgid), SIGKILL\\)")
                 list(APPEND _psd_bad "${_f}:${_ln}: ${_l}")

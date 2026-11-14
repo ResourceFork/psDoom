@@ -36,14 +36,16 @@ if [[ -z "$py" ]]; then
 else
     rm -rf "$work"
     mkdir -p "$work/home"
+    # -I -B as psDoom runs it, so nothing is written into the app.
     out=$(env -u SUMMONER_ROOT HOME="$work/home" \
-          "$py" "$res/summon" --root "$work/root" describe)
+          "$py" -I -B "$res/summon" --root "$work/root" describe)
     check "bundled summon describes the ps plugin" '[[ "$out" == *relevance* ]]'
-    env -u SUMMONER_ROOT HOME="$work/home" "$py" "$res/summon" --root "$work/root" refresh
+    env -u SUMMONER_ROOT HOME="$work/home" "$py" -I -B "$res/summon" --root "$work/root" refresh
     out=$(env -u SUMMONER_ROOT HOME="$work/home" \
-          "$py" "$res/summon" --root "$work/root" get)
+          "$py" -I -B "$res/summon" --root "$work/root" get)
     check "bundled summon lists processes" '[[ "$out" == *"# dim id=relevance"* && "$out" == *"id="* ]]'
-    check "nothing written to the real home" '[[ ! -e "$work/home/.config" ]]'
+    check "nothing written to the scratch home" '[[ ! -e "$work/home/.config" ]]'
+    check "no __pycache__ in the app" '[[ ! -e "$res/__pycache__" && ! -e "$res/plugins/__pycache__" ]]'
     rm -rf "$work"
 fi
 exit $fail
