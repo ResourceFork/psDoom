@@ -318,6 +318,13 @@ void summoner_e2e_tests(int *checks_run, int *checks_failed)
     {
         goto done;
     }
+    /* The game keeps the plugin's order (priority 9, 5, 5, 1; file order
+     * breaks the tie): no re-sort by psDoom's own score. */
+    E2E_CHECK(b == 0 && a == 1 && d == 2 && c == 3);
+    /* The poll declared the CSV's sort dimension, so "Sort by" offers it. */
+    E2E_CHECK(proc_script_sort_count() == 1);
+    E2E_CHECK(proc_script_sort_label() != NULL
+              && strcmp(proc_script_sort_label(), "priority") == 0);
     /* Priority 9/5/1 -> grade 1, 0.5, 0 (and the weights alongside). */
     E2E_CHECK(out[b].has_grade && out[b].grade == 1.0);
     E2E_CHECK(out[a].has_grade && out[a].grade == 0.5);
