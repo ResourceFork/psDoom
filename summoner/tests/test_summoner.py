@@ -12,6 +12,7 @@ Rules these tests keep:
 
 import fcntl
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -1622,6 +1623,31 @@ class ProcessesPluginTests(Base):
         d = H.validate_describe(P.describe())
         self.assertEqual(d["size"]["scale"], "native")
         self.assertFalse(d["remove"]["undoable"])
+
+    def test_actions_refuse_the_calling_chain(self):
+        # In-process, with resolve, kill and setpriority replaced: nothing
+        # real is ever signalled or reniced here.
+        from unittest import mock
+        host = 424242
+        fired = []
+        with mock.patch.object(P, "resolve", return_value=host), \
+                mock.patch.object(P.os, "kill",
+                                  side_effect=lambda *a: fired.append(a)), \
+                mock.patch.object(P.os, "setpriority",
+                                  side_effect=lambda *a: fired.append(a)), \
+                mock.patch.object(P.os, "getpriority", return_value=0), \
+                mock.patch.object(P, "parent_map", return_value={}), \
+                mock.patch.dict(P.os.environ,
+                                {"SUMMONER_HOST_PIDS": "%d,77" % host}), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(P.main(["remove", "k"]), 1)
+            self.assertEqual(P.main(["nudge", "k", "amount=4"]), 1)
+            self.assertEqual(fired, [])
+            self.assertIn("calling chain", out.getvalue())
+            # a pid outside the chain goes through (to the stubs)
+            with mock.patch.object(P, "resolve", return_value=55):
+                self.assertEqual(P.main(["remove", "k"]), 0)
+            self.assertEqual(fired, [(55, P.signal.SIGTERM)])
 
     def test_malformed_key_never_resolves(self):
         for key in ("notapid@x", "1@x", "0@x", "12", "@", ""):

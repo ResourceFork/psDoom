@@ -119,6 +119,15 @@ def host_pids(env=None):
             if x.isdigit() and 1 < int(x) <= 2147483647}
 
 
+def parent_map():
+    parent = {}
+    for line in ps(["-axo", "pid=,ppid="]).splitlines():
+        f = line.split()
+        if len(f) == 2 and f[0].isdigit() and f[1].isdigit():
+            parent[int(f[0])] = int(f[1])
+    return parent
+
+
 def chain_of(pid, parent):
     out = set()
     while pid > 1 and pid not in out and len(out) < 64:
@@ -311,6 +320,11 @@ def main(argv):
         pid = resolve(argv[1])
         if pid is None:
             return result(False, "process is gone or its pid was reused")
+        # Never act on the caller's own chain (the host that sent the event
+        # and its launchers, as Summoner reports them now), whatever an
+        # older listing said: the list may have been made for another caller.
+        if pid in host_pids() or pid in chain_of(os.getpid(), parent_map()):
+            return result(False, "refused: part of the calling chain")
         if verb == "nudge":
             amount = 4
             for kv in argv[2:]:
