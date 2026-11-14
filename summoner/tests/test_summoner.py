@@ -290,19 +290,109 @@ class LadderTests(unittest.TestCase):
                                 H.SIZE_LADDER, 6):
             self.assertIn(v, H.SIZE_LADDER)
 
-    def test_missing_sizes_follow_rank(self):
+    def test_missing_sizes_follow_plugin_order(self):
+        # rank is no longer read: the plugin's order is the order
         items = [{"key": "c", "rank": 2}, {"key": "a", "rank": 0},
                  {"key": "b", "rank": 1}]
         cfg = {"max_tier": 6, "max_items": 10}
         out = H.normalize(items, {"verbs": ["list"]}, cfg)
-        self.assertEqual([i["key"] for i in out], ["a", "b", "c"])
+        self.assertEqual([i["key"] for i in out], ["c", "a", "b"])
         self.assertEqual([i["weight"] for i in out],
                          [H.SIZE_LADDER[6], H.SIZE_LADDER[3], 0])
 
-    def test_max_items_keeps_top_ranked(self):
-        items = [{"key": str(i), "rank": 10 - i} for i in range(10)]
+    def test_order_preserved_and_max_items_keeps_the_head(self):
+        items = [{"key": str(i), "size": i} for i in range(10)]   # ascending
         out = H.normalize(items, {}, {"max_tier": 6, "max_items": 3})
-        self.assertEqual([i["key"] for i in out], ["9", "8", "7"])
+        self.assertEqual([i["key"] for i in out], ["0", "1", "2"])
+
+    def test_grade_from_primary_values_and_direction(self):
+        desc = {"dimensions": H.validate_dimensions(
+            [{"id": "hrs", "kind": "numeric", "dir": "desc"}])}
+        items = [{"key": "a", "values": {"hrs": 10}},
+                 {"key": "b", "values": {"hrs": 5}},
+                 {"key": "c", "values": {"hrs": 0}}]
+        cfg = {"max_tier": 6, "max_items": 10}
+        out = H.normalize(items, desc, cfg, "hrs")
+        self.assertEqual([i["grade"] for i in out], [1.0, 0.5, 0.0])
+        cfg["_applied_dirs"] = {"hrs": "asc"}
+        out = H.normalize(items, desc, cfg, "hrs")
+        self.assertEqual([i["grade"] for i in out], [0.0, 0.5, 1.0])
+        # the plugin's own grade still wins
+        items[2]["grade"] = 0.9
+        out = H.normalize(items, desc, cfg, "hrs")
+        self.assertEqual(out[2]["grade"], 0.9)
+
+
+class DimensionTests(unittest.TestCase):
+
+    def test_validation(self):
+        good = H.validate_dimensions([
+            {"id": "mem", "kind": "numeric", "label": "Mem\tory"},
+            {"id": "app", "kind": "category"}])
+        self.assertEqual(good[0]["roles"], ["sort"])
+        self.assertEqual(good[0]["dir"], "desc")
+        self.assertEqual(good[0]["label"], "Mem ory")     # sanitized
+        self.assertEqual(good[1]["roles"], ["group"])
+        self.assertEqual(H.validate_dimensions(None), [])
+        for bad in ([{"id": "Mem", "kind": "numeric"}],
+                    [{"id": "a b", "kind": "numeric"}],
+                    [{"id": "a;rm", "kind": "numeric"}],
+                    [{"id": "x" * 17, "kind": "numeric"}],
+                    [{"id": "m", "kind": "weird"}],
+                    [{"id": "m", "kind": "numeric", "dir": "up"}],
+                    [{"id": "m", "kind": "numeric", "roles": ["kill"]}],
+                    [{"id": "m", "kind": "numeric"},
+                     {"id": "m", "kind": "category"}],
+                    "nope"):
+            with self.assertRaises(H.SummonerError):
+                H.validate_dimensions(bad)
+        with self.assertRaises(H.SummonerError):
+            H.validate_describe({"verbs": ["list"], "default_sort": "x",
+                                 "dimensions": [{"id": "y",
+                                                 "kind": "numeric"}]})
+
+    def desc(self):
+        return H.validate_describe({
+            "verbs": ["list"], "default_sort": "mem",
+            "dimensions": [{"id": "mem", "kind": "numeric"},
+                           {"id": "cpu", "kind": "numeric", "dir": "desc"},
+                           {"id": "age", "kind": "numeric", "dir": "asc"},
+                           {"id": "app", "kind": "category"}]})
+
+    def apply(self, *words):
+        req, unknown = H.canonical_request(words)
+        return H.apply_request(req, self.desc(), unknown)
+
+    def test_request_applied_and_passed_on(self):
+        applied, notes, words = self.apply("sort=cpu,age,mem:asc",
+                                           "group=app", "limit=10")
+        self.assertEqual(applied["sort"],
+                         [["cpu", "desc"], ["age", "asc"], ["mem", "asc"]])
+        self.assertEqual(words, ["sort=cpu:desc,age:asc,mem:asc",
+                                 "group=app", "limit=10"])
+        self.assertEqual(notes, [])
+
+    def test_unknown_ids_fall_back_with_a_note(self):
+        applied, notes, words = self.apply("sort=bogus", "group=mem",
+                                           "limit=0", "colour=red")
+        self.assertEqual(applied["sort"], [["mem", "desc"]])   # the default
+        self.assertIsNone(applied["group"])        # mem is not a group dim
+        self.assertIsNone(applied["limit"])
+        self.assertEqual(words, ["sort=mem:desc"])
+        joined = " ".join(notes)
+        for frag in ("sort=bogus", "group=mem", "limit=0", "colour=red",
+                     "using sort=mem"):
+            self.assertIn(frag, joined)
+        # nothing unsafe can reach the plugin's argv
+        applied, notes, words = self.apply("sort=$(touch x)", "group=;rm")
+        self.assertEqual(words, ["sort=mem:desc"])
+
+    def test_request_key_is_canonical(self):
+        a, _ = H.canonical_request(["limit=5", "sort=cpu"])
+        b, _ = H.canonical_request(["sort=cpu", "limit=5"])
+        self.assertEqual(H.request_key(a), H.request_key(b))
+        c, _ = H.canonical_request(["sort=mem"])
+        self.assertNotEqual(H.request_key(a), H.request_key(c))
 
 
 class ParseListTests(unittest.TestCase):
@@ -580,7 +670,32 @@ class CsvPluginTests(Base):
                            capture_output=True, text=True)
         items = [json.loads(x) for x in r.stdout.splitlines()]
         self.assertEqual([i["key"] for i in items], ["b", "c", "a"])
-        self.assertEqual([i["rank"] for i in items], [0, 1, 2])
+        self.assertEqual([i["grade"] for i in items], [1.0, 0.5, 0.0])
+
+    def test_dimensions_sort_group_limit(self):
+        path = self.csv_file("id,name,priority,Team Name,hours,note\n"
+                             "a,A,5,red,3,x\nb,B,9,blue,1,\nc,C,1,red,8,y\n"
+                             "d,D,2,blue,8,z\n")
+        r = subprocess.run(self.csv_cmd(path, "--priority-column",
+                                        "priority", "describe"),
+                           capture_output=True, text=True)
+        d = json.loads(r.stdout)
+        H.validate_describe(d)
+        kinds = {x["id"]: x["kind"] for x in d["dimensions"]}
+        self.assertEqual(kinds, {"name": "category", "priority": "numeric",
+                                 "team_name": "category",
+                                 "hours": "numeric", "note": "category"})
+        self.assertEqual(d["default_sort"], "priority")
+        r = subprocess.run(self.csv_cmd(path, "--priority-column", "priority",
+                                        "list", "sort=hours:desc",
+                                        "group=team_name", "limit=3"),
+                           capture_output=True, text=True)
+        items = [json.loads(x) for x in r.stdout.splitlines()]
+        # hours desc: c(8) d(8) a(3) b(1); grouped by team in that order:
+        # red [c, a], blue [d, b]; cut to 3
+        self.assertEqual([i["key"] for i in items], ["c", "a", "d"])
+        self.assertEqual([i["group"] for i in items], ["red", "red", "blue"])
+        self.assertEqual(items[0]["grade"], 1.0)
 
     def test_undo_remove_restores_row_in_place(self):
         path = self.csv_file("id,name,priority,extra\r\n"
@@ -688,16 +803,16 @@ class CliTests(Base):
     def r(self, *args, **kw):
         return self.cli("--root", self.hroot, *args, **kw)
 
-    def get(self, *pre):
-        res = self.r(*pre, "get")
+    def get(self, *pre, words=()):
+        res = self.r(*pre, "get", *words)
         self.assertEqual(res.returncode, 0, res.stderr)
         return parse_v1(res.stdout)
 
-    def wait_rows(self, *pre):
+    def wait_rows(self, *pre, words=()):
         deadline = time.monotonic() + 10
         rows = []
         while not rows and time.monotonic() < deadline:
-            rows = self.get(*pre)
+            rows = self.get(*pre, words=words)
             if not rows:
                 time.sleep(0.1)
         return rows
@@ -752,6 +867,61 @@ class CliTests(Base):
         res = self.r("--contract", "v1", "get")           # no such switch
         self.assertEqual(res.returncode, 0)
         self.assertEqual(res.stdout, "")
+
+    def dims_spec(self):
+        return {"describe": {"verbs": ["list"], "default_sort": "size",
+                             "dimensions": [
+                                 {"id": "size", "kind": "numeric"},
+                                 {"id": "team", "kind": "category"}]}}
+
+    def test_request_reaches_plugin_and_header_is_printed(self):
+        self.named("dim", [{"key": "a", "name": "A", "group": "red\tx"},
+                           {"key": "b", "name": "B"}], spec=self.dims_spec())
+        self.r("use", "dim")
+        rows = self.wait_rows(words=("sort=size:asc", "group=team",
+                                     "limit=5", "sort2=x"))
+        lists = [c for c in self.calls() if c and c[0] == "list"]
+        self.assertEqual(lists[-1], ["list", "sort=size:asc", "group=team",
+                                     "limit=5"])
+        res = self.r("get", "sort=size:asc", "group=team", "limit=5",
+                     "sort2=x")
+        head = [ln for ln in res.stdout.splitlines() if ln.startswith("#")]
+        self.assertIn("# dim id=size kind=numeric dir=desc roles=sort "
+                      "unit= label=size", head)
+        self.assertIn("# sort id=size dir=asc", head)
+        self.assertIn("# group id=team", head)
+        self.assertTrue(any("ignored sort2=x" in h for h in head))
+        # the plugin's order is kept, and a hostile group label stays inert
+        self.assertEqual([r["label"] for r in rows], ["A", "B"])
+        self.assertEqual(rows[0]["group"], "red x")
+        self.assertNotIn("group", rows[1])
+
+    def test_plain_plugin_gets_plain_list(self):
+        self.named("plain", [{"key": "a", "name": "A"}])
+        self.r("use", "plain")
+        self.wait_rows(words=("sort=size",))
+        lists = [c for c in self.calls() if c and c[0] == "list"]
+        self.assertTrue(lists and all(c == ["list"] for c in lists))
+
+    def test_cache_is_keyed_by_request(self):
+        # The fake lists in the order its spec says; a new request must not
+        # be answered from the old request's cache.
+        self.named("dim", [{"key": "a", "name": "A"},
+                           {"key": "b", "name": "B"}], spec=self.dims_spec())
+        self.r("use", "dim")
+        self.wait_rows(words=("sort=size:desc",))
+        before = len([c for c in self.calls() if c and c[0] == "list"])
+        res = self.r("get", "sort=size:asc")      # different request
+        lists = [c for c in self.calls() if c and c[0] == "list"]
+        self.assertGreater(len(lists), before)
+        self.assertEqual(lists[-1][1], "sort=size:asc")
+        self.assertIn("# sort id=size dir=asc", res.stdout)
+        # the same request again, within the TTL, is served from cache
+        n = len(lists)
+        self.r("get", "sort=size:asc")
+        self._reap_refresher(self.configs[-1])
+        lists = [c for c in self.calls() if c and c[0] == "list"]
+        self.assertLessEqual(len(lists), n + 1)
 
     def test_get_carries_grade(self):
         self.named("fake", [{"key": "a", "name": "Top", "size": 9},
@@ -1286,6 +1456,63 @@ class ProcessesPluginTests(Base):
         self.assertEqual(its[1]["parent"], its[0]["key"])
         self.assertTrue(its[0]["background"])
         self.assertFalse(its[1]["background"])
+
+    def ps_rows(self, specs):
+        rows = []
+        for pid, name, kib, tty, cpu in specs:
+            rows.append({"pid": pid, "ppid": 1, "rss": kib, "cpu": cpu,
+                         "tty": tty, "start": "s%d" % pid, "name": name,
+                         "started": 0})
+        return rows
+
+    def test_relevance_matches_psdooms_score(self):
+        mem = 64 * 1024        # KiB: 64 MiB -> +2
+        rows = self.ps_rows([(10, "Real App", mem, "??", 0),
+                             (11, "com.apple.WebKit", mem, "??", 0),
+                             (12, "Term Tool", mem, "s001", 0)])
+        vals = {r["name"]: P.relevance(r) for r in rows}
+        self.assertEqual(vals["Real App"], 100 + 2)
+        self.assertEqual(vals["com.apple.WebKit"], 100 - 80 + 2)
+        self.assertEqual(vals["Term Tool"], 100 + 50 + 2)
+        big = self.ps_rows([(13, "Hog", 64 * 1024 * 1024, "??", 0)])[0]
+        self.assertEqual(P.relevance(big), 100 + 120)        # capped
+
+    def test_noise_and_duplicates_rank_below_a_real_app(self):
+        mem = 512 * 1024
+        rows = self.ps_rows([(20, "Chrome", mem, "??", 1),
+                             (21, "Chrome", mem, "??", 1),
+                             (22, "Chrome", mem, "??", 1),
+                             (23, "Chrome", mem, "??", 1),
+                             (24, "Chrome", mem, "??", 1),
+                             (25, "Some Helper", mem, "??", 1),
+                             (26, "Editor", mem, "??", 1)])
+        its = P.items(rows, now=0)
+        for sort in ([("relevance", "desc")], [("mem", "desc")],
+                     [("cpu", "desc")]):
+            out = [i["name"] for i in P.curate(its, sort)]
+            # equal memory: the Editor (newest pid) and the first Chrome
+            # lead; the helper and the extra Chromes sit below; beyond 3
+            # Chromes are dropped
+            self.assertEqual(out[:2], ["Editor", "Chrome"], sort)
+            self.assertEqual(out.count("Chrome"), 3, sort)
+            self.assertLess(out.index("Editor"), out.index("Some Helper"))
+        out = P.curate(its, [("relevance", "desc")])
+        self.assertEqual([i["name"] for i in out][-1], "Some Helper")
+        self.assertEqual(out[0]["grade"], 1.0)
+
+    def test_group_and_limit(self):
+        rows = self.ps_rows([(30, "A", 100, "??", 9), (31, "B", 100, "??", 5),
+                             (32, "A", 100, "??", 1)])
+        out = P.curate(P.items(rows, now=0), [("cpu", "desc")], "app", 2)
+        # groups are gathered, then the limit cuts: both A's, no B
+        self.assertEqual([(i["name"], i["group"]) for i in out],
+                         [("A", "A"), ("A", "A")])
+        sort, group, limit = P.parse_request(["sort=cpu,bogus:up,mem:asc",
+                                              "group=app", "limit=3",
+                                              "x=y"])
+        self.assertEqual(sort, [("cpu", "desc"), ("mem", "asc")])
+        self.assertEqual((group, limit), ("app", 3))
+        self.assertEqual(P.parse_request([])[0], [("relevance", "desc")])
 
     def test_describe_is_native_scale_and_not_undoable(self):
         d = H.validate_describe(P.describe())

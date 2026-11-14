@@ -3,12 +3,15 @@
 
     csv_rows.py --file F [--key-column id] [--name-column name]
                 [--priority-column P] [--size-column S] [--load-column L]
-                (describe | list | nudge <key> amount=N | remove <key> |
-                 restore < undo.json)
+                (describe | list [sort=ID[:dir],..] [group=ID] [limit=N] |
+                 nudge <key> amount=N | remove <key> | restore < undo.json)
 
-Each row with a non-empty key cell is an item. With a priority column (higher
-number = more important) rows are ranked by it and `nudge` lowers it by
-`amount`; without one, file order is the rank and `nudge` moves the row down
+Each row with a non-empty key cell is an item. Every other column is a
+dimension (`describe` lists them): numeric columns sort, text columns group.
+`list` sorts by the request (default: the priority column, highest first;
+without one, file order), gathers groups together, cuts to `limit`, and
+grades each row by its place on the primary sort column. With a priority
+column `nudge` lowers it by `amount`; without one, `nudge` moves the row down
 `amount` places. `remove` deletes the row. Both return an undo record, and
 `restore` (the record on stdin) puts things back.
 
@@ -28,6 +31,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import stat
 import sys
 
@@ -133,8 +137,35 @@ def fmt_num(v):
     return str(int(v)) if float(v).is_integer() else repr(v)
 
 
-def describe(a):
-    return {
+def dimensions(a, sh):
+    """Every column but the key is a dimension: numeric when each non-empty
+    cell is a number (sortable), else a category (groupable). Ids are the
+    column names folded to [a-z0-9_], at most 16, made unique."""
+    kcol = sh.col(a.key_column)
+    out, used = [], set()
+    for idx, head in enumerate(sh.header):
+        if idx == kcol:
+            continue
+        cells = [sh.cell(r, idx) for r in sh.rows if sh.cell(r, idx) != ""]
+        numeric = bool(cells) and all(num(c) is not None for c in cells)
+        base = re.sub(r"[^a-z0-9_]+", "_", head.strip().lower()).strip("_")
+        if not base or not base[0].isalpha():
+            base = "c_" + base
+        base = base[:16]
+        did, n = base, 2
+        while did in used:
+            suffix = "_%d" % n
+            did, n = base[:16 - len(suffix)] + suffix, n + 1
+        used.add(did)
+        out.append({"id": did, "label": head.strip() or did,
+                    "kind": "numeric" if numeric else "category",
+                    "dir": "desc", "roles": ["sort"] if numeric else ["group"],
+                    "column": idx})
+    return out
+
+
+def describe(a, sh=None):
+    d = {
         "protocol": 1,
         "name": "csv",
         "verbs": ["list", "nudge", "remove", "restore"],
@@ -145,14 +176,46 @@ def describe(a):
                   if a.priority_column else "move the row down amount rows"},
         "remove": {"meaning": "delete the row", "undoable": True},
     }
+    if sh is not None:
+        dims = dimensions(a, sh)
+        d["dimensions"] = [{k: v for k, v in x.items() if k != "column"}
+                           for x in dims]
+        pcol = sh.col(a.priority_column)
+        for x in dims:
+            if x["column"] == pcol and x["kind"] == "numeric":
+                d["default_sort"] = x["id"]
+    return d
 
 
-def list_items(a, sh):
+def parse_request(words, dims):
+    by_id = {d["id"]: d for d in dims}
+    sort, group, limit = [], None, None
+    for w in words:
+        k, _, v = w.partition("=")
+        if k == "sort":
+            for part in v.split(","):
+                did, _, ddir = part.partition(":")
+                d = by_id.get(did)
+                if d and d["kind"] == "numeric":
+                    sort.append((d["column"], ddir if ddir in ("asc", "desc")
+                                 else d["dir"], did))
+        elif k == "group" and by_id.get(v, {}).get("kind") == "category":
+            group = by_id[v]["column"]
+        elif k == "limit" and v.isdigit() and int(v) > 0:
+            limit = int(v)
+    return sort, group, limit
+
+
+def list_items(a, sh, words=()):
     kcol = sh.col(a.key_column)
     ncol = sh.col(a.name_column, required=False)
     pcol = sh.col(a.priority_column)
     scol = sh.col(a.size_column)
     lcol = sh.col(a.load_column)
+    dims = dimensions(a, sh)
+    sort, group, limit = parse_request(words, dims)
+    if not sort and pcol is not None:
+        sort = [(pcol, "desc", None)]
     # A key names the first row with it in file order -- the row nudge and
     # remove act on -- so later duplicates are never listed.
     rows, seen = [], set()
@@ -161,20 +224,57 @@ def list_items(a, sh):
         if k and k not in seen:
             seen.add(k)
             rows.append((i, r))
-    if pcol is not None:
-        rows.sort(key=lambda ir: -(num(sh.cell(ir[1], pcol)) or 0.0))
+
+    def key(ir):
+        k = []
+        for col, ddir, _ in sort:
+            v = num(sh.cell(ir[1], col))
+            k.append((v is None, 0.0 if v is None
+                      else (-v if ddir == "desc" else v)))
+        return k + [ir[0]]           # file order breaks ties
+    rows.sort(key=key)
+    if group is not None:
+        order, members = [], {}
+        for ir in rows:
+            g = sh.cell(ir[1], group) or "-"
+            if g not in members:
+                order.append(g)
+                members[g] = []
+            members[g].append(ir)
+        rows = [ir for g in order for ir in members[g]]
+    if limit:
+        rows = rows[:limit]
+    # grade: place on the primary sort column among the listed rows
+    grade_of = {}
+    if sort:
+        col, ddir, _ = sort[0]
+        vals = sorted({num(sh.cell(r, col)) for _, r in rows
+                       if num(sh.cell(r, col)) is not None},
+                      reverse=(ddir == "desc"))
+        pos = {v: i for i, v in enumerate(vals)}
+        for i, r in rows:
+            v = num(sh.cell(r, col))
+            if v is not None:
+                grade_of[i] = 1.0 if len(vals) < 2 else \
+                    round(1.0 - pos[v] / (len(vals) - 1), 4)
+    numeric = [d for d in dims if d["kind"] == "numeric"]
     out = []
-    for rank, (_, r) in enumerate(rows):
+    for i, r in rows:
         it = {"key": sh.cell(r, kcol),
               "name": sh.cell(r, ncol) if ncol is not None
-              else sh.cell(r, kcol),
-              "rank": rank}
+              else sh.cell(r, kcol)}
         size = num(sh.cell(r, scol if scol is not None else pcol))
         if size is not None and size >= 0:
             it["size"] = size
         load = num(sh.cell(r, lcol))
         if load is not None and load >= 0:
             it["load"] = load
+        it["values"] = {d["id"]: num(sh.cell(r, d["column"]))
+                        for d in numeric}
+        if i in grade_of:
+            it["grade"] = grade_of[i]
+        if group is not None:
+            it["group"] = sh.cell(r, group) or "-"
         out.append(it)
     return out
 
@@ -256,7 +356,7 @@ def restore(a, sh, undo):
 def main(argv):
     a = parse_args(argv)
     if a.verb == "describe":
-        print(json.dumps(describe(a)))
+        print(json.dumps(describe(a, Sheet(a.file))))
         return 0
     if a.verb == "restore":
         try:
@@ -266,7 +366,7 @@ def main(argv):
         with FileLock(a.file):
             return restore(a, Sheet(a.file), undo)
     if a.verb == "list":
-        for it in list_items(a, Sheet(a.file)):
+        for it in list_items(a, Sheet(a.file), a.rest):
             print(json.dumps(it))
         return 0
     if a.verb in ("nudge", "remove") and a.rest:

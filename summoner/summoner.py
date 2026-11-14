@@ -18,12 +18,14 @@ Self-contained: nothing here imports or reads from outside summoner/.
 
     summon [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
-    get                        print the poll output (with a 0..1 `grade`)
+    get [sort=ID[:asc|desc][,ID..]] [group=ID] [limit=N]
+                               print the poll output, in the plugin's order
+                               for that request (see `describe` for the IDs)
     post <id> [k=v...]         nudge: lower its priority
     delete <id> [k=v...]       remove it
     use <name>                 set and persist the current plugin
     plugins                    list known plugins, marking the current one
-    refresh                    run the plugin's list now
+    refresh [request words]    run the plugin's list now
     describe                   print the plugin's describe, validated
     undo <action-id>           replay a recorded undo through the plugin
 
@@ -360,7 +362,134 @@ def validate_describe(d):
             raise SummonerError("describe: %s.scale %r unknown" % (k, scale))
         if scale == "linear" and not _is_num(spec.get("max")):
             raise SummonerError("describe: %s.scale linear needs max" % k)
+    d["dimensions"] = validate_dimensions(d.get("dimensions"))
+    ds = d.get("default_sort")
+    sortable = {x["id"] for x in d["dimensions"] if "sort" in x["roles"]}
+    if ds is not None and ds not in sortable:
+        raise SummonerError("describe: default_sort %r is not a sort "
+                            "dimension" % (ds,))
     return d
+
+
+DIM_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,15}\Z")
+DIM_KINDS = ("numeric", "category")
+DIRS = ("asc", "desc")
+LIMIT_MAX = 4096
+
+
+def validate_dimensions(dims):
+    """The dimensions a plugin can sort or group by. Each: id (short, safe
+    to pass on a command line), label (for a game menu), kind numeric or
+    category, dir (numeric default direction), unit, roles (sort, group)."""
+    if dims is None:
+        return []
+    if not isinstance(dims, list):
+        raise SummonerError("describe: dimensions must be a list")
+    out, seen = [], set()
+    for d in dims:
+        if not isinstance(d, dict):
+            raise SummonerError("describe: a dimension is not an object")
+        did = d.get("id")
+        if not isinstance(did, str) or not DIM_ID_RE.match(did) or \
+                did in seen:
+            raise SummonerError("describe: bad or repeated dimension id %r"
+                                % (did,))
+        kind = d.get("kind")
+        if kind not in DIM_KINDS:
+            raise SummonerError("describe: dimension %s: kind must be "
+                                "numeric or category" % did)
+        default_roles = ["sort"] if kind == "numeric" else ["group"]
+        roles = d.get("roles", default_roles)
+        if not isinstance(roles, list) or not roles or \
+                not set(roles) <= {"sort", "group"}:
+            raise SummonerError("describe: dimension %s: roles must be "
+                                "sort and/or group" % did)
+        ddir = d.get("dir", "desc")
+        if ddir not in DIRS:
+            raise SummonerError("describe: dimension %s: dir must be asc "
+                                "or desc" % did)
+        seen.add(did)
+        out.append({"id": did,
+                    "label": sanitize_label(d.get("label", did)) or did,
+                    "kind": kind, "dir": ddir,
+                    "unit": sanitize_label(d.get("unit", ""), 16),
+                    "roles": sorted(set(roles))})
+    return out
+
+
+def canonical_request(words):
+    """The request words as given (sort=, group=, limit=), syntactically
+    cleaned and put in a fixed order, so the cache can be keyed by them.
+    Not yet checked against any plugin. Unknown words are returned apart."""
+    req = {"sort": [], "group": None, "limit": None}
+    unknown = []
+    for w in words:
+        k, sep, v = w.partition("=")
+        if not sep:
+            unknown.append(w)
+        elif k == "sort":
+            req["sort"] = []
+            for part in v.split(","):
+                did, _, ddir = part.partition(":")
+                if DIM_ID_RE.match(did) and ddir in ("", "asc", "desc"):
+                    req["sort"].append([did, ddir or None])
+                else:
+                    unknown.append("sort=" + part)
+        elif k == "group":
+            if DIM_ID_RE.match(v):
+                req["group"] = v
+            else:
+                unknown.append(w)
+        elif k == "limit":
+            if v.isdigit() and 0 < int(v) <= LIMIT_MAX:
+                req["limit"] = int(v)
+            else:
+                unknown.append(w)
+        else:
+            unknown.append(w)
+    return req, unknown
+
+
+def request_key(req):
+    return json.dumps(req, sort_keys=True)
+
+
+def apply_request(req, desc, unknown=()):
+    """Check a canonical request against the plugin's dimensions. Returns
+    (applied request, notes, plugin words). An unknown or wrong-kind id is
+    dropped with a note, and the plugin's default sort is used in its
+    place; the poll itself never fails because of a request."""
+    dims = {d["id"]: d for d in desc.get("dimensions", [])}
+    notes = ["ignored %s (not understood)" % sanitize_label(u, 40)
+             for u in unknown]
+    sort = []
+    for did, ddir in req["sort"]:
+        d = dims.get(did)
+        if d is None or "sort" not in d["roles"]:
+            notes.append("ignored sort=%s (not a sort dimension)" % did)
+            continue
+        if any(did == x[0] for x in sort):
+            continue
+        sort.append([did, ddir or d["dir"]])
+    if not sort and desc.get("default_sort"):
+        d = dims[desc["default_sort"]]
+        sort = [[d["id"], d["dir"]]]
+        if req["sort"]:
+            notes.append("using sort=%s" % d["id"])
+    group = req["group"]
+    if group is not None and (group not in dims or
+                              "group" not in dims[group]["roles"]):
+        notes.append("ignored group=%s (not a group dimension)" % group)
+        group = None
+    applied = {"sort": sort, "group": group, "limit": req["limit"]}
+    words = []
+    if sort:
+        words.append("sort=" + ",".join("%s:%s" % (a, b) for a, b in sort))
+    if group:
+        words.append("group=" + group)
+    if req["limit"]:
+        words.append("limit=%d" % req["limit"])
+    return applied, notes, words
 
 
 def describe(cfg):
@@ -487,20 +616,19 @@ def parse_list(text):
     return items, skipped
 
 
-def normalize(items, desc, cfg):
-    """Rank, truncate and scale plugin items. Returns dicts without ids."""
+def normalize(items, desc, cfg, primary=None):
+    """Truncate and scale plugin items, keeping the plugin's order (the
+    plugin curates: it sorts, trims and grades). `primary` is the applied
+    primary sort dimension id, used for a grade the plugin did not send.
+    Returns dicts without ids."""
     max_tier = cfg["max_tier"]
-    indexed = list(enumerate(items))
-
-    def rank_of(pair):
-        pos, it = pair
-        r = it.get("rank")
-        return (r if _is_num(r) else float(pos), pos)
-
-    indexed.sort(key=rank_of)
-    indexed = indexed[:max(0, int(cfg["max_items"]))]
-    ordered = [it for _, it in indexed]
+    ordered = list(items)[:max(0, int(cfg["max_items"]))]
     n = len(ordered)
+    primary_dir = "desc"
+    for d in desc.get("dimensions", []):
+        if d["id"] == primary:
+            primary_dir = d["dir"]
+    sort_dir = (cfg.get("_applied_dirs") or {}).get(primary, primary_dir)
 
     sizes = []
     for pos, it in enumerate(ordered):
@@ -538,6 +666,16 @@ def normalize(items, desc, cfg):
         rank_g = scale_fraction(sizes, size_spec) if rank_based else none
         computed = [a if a is not None else (b if b is not None else c)
                     for a, b, c in zip(size_g, load_g, rank_g)]
+    # A grade from the primary sort dimension's values, when the plugin
+    # reports them: the "best" end of the requested direction is 1.
+    pv = []
+    for it in ordered:
+        vals = it.get("values")
+        v = vals.get(primary) if isinstance(vals, dict) and primary else None
+        pv.append(float(v) if _is_num(v) else None)
+    primary_g = scale_fraction(pv, {"scale": "relative"})
+    if sort_dir == "asc":
+        primary_g = [None if g is None else 1.0 - g for g in primary_g]
     cap = 1.0 if max_tier >= 6 else (max_tier + 0.5) / 7.0
     grades = []
     for i, it in enumerate(ordered):
@@ -548,6 +686,8 @@ def normalize(items, desc, cfg):
                 weights[i] = tier_value(g, SIZE_LADDER, max_tier)
             if loads[i] is None:
                 load_vals[i] = tier_value(g, LOAD_LADDER, 6)
+        elif primary_g[i] is not None:
+            g = primary_g[i]
         else:
             g = computed[i]
         grades.append(None if g is None else g * cap)
@@ -562,6 +702,8 @@ def normalize(items, desc, cfg):
             "weight": weights[i],
             "load": load_vals[i],
             "flags": 1 if it.get("background") is True else 0,
+            "group": sanitize_label(it["group"])
+            if isinstance(it.get("group"), str) else "",
             "grade": None if grades[i] is None else round(grades[i], 4),
             "parent_key": parent if isinstance(parent, str) else None,
         })
@@ -669,9 +811,11 @@ def _link_parents(items):
 
 # ------------------------------------------------------------------ cache --
 
-def refresh(cfg):
-    """Run describe + list and rewrite the cache. Single-flight: if another
+def refresh(cfg, words=()):
+    """Run describe + list (with the host's request, checked against the
+    plugin's dimensions) and rewrite the cache. Single-flight: if another
     refresher holds refresh.lock this returns False without running."""
+    req, unknown = canonical_request(words)
     ensure_state_dir(cfg)
     with Locked(state_path(cfg, "refresh.lock"), blocking=False) as lk:
         if not lk.held:
@@ -680,11 +824,18 @@ def refresh(cfg):
         with open(state_path(cfg, "refresh.pid"), "w") as f:
             f.write("%d\n" % os.getpid())
         desc = describe(cfg)
-        code, out = run_plugin(cfg, ["list"])
+        applied, notes, pwords = apply_request(req, desc, unknown)
+        # A plugin that declares no dimensions gets the plain `list`.
+        code, out = run_plugin(cfg, ["list"] + (pwords if desc["dimensions"]
+                                                else []))
         if code != 0:
             raise SummonerError("plugin list exited %d" % code)
         raw, skipped = parse_list(out)
-        items = normalize(raw, desc, cfg)
+        primary = applied["sort"][0][0] if applied["sort"] else None
+        cfg = dict(cfg, _applied_dirs={a: b for a, b in applied["sort"]})
+        items = normalize(raw, desc, cfg, primary)
+        if applied["limit"]:
+            items = items[:applied["limit"]]
         now = round(time.time(), 3)
         with Locked(state_path(cfg, "state.lock")):
             assign_ids(cfg, items, now)
@@ -692,6 +843,9 @@ def refresh(cfg):
                 "version": 1,
                 "fetched_at": now,
                 "describe": desc,
+                "request": request_key(req),
+                "applied": applied,
+                "notes": notes,
                 "items": items,
                 "skipped": skipped,
             })
@@ -710,7 +864,7 @@ def refresher_running(cfg):
         return not lk.held
 
 
-def spawn_refresher(cfg):
+def spawn_refresher(cfg, words=()):
     """Start a detached refresher in its own session, so psDoom's poll
     timeout (which kills the poll's process group) cannot kill it, and with
     no handle on the poll's stdout, so the poll ends at once."""
@@ -719,49 +873,79 @@ def spawn_refresher(cfg):
     try:
         subprocess.Popen(
             [sys.executable, os.path.abspath(__file__)] +
-            cfg["self_args"] + ["refresh"],
+            cfg["self_args"] + ["refresh"] + list(words),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
             close_fds=True, start_new_session=True)
     finally:
         os.close(log)
 
 
-def render(items):
-    """One TAB-separated key=value line per item, with `grade` (0..1) where
-    the item has one. The label stays last so it never hides a field from a
+def render(items, cache=None):
+    """Header comment lines, then one TAB-separated key=value line per item.
+
+    Header (each a `#` comment, so any reader may skip it):
+      # dim id=<id> kind=<numeric|category> dir=<asc|desc> roles=<r,..> unit=<u> label=<text>
+      # sort id=<id> dir=<asc|desc>        the applied primary sort, if any
+      # group id=<id>                      the applied grouping, if any
+      # summon: <note>                     a request word that was ignored
+    Items carry `grade` (0..1) and `group` (the item's group label) where
+    they have one. The label stays last so it never hides a field from a
     reader that splits on TAB."""
     lines = []
+    if cache:
+        for d in (cache.get("describe") or {}).get("dimensions", []):
+            lines.append("# dim id=%s kind=%s dir=%s roles=%s unit=%s "
+                         "label=%s" % (d["id"], d["kind"], d["dir"],
+                                       ",".join(d["roles"]), d["unit"],
+                                       d["label"]))
+        applied = cache.get("applied") or {}
+        if applied.get("sort"):
+            lines.append("# sort id=%s dir=%s" % tuple(applied["sort"][0]))
+        if applied.get("group"):
+            lines.append("# group id=%s" % applied["group"])
+        for note in cache.get("notes") or []:
+            lines.append("# summon: %s" % sanitize_label(note, 120))
     for it in items:
         g = it.get("grade")
         grade = "" if g is None else "\tgrade=%.4f" % g
-        lines.append("id=%d\tparent=%d\tweight=%d\tload=%d\tflags=%d%s"
+        group = "\tgroup=%s" % it["group"] if it.get("group") else ""
+        lines.append("id=%d\tparent=%d\tweight=%d\tload=%d\tflags=%d%s%s"
                      "\tlabel=%s"
                      % (it["id"], it["parent"], it["weight"], it["load"],
-                        it["flags"], grade, it["label"]))
+                        it["flags"], grade, group, it["label"]))
     return "".join(line + "\n" for line in lines)
 
 
-def cmd_poll(cfg):
+def cmd_poll(cfg, words=()):
     ensure_state_dir(cfg)
+    req, _ = canonical_request(words)
+    key = request_key(req)
     cache = read_cache(cfg)
     now = time.time()
     dirty = os.path.exists(state_path(cfg, "dirty"))
-    stale = (cache is None or dirty or
+    # A different request makes the cache stale at once: the order and the
+    # grades it holds answer another question.
+    changed = cache is not None and cache.get("request") != key
+    stale = (cache is None or dirty or changed or
              now - cache.get("fetched_at", 0) >= cfg["cache_ttl_s"])
     try:
         last_try = os.stat(state_path(cfg, "refresh.pid")).st_mtime
     except FileNotFoundError:
         last_try = 0
     # A failing plugin is retried once per cache_ttl_s, not on every poll.
-    backoff = not dirty and now - last_try < cfg["cache_ttl_s"]
+    backoff = not dirty and not changed and \
+        now - last_try < cfg["cache_ttl_s"]
     if stale and not backoff and not refresher_running(cfg):
-        spawn_refresher(cfg)
-    if cache is None:
+        spawn_refresher(cfg, words)
+    if cache is None or changed:
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
-        while cache is None and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            fresh = read_cache(cfg)
+            if fresh is not None and fresh.get("request") == key:
+                cache = fresh
+                break
             time.sleep(0.02)
-            cache = read_cache(cfg)
-    sys.stdout.write(render(cache["items"] if cache else []))
+    sys.stdout.write(render(cache["items"] if cache else [], cache))
     return 0
 
 
@@ -938,7 +1122,8 @@ def _undo(cfg, action_id):
 PLUGIN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
 
 USAGE = ("usage: summon [--root DIR] [--plugin NAME | --config FILE] "
-         "(get | post ID [k=v...] | delete ID [k=v...] | use NAME | plugins "
+         "(get [sort=ID[:dir],..] [group=ID] [limit=N] | post ID [k=v...] "
+         "| delete ID [k=v...] | use NAME | plugins "
          "| refresh | describe | undo ACTION_ID)")
 
 
@@ -1093,7 +1278,7 @@ def main(argv):
     cmd, rest = rest[0], rest[1:]
     if cmd == "get":
         try:
-            return cmd_poll(select_config(opts))
+            return cmd_poll(select_config(opts), rest)
         except Exception as e:   # never break the game's poll
             return poll_error(e)
     if cmd in VERB_MAP:
@@ -1112,7 +1297,7 @@ def main(argv):
         if cmd in ("refresh", "describe", "undo"):
             cfg = select_config(opts)
             if cmd == "refresh":
-                refresh(cfg)
+                refresh(cfg, rest)
                 return 0
             if cmd == "describe":
                 print(json.dumps(describe(cfg), indent=2, sort_keys=True))

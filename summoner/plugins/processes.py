@@ -2,9 +2,35 @@
 """Summoner plugin: your own processes (the native behaviour).
 
     processes.py describe
-    processes.py list                  one JSON object per process you own
+    processes.py list [sort=ID[:asc|desc],..] [group=ID] [limit=N]
+                                       one JSON object per process you own,
+                                       curated: sorted, de-duplicated, graded
     processes.py nudge <key> amount=N  raise its nice value by N (cumulative)
     processes.py remove <key>          SIGTERM
+
+Dimensions: relevance (psDoom's own native ranking score, the default),
+mem (resident bytes), cpu (percent of a core), age (seconds since start) to
+sort by; app (process name) and parent (parent's name) to group by.
+
+relevance reproduces psDoom's native ranking (src/psdoom/proc_select.c,
+select_score/select_cmp): base 100, +50 for a process with a controlling
+terminal, -80 for a background-noise name (Apple helpers, XPC services,
+agents and daemons: psDoom's list), and +1 per 32 MiB of memory up to +120;
+a newer (higher) pid wins a tie. So `summon use ps` with its default sort
+picks the same kind of top processes as psDoom's native backend.
+
+Curation, after sorting: the first process of each name keeps its place;
+the 2nd and 3rd of the same name move below every first-of-its-name; any
+further ones are dropped (one browser's forty helpers would otherwise fill
+every monster slot). Noise names then move below everything else, on any
+sort (relevance also scores them down, as psDoom does).
+
+Safety: the session-critical names below are left out, but psDoom keeps
+its own protected-name, self and launcher-chain filters for every script
+entity: a plugin is never trusted to protect the session. Then `group` gathers members together, ordered by each
+group's best member, and `limit` cuts the list. `grade` is the item's
+place on the primary dimension among the listed items (1 = the best end
+of the requested direction), so the monsters spread over the whole ladder.
 
 The key is "<pid>@<start time>", so an action re-reads the process's start
 time first and refuses if the pid now names a different process. Neither
@@ -14,9 +40,11 @@ terminated process cannot be restarted. Standard library only.
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
+import time
 
 # Session-critical names, mirroring psDoom's scripts/poll-processes.sh, plus
 # the games and the usual terminal apps that launch them (this plugin has no
@@ -26,6 +54,38 @@ DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
         "Terminal", "iTerm2"}
 
 PS_FIELDS = "pid=,ppid=,rss=,pcpu=,tt=,lstart=,comm="
+
+# psDoom's native noise list (src/psdoom/proc_select.c), matched as
+# case-insensitive substrings of the process name.
+NOISE = ("com.apple", "mdworker", "cfprefsd", "distnoted", "trustd",
+         "nsurlsession", "analyticsd", "knowledge", "spotlight", "coreaudiod",
+         "diagnostic", "crashpad", "mtlcompiler", "gputools", "assetsd",
+         "synthesizer", "agent", "helper", "service", "daemon", "xpc", "ausp")
+MAX_SAME_NAME = 3          # listed processes per name; the rest are dropped
+
+# psDoom's select_score weights (src/psdoom/proc_select.c).
+SCORE_BASE = 100
+SCORE_INTERACTIVE = 50     # has a controlling tty
+SCORE_NOISE = 80           # penalty: looks like a system helper
+SCORE_MEM_MAX = 120        # cap on the memory bonus (1 per 32 MiB)
+
+DIMENSIONS = [
+    {"id": "relevance", "label": "Relevance", "kind": "numeric",
+     "dir": "desc", "unit": "score", "roles": ["sort"]},
+    {"id": "mem", "label": "Memory", "kind": "numeric", "dir": "desc",
+     "unit": "bytes", "roles": ["sort"]},
+    {"id": "cpu", "label": "CPU", "kind": "numeric", "dir": "desc",
+     "unit": "percent", "roles": ["sort"]},
+    {"id": "age", "label": "Age", "kind": "numeric", "dir": "desc",
+     "unit": "seconds", "roles": ["sort"]},
+    {"id": "app", "label": "App", "kind": "category", "roles": ["group"]},
+    {"id": "parent", "label": "Parent", "kind": "category",
+     "roles": ["group"]},
+]
+NUMERIC = {d["id"]: d["dir"] for d in DIMENSIONS if d["kind"] == "numeric"}
+GROUPS = {d["id"] for d in DIMENSIONS if d["kind"] == "category"}
+DEFAULT_SORT = [("relevance", "desc")]
+ID_RE = re.compile(r"[a-z][a-z0-9_]{0,15}\Z")
 
 
 def describe():
@@ -39,6 +99,8 @@ def describe():
                  "scale": "native"},
         "nudge": {"meaning": "raise the nice value by amount"},
         "remove": {"meaning": "send SIGTERM", "undoable": False},
+        "dimensions": DIMENSIONS,
+        "default_sort": "relevance",
     }
 
 
@@ -57,25 +119,127 @@ def parse_ps(text, self_pid):
             continue
         tt = f[4]
         start = "-".join(f[5:10])
+        try:
+            started = time.mktime(time.strptime(" ".join(f[5:10]),
+                                                "%a %b %d %H:%M:%S %Y"))
+        except ValueError:
+            started = None
         name = os.path.basename(" ".join(f[10:]))
         if pid <= 1 or pid == self_pid or name in DENY:
             continue
         rows.append({"pid": pid, "ppid": ppid, "rss": rss, "cpu": cpu,
-                     "tty": tt, "start": start, "name": name})
+                     "tty": tt, "start": start, "name": name,
+                     "started": started})
     return rows
 
 
-def items(rows):
+def items(rows, now=None):
+    now = time.time() if now is None else now
     keys = {r["pid"]: "%d@%s" % (r["pid"], r["start"]) for r in rows}
+    names = {r["pid"]: r["name"] for r in rows}
     out = []
     for r in rows:
+        age = None
+        if r.get("started") is not None:
+            age = max(0, int(now - r["started"]))
         it = {"key": keys[r["pid"]], "name": r["name"],
               "size": r["rss"] * 1024, "load": int(r["cpu"] + 0.5),
-              "background": r["tty"] == "??"}
+              "background": r["tty"] == "??",
+              "pid": r["pid"],
+              "values": {"relevance": relevance(r), "mem": r["rss"] * 1024,
+                         "cpu": r["cpu"], "age": age},
+              "categories": {"app": r["name"],
+                             "parent": names.get(r["ppid"], "launchd")}}
         if r["ppid"] in keys:
             it["parent"] = keys[r["ppid"]]
         out.append(it)
     return out
+
+
+def relevance(r):
+    """psDoom's select_score for one ps row."""
+    score = SCORE_BASE
+    if r["tty"] != "??":
+        score += SCORE_INTERACTIVE
+    if is_noise(r["name"]):
+        score -= SCORE_NOISE
+    return score + min(SCORE_MEM_MAX, (r["rss"] * 1024) >> 25)
+
+
+def parse_request(words):
+    """sort=ID[:dir],.. group=ID limit=N, tolerant: anything unknown is
+    ignored (Summoner has already checked the request)."""
+    sort, group, limit = [], None, None
+    for w in words:
+        k, _, v = w.partition("=")
+        if k == "sort":
+            for part in v.split(","):
+                did, _, ddir = part.partition(":")
+                if did in NUMERIC and all(did != x for x, _ in sort):
+                    sort.append((did, ddir if ddir in ("asc", "desc")
+                                 else NUMERIC[did]))
+        elif k == "group" and v in GROUPS:
+            group = v
+        elif k == "limit" and v.isdigit() and int(v) > 0:
+            limit = int(v)
+    return sort or list(DEFAULT_SORT), group, limit
+
+
+def is_noise(name):
+    low = name.lower()
+    return any(n in low for n in NOISE)
+
+
+def curate(its, sort, group=None, limit=None):
+    """Sort, demote duplicates and noise, gather groups, cut, grade."""
+    def key(it):
+        k = []
+        for did, ddir in sort:
+            v = it["values"].get(did)
+            missing = v is None
+            v = 0 if missing else v
+            k.append((missing, -v if ddir == "desc" else v))
+        # psDoom's tiebreak: the newer (higher) pid first
+        return k + [-it.get("pid", 0)]
+
+    its = sorted((dict(it) for it in its), key=key)   # never edit the input
+    seen = {}
+    tiers = ([], [], [], [])      # first, dupe, noise first, noise dupe
+    for it in its:
+        n = it["name"]
+        seen[n] = seen.get(n, 0) + 1
+        if seen[n] > MAX_SAME_NAME:
+            continue
+        noise = 2 if is_noise(n) else 0
+        tiers[noise + (0 if seen[n] == 1 else 1)].append(it)
+    its = [it for t in tiers for it in t]
+    if group:
+        order, members = [], {}
+        for it in its:
+            g = it["categories"].get(group) or "-"
+            if g not in members:
+                order.append(g)
+                members[g] = []
+            members[g].append(it)
+            it["group"] = g
+        its = [it for g in order for it in members[g]]
+    if limit:
+        its = its[:limit]
+    # grade: place on the primary dimension among the listed items
+    did, ddir = sort[0]
+    vals = sorted({it["values"][did] for it in its
+                   if it["values"].get(did) is not None},
+                  reverse=(ddir == "desc"))
+    pos = {v: i for i, v in enumerate(vals)}
+    for it in its:
+        v = it["values"].get(did)
+        if v is not None:
+            it["grade"] = 1.0 if len(vals) < 2 else \
+                round(1.0 - pos[v] / (len(vals) - 1), 4)
+    for it in its:
+        it.pop("categories", None)
+        it.pop("pid", None)
+    return its
 
 
 def ps(args):
@@ -106,7 +270,9 @@ def main(argv):
         print(json.dumps(describe()))
         return 0
     if verb == "list":
-        for it in items(parse_ps(ps(["-xo", PS_FIELDS]), os.getpid())):
+        sort, group, limit = parse_request(argv[1:])
+        listed = items(parse_ps(ps(["-xo", PS_FIELDS]), os.getpid()))
+        for it in curate(listed, sort, group, limit):
             print(json.dumps(it))
         return 0
     if verb in ("nudge", "remove") and len(argv) >= 2:
