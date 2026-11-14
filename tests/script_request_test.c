@@ -104,47 +104,6 @@ static void test_poll_command(void)
     RQ_CHECK(strcmp(out, "summon get with a very long command line") == 0);
 }
 
-static psd_proc_t rq_mk(int pid, const char *name, unsigned long long mem,
-                        int daemon)
-{
-    psd_proc_t p;
-    memset(&p, 0, sizeof(p));
-    p.pid = pid;
-    p.ppid = 1;
-    p.uid = 501;
-    p.is_daemon = daemon;
-    p.footprint = mem;
-    snprintf(p.name, sizeof(p.name), "%s", name);
-    return p;
-}
-
-static void test_triage_ordered(void)
-{
-    /* Small first, big last. The ranked (native) triage drops the protected
-     * name and self and puts the big one first; the trusted (script) path
-     * filters nothing and keeps the input order: the plugin owns that. */
-    psd_proc_t raw[5];
-    psd_proc_t out[8];
-    int        n;
-
-    raw[0] = rq_mk(10, "small", 1, 1);
-    raw[1] = rq_mk(11, "Dock", 1ULL << 32, 0);     /* protected */
-    raw[2] = rq_mk(12, "mid", 1ULL << 28, 1);
-    raw[3] = rq_mk(13, "big", 1ULL << 32, 0);
-    raw[4] = rq_mk(99, "self", 1ULL << 32, 0);
-    n = psd_select_triage(raw, 5, 501, 99, 0, out, 8);
-    RQ_CHECK(n == 3 && out[0].pid == 13);
-    n = psd_select_triage_ordered(raw, 5, 501, 99, 0, out, 8);
-    RQ_CHECK(n == 5);
-    RQ_CHECK(n == 5 && out[0].pid == 10 && out[1].pid == 11
-             && out[2].pid == 12 && out[3].pid == 13 && out[4].pid == 99);
-    raw[2].uid = 777;                               /* another user's: kept */
-    n = psd_select_triage_ordered(raw, 5, 501, 99, 0, out, 2);
-    RQ_CHECK(n == 2 && out[1].pid == 11);           /* the cut keeps the head */
-    n = psd_select_triage(raw, 5, 501, 99, 0, out, 8);
-    RQ_CHECK(n == 2);                               /* native: still filtered */
-}
-
 static int rq_write_exec(const char *path, const char *text)
 {
     FILE *f = fopen(path, "w");
@@ -344,7 +303,6 @@ void script_request_tests(int *checks_run, int *checks_failed)
     test_id_ok();
     test_header();
     test_poll_command();
-    test_triage_ordered();
     test_backend_request_roundtrip();
     test_mode_on_respond();
 }

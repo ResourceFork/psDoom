@@ -50,6 +50,17 @@
 
 static char script_poll_cmd[SCRIPT_CMD_MAX];
 static char script_respond_cmd[SCRIPT_CMD_MAX];
+
+/* A fixed responder argv (the bundled Summoner: python3 + summon), used
+ * instead of splitting script_respond_cmd on whitespace, so paths with
+ * spaces (an app in "/Applications/psDoom copy.app") stay one argument. */
+static char script_resp_fixed[2][SCRIPT_CMD_MAX];
+static int  script_resp_nfixed;
+
+/* Why there are no process monsters, once known ("" while all is well);
+ * set when the poll fails and logged once per failure streak. */
+static char script_status[160];
+static int  script_poll_failing;
 static int  script_timeout_ms = 1000;
 
 /* The last poll's entities, kept so a response can attach the entity's label
@@ -626,8 +637,12 @@ static void script_stop_group(pid_t pgid)
  * leader reaped, so no part of the command outlives the poll. Returns bytes
  * captured (>= 0), or -1 if the child could not be spawned.
  */
+/* 1 if the last capture was cut off (timeout, full buffer, error). */
+static int script_capture_cut;
+
 static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_ms)
 {
+    script_capture_cut = 0;
     int                fds[2];
     pid_t              pid;
     int                total = 0;
@@ -785,6 +800,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
         }
     }
 
+    script_capture_cut = 1;
     script_stop_group(pid);
     return total;
 }
@@ -831,16 +847,26 @@ static int script_run_respond(const char *verb, int id,
     {
         return 0;   /* 0, 1 and negatives are reserved: never a target */
     }
-    if (script_respond_cmd[0] == '\0')
+    if (script_respond_cmd[0] == '\0' && script_resp_nfixed == 0)
     {
         return 1;
     }
 
     /* Build argv before fork (snprintf is not async-signal-safe): the
-     * command and its static args from the configured string, then the
-     * psDoom-supplied arguments (the documented contract). */
-    snprintf(cmd, sizeof(cmd), "%s", script_respond_cmd);
-    n = script_split_cmd(cmd, argv, SCRIPT_ARGV_MAX - 7);
+     * command and its static args (a fixed argv, or the configured string
+     * split on whitespace), then the psDoom-supplied arguments. */
+    if (script_resp_nfixed > 0)
+    {
+        for (n = 0; n < script_resp_nfixed; n++)
+        {
+            argv[n] = script_resp_fixed[n];
+        }
+    }
+    else
+    {
+        snprintf(cmd, sizeof(cmd), "%s", script_respond_cmd);
+        n = script_split_cmd(cmd, argv, SCRIPT_ARGV_MAX - 7);
+    }
     if (n <= 0)
     {
         return 1;
@@ -937,13 +963,29 @@ static int script_list(psd_proc_t *out, int max)
         snprintf(cmd, sizeof(cmd), "%s", script_poll_cmd);
     }
 
-    if (script_run_capture(cmd, buf, sizeof(buf), script_timeout_ms) < 0)
+    if (script_run_capture(cmd, buf, sizeof(buf), script_timeout_ms) < 0
+        || (script_capture_cut && strchr(buf, '\n') == NULL))
     {
+        /* No process monsters until a poll works again; say why once. */
+        if (!script_poll_failing)
+        {
+            snprintf(script_status, sizeof(script_status),
+                     "No process monsters: Summoner did not answer");
+            fprintf(stderr, "psDoom: %s (poll: %s)\n", script_status,
+                    script_poll_cmd);
+        }
+        script_poll_failing = 1;
         script_last_n = 0;   /* state unknown: nothing counts as live */
         return 0;
     }
 
     n = psd_script_parse(buf, out, max);
+    if (script_poll_failing)
+    {
+        fprintf(stderr, "psDoom: Summoner answers again\n");
+        script_poll_failing = 0;
+        script_status[0]    = '\0';
+    }
     script_ndims = psd_script_parse_header(buf, script_dims,
                                            PSD_SCRIPT_DIMS_MAX, script_applied,
                                            sizeof(script_applied));
@@ -1023,6 +1065,9 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
              poll_cmd != NULL ? poll_cmd : "");
     snprintf(script_respond_cmd, sizeof(script_respond_cmd), "%s",
              respond_cmd != NULL ? respond_cmd : "");
+    script_resp_nfixed  = 0;
+    script_status[0]    = '\0';
+    script_poll_failing = 0;
     script_timeout_ms = (timeout_ms > 0) ? timeout_ms : 1000;
     script_last_n     = 0;
     script_ndims      = 0;
@@ -1043,7 +1088,7 @@ int proc_script_install_from_env(void)
 
     if (poll == NULL || poll[0] == '\0')
     {
-        return 0;   /* not configured: keep the native backend */
+        return 0;   /* not configured: the bundled Summoner is the default */
     }
 
     respond = getenv("PSDOOM_RESPOND_CMD");
@@ -1141,4 +1186,152 @@ int proc_script_set_mode(const char *mode)
     }
     snprintf(script_mode, sizeof(script_mode), "%s", mode);
     return 1;
+}
+
+/* ------------------------------------------------- the bundled Summoner */
+
+int psd_sh_quote(const char *in, char *out, size_t cap)
+{
+    size_t o = 0;
+    size_t i;
+
+    if (cap < 3)
+    {
+        return 0;
+    }
+    out[o++] = '\'';
+    for (i = 0; in[i] != '\0'; i++)
+    {
+        if (in[i] == '\'')
+        {
+            if (o + 4 >= cap)
+            {
+                return 0;
+            }
+            memcpy(out + o, "'\\''", 4);
+            o += 4;
+        }
+        else
+        {
+            if (o + 1 >= cap)
+            {
+                return 0;
+            }
+            out[o++] = in[i];
+        }
+    }
+    if (o + 2 > cap)
+    {
+        return 0;
+    }
+    out[o++] = '\'';
+    out[o] = '\0';
+    return 1;
+}
+
+int psd_summon_bundle_path(const char *exe, char *out, size_t cap)
+{
+    const char *slash;
+    size_t      dirlen;
+
+    if (exe == NULL || exe[0] != '/' || (slash = strrchr(exe, '/')) == NULL)
+    {
+        return 0;
+    }
+    dirlen = (size_t) (slash - exe);
+    /* <bundle>/Contents/MacOS/<exe> -> <bundle>/Contents/Resources/... */
+    if (dirlen < 6 || strncmp(slash - 6, "/MacOS", 6) != 0)
+    {
+        return 0;
+    }
+    return snprintf(out, cap, "%.*s/Resources/summoner/summon",
+                    (int) (dirlen - 6), exe) < (int) cap;
+}
+
+/* Interpreters tried, in order. /usr/bin/python3 is never used: on a Mac
+ * without the Command Line Tools it is a shim that pops an install dialog
+ * (every poll would raise it). The real python3 the Command Line Tools or
+ * Xcode install is used directly instead. */
+static const char *const psd_python_candidates[] =
+{
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+    "/Library/Developer/CommandLineTools/usr/bin/python3",
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+    NULL,
+};
+
+int psd_python_choose(int (*usable)(const char *path), char *out, size_t cap)
+{
+    int i;
+
+    for (i = 0; psd_python_candidates[i] != NULL; i++)
+    {
+        if (usable(psd_python_candidates[i]))
+        {
+            return snprintf(out, cap, "%s", psd_python_candidates[i])
+                   < (int) cap;
+        }
+    }
+    return 0;
+}
+
+static int script_executable(const char *path)
+{
+    return access(path, X_OK) == 0;
+}
+
+static int script_readable(const char *path)
+{
+    return access(path, R_OK) == 0;
+}
+
+int proc_script_install_bundled(const char *exe_path)
+{
+    char summon[SCRIPT_CMD_MAX];
+    char python[SCRIPT_CMD_MAX];
+    char qpy[SCRIPT_CMD_MAX];
+    char qsummon[SCRIPT_CMD_MAX];
+    char poll[SCRIPT_CMD_MAX];
+
+    proc_backend_set(&proc_none_backend);
+    if (!psd_summon_bundle_path(exe_path, summon, sizeof(summon))
+        || !script_readable(summon))
+    {
+        snprintf(script_status, sizeof(script_status),
+                 "No process monsters: Summoner is missing from the app");
+        fprintf(stderr, "psDoom: %s (looked for %s)\n", script_status,
+                exe_path != NULL ? summon : "(no executable path)");
+        return 0;
+    }
+    if (!psd_python_choose(script_executable, python, sizeof(python)))
+    {
+        snprintf(script_status, sizeof(script_status),
+                 "No process monsters: Summoner needs python3");
+        fprintf(stderr, "psDoom: %s (install Homebrew python3, or the "
+                "Command Line Tools: xcode-select --install)\n",
+                script_status);
+        return 0;
+    }
+    if (!psd_sh_quote(python, qpy, sizeof(qpy))
+        || !psd_sh_quote(summon, qsummon, sizeof(qsummon))
+        || snprintf(poll, sizeof(poll), "%s %s get", qpy, qsummon)
+           >= (int) sizeof(poll))
+    {
+        snprintf(script_status, sizeof(script_status),
+                 "No process monsters: the app path is too long");
+        fprintf(stderr, "psDoom: %s\n", script_status);
+        return 0;
+    }
+    proc_script_install(poll, NULL, 0);
+    snprintf(script_resp_fixed[0], sizeof(script_resp_fixed[0]), "%s", python);
+    snprintf(script_resp_fixed[1], sizeof(script_resp_fixed[1]), "%s", summon);
+    script_resp_nfixed = 2;
+    fprintf(stderr, "psDoom: Summoner active (%s %s)\n", python, summon);
+    return 1;
+}
+
+const char *proc_script_status(void)
+{
+    return script_status[0] ? script_status : NULL;
 }

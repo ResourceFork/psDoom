@@ -1,25 +1,42 @@
 /*
- * psDoom -- process backend selection.
+ * psDoom -- backend selection.
  *
- * Holds the pointer to the active backend and defaults it to the platform's
- * native implementation. Tests (and a future replay backend) call
- * proc_backend_set() to swap it.
+ * Holds the pointer to the active backend. psDoom has no native process
+ * backend: the only path to real processes is Summoner, through the script
+ * backend (proc_script.c). Until one is installed -- or if Summoner cannot
+ * run -- the default is an inert backend that lists nothing and acts on
+ * nothing. Tests call proc_backend_set() to swap in the fake backend.
  */
 
 #include "proc_backend.h"
 
 #include <stddef.h>   /* NULL    */
 #include <string.h>   /* strncmp */
+#include <unistd.h>   /* getuid  */
 
-#if defined(__APPLE__) && !defined(PSD_NO_NATIVE_BACKEND)
-/* The native macOS backend (defined in platform/macos/proc_macos.c). */
-extern const proc_backend_t proc_macos_backend;
-static const proc_backend_t *g_default_backend = &proc_macos_backend;
-#else
-/* No native backend compiled in (e.g. a host-only test build, or a platform
- * without a backend yet). Callers must proc_backend_set() one before use. */
-static const proc_backend_t *g_default_backend = NULL;
-#endif
+static int          none_list(psd_proc_t *out, int max)
+{
+    (void) out;
+    (void) max;
+    return 0;
+}
+static unsigned int none_current_uid(void) { return (unsigned int) getuid(); }
+static void         none_renice(int pid, int nice_delta) { (void) pid; (void) nice_delta; }
+static int          none_kill(int pid) { (void) pid; return 0; }
+static int          none_lookup(int pid, psd_proc_t *out) { (void) pid; (void) out; return 0; }
+
+/* Lists nothing, acts on nothing: no process monsters, no process effects. */
+const proc_backend_t proc_none_backend =
+{
+    none_list,
+    none_current_uid,
+    none_renice,
+    none_kill,
+    none_lookup,
+    0,
+};
+
+static const proc_backend_t *g_default_backend = &proc_none_backend;
 
 static const proc_backend_t *g_backend; /* NULL => use the default */
 

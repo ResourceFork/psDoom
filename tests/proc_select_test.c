@@ -2,16 +2,12 @@
  * psDoom -- proc_select / backend host tests.
  *
  * Engine-free: links proc_select, proc_backend, the fake and script backends
- * and, on macOS, the native backend for READ-ONLY listing/lookup checks (it
- * never kills anything, and its renice reaches only this binary's
- * getpriority/setpriority seam, never the OS), so the triage policy, the
- * pid-reuse guard and the backend plumbing are exercised deterministically
- * off-machine (no Doom engine), and so are the process-monster lifecycle rules
- * (psdoom_lifecycle: what a save keeps, how a monster leaves). The script
- * tests spawn only their own poll and respond commands and never signal
- * anything. proc_select calls one
- * option getter (psdoom_all_users_enabled); we stub it here rather than link
- * the engine-coupled options module. The launcher's IWAD selection tests
+ * (psDoom has no native process backend: Summoner is the only path to real
+ * processes), so selection, the identity guard and the backend plumbing are
+ * exercised deterministically off-machine (no Doom engine), and so are the
+ * process-monster lifecycle rules (psdoom_lifecycle: what a save keeps, how
+ * a monster leaves). The script tests spawn only their own poll and respond
+ * commands and never signal anything. The launcher's IWAD selection tests
  * (iwad_select_test.c) run from the same binary.
  *
  * Returns 0 if every check passes, 1 otherwise.
@@ -22,9 +18,6 @@
 #include "proc_fake.h"
 #include "proc_script.h"
 #include "psdoom_lifecycle.h"
-#ifdef __APPLE__
-#include "proc_macos.h"   /* read-only listing/lookup check */
-#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,19 +27,17 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/resource.h> /* getpriority / setpriority (link-time seam) */
+#include <sys/resource.h> /* RLIMIT_NOFILE (the fd tests) */
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>     /* waitpid (reap our own zombie child) */
 
-/* ---- stub for the one option getter proc_select references --------------- */
-static int stub_all_users;
-int psdoom_all_users_enabled(void) { return stub_all_users; }
 
 void iwad_select_tests(int *checks_run, int *checks_failed); /* iwad_select_test.c */
 void summoner_e2e_tests(int *checks_run, int *checks_failed); /* summoner_e2e_test.c */
 void script_grade_tests(int *checks_run, int *checks_failed); /* script_grade_test.c */
 void script_request_tests(int *checks_run, int *checks_failed); /* script_request_test.c */
+void summoner_bundle_tests(int *checks_run, int *checks_failed); /* summoner_bundle_test.c */
 
 /* ---- tiny check harness -------------------------------------------------- */
 static int checks_run;
@@ -91,96 +82,31 @@ static psd_proc_t mkproc(int pid, int ppid, unsigned int uid, int daemon,
 
 /* ---- tests --------------------------------------------------------------- */
 
-/* The pure triage core: ownership, self, pid<=1, protected names and the
- * launcher chain are excluded; the survivors are ranked by relevance. */
-static void test_triage_filters_and_ranking(void)
-{
-    /* self = pid 100, launched by zsh(90) under Terminal(80). */
-    psd_proc_t raw[] = {
-        mkproc(1,   0,   501, 1, 0,            "launchd"),    /* pid<=1 + protected */
-        mkproc(100, 90,  501, 0, 0,            "psDoom"),     /* self               */
-        mkproc(90,  80,  501, 1, 0,            "zsh"),        /* launcher chain     */
-        mkproc(80,  1,   501, 1, 0,            "Terminal"),   /* launcher chain     */
-        mkproc(200, 80,  501, 0, 64ULL << 20, "vim"),        /* interactive: keep  */
-        mkproc(201, 1,   501, 1, 0,            "syslogd"),    /* daemon: keep       */
-        mkproc(202, 1,   999, 0, 0,            "otherapp"),   /* other user         */
-        mkproc(203, 1,   501, 0, 0,            "Dock"),       /* protected          */
-    };
-    int n_raw = (int) (sizeof(raw) / sizeof(raw[0]));
-    psd_proc_t out[16];
-    int n;
-
-    n = psd_select_triage(raw, n_raw, /*uid*/501, /*self*/100, /*all_users*/0,
-                          out, 16);
-
-    /* Exactly the two keepers survive. */
-    CHECK(n == 2);
-    CHECK(index_of(out, n, 200) >= 0);   /* vim kept     */
-    CHECK(index_of(out, n, 201) >= 0);   /* syslogd kept */
-
-    /* Everything else excluded. */
-    CHECK(index_of(out, n, 1)   < 0);    /* launchd / pid<=1 */
-    CHECK(index_of(out, n, 100) < 0);    /* self             */
-    CHECK(index_of(out, n, 90)  < 0);    /* launcher: zsh    */
-    CHECK(index_of(out, n, 80)  < 0);    /* launcher: term   */
-    CHECK(index_of(out, n, 202) < 0);    /* other user       */
-    CHECK(index_of(out, n, 203) < 0);    /* protected: Dock  */
-
-    /* Interactive (vim) outranks the daemon (syslogd). */
-    CHECK(index_of(out, n, 200) < index_of(out, n, 201));
-}
-
-/* all_users=1 keeps other users' processes (but still drops self / pid<=1 /
- * protected). */
-static void test_triage_all_users(void)
-{
-    psd_proc_t raw[] = {
-        mkproc(200, 80, 501, 0, 0, "vim"),
-        mkproc(202, 1,  999, 0, 0, "otherapp"),
-    };
-    psd_proc_t out[8];
-    int n = psd_select_triage(raw, 2, 501, 100, /*all_users*/1, out, 8);
-
-    CHECK(n == 2);
-    CHECK(index_of(out, n, 202) >= 0);   /* other user now kept */
-}
-
-/* Truncation honors `max`, keeping the most relevant. */
-static void test_triage_truncation(void)
-{
-    psd_proc_t raw[] = {
-        mkproc(200, 1, 501, 0, 0, "vim"),       /* interactive (higher) */
-        mkproc(201, 1, 501, 1, 0, "syslogd"),   /* daemon    (lower)    */
-    };
-    psd_proc_t out[1];
-    int n = psd_select_triage(raw, 2, 501, 100, 0, out, 1);
-
-    CHECK(n == 1);
-    CHECK(out[0].pid == 200);            /* the interactive one survives */
-}
-
-/* psd_select_collect pulls through the active (fake) backend, and the fake's
- * action log records renice/kill exactly as the game would drive them. */
+/* psd_select_collect keeps the backend's order and filters nothing (psDoom
+ * trusts Summoner's plugin), and the fake's action log records renice/kill
+ * exactly as the game would drive them. */
 static void test_collect_and_action_log(void)
 {
     psd_proc_t snap[] = {
         mkproc(300, 1, 501, 0, 0, "firefox"),
-        mkproc(301, 1, 999, 0, 0, "rootthing"),   /* other user: excluded */
-        mkproc(302, 1, 501, 0, 0, "bash"),
+        mkproc(301, 1, 999, 0, 0, "rootthing"),   /* another uid: kept */
+        mkproc(302, 1, 501, 0, 0, "Dock"),        /* protected name: kept */
+        mkproc(303, 1, 501, 0, 1ULL << 33, "big"),
     };
     psd_proc_t out[16];
     int n;
 
     proc_fake_install(/*uid*/501);
-    stub_all_users = 0;
-    proc_fake_push_snapshot(snap, 3);
-    psd_select_init();                   /* picks up uid 501 from the fake */
+    proc_fake_push_snapshot(snap, 4);
+    psd_select_init();
 
     n = psd_select_collect(out, 16);
-    CHECK(n == 2);                        /* firefox + bash; rootthing dropped */
-    CHECK(index_of(out, n, 300) >= 0);
-    CHECK(index_of(out, n, 302) >= 0);
-    CHECK(index_of(out, n, 301) < 0);
+    CHECK(n == 4);
+    CHECK(n == 4 && out[0].pid == 300 && out[1].pid == 301
+          && out[2].pid == 302 && out[3].pid == 303);   /* no re-rank */
+    proc_fake_push_snapshot(snap, 4);
+    n = psd_select_collect(out, 2);
+    CHECK(n == 2 && out[0].pid == 300 && out[1].pid == 301);   /* the head */
 
     /* The action ops the game uses are logged by the fake. */
     proc_backend()->renice(300, 4);
@@ -206,7 +132,6 @@ static void test_child_count(void)
     psd_proc_t out[16];
 
     proc_fake_install(501);
-    stub_all_users = 0;
     proc_fake_push_snapshot(snap, 5);
     psd_select_init();
     (void) psd_select_collect(out, 16);   /* populates the raw snapshot */
@@ -365,7 +290,6 @@ static void test_script_backend_roundtrip(void)
     write_executable(respond, respond_content);
 
     proc_script_install(poll, respond, 1000);
-    stub_all_users = 0;
     psd_select_init();   /* picks up uid via the script backend */
 
     n = psd_select_collect(out, 16);
@@ -792,7 +716,6 @@ static void list_one(const psd_proc_t *p)
     psd_proc_t out[4];
 
     proc_fake_install(501);
-    stub_all_users = 0;
     proc_fake_push_snapshot(p, 1);
     psd_select_init();
     (void) psd_select_collect(out, 4);
@@ -961,133 +884,6 @@ static void test_legacy_process_monster(void)
     CHECK(!psd_legacy_process_monster(1, 0, 0, 0));    /* a player             */
 }
 
-#ifdef __APPLE__
-/* The native backend, exercised READ-ONLY: listing and lookup capture a start
- * time that agrees between the two. Never renices or kills anything. */
-static void test_macos_start_token_readonly(void)
-{
-    static psd_proc_t all[8192];
-    psd_proc_t        cur;
-    int               self = (int) getpid();
-    int               n    = proc_macos_list(all, 8192);
-    int               i    = index_of(all, n, self);
-
-    CHECK(n > 0);
-    CHECK(i >= 0);
-    CHECK(proc_macos_lookup(self, &cur) == 1);
-    CHECK(cur.start_token != 0);
-    if (i >= 0)
-    {
-        CHECK(all[i].start_token == cur.start_token);
-        CHECK(psd_proc_same(&cur, self, all[i].start_token, all[i].name));
-    }
-    CHECK(proc_macos_lookup((int) getppid(), &cur) == 1);
-    CHECK(proc_macos_lookup(999999, &cur) == 0);   /* above macOS PID_MAX */
-    CHECK(proc_macos_lookup(-1, &cur) == 0);
-}
-
-/* list() and lookup() agree about an unreaped zombie (our own child, which
- * exits at once and is reaped here; nothing is signalled): it is still the
- * same process until reaped, then it is gone. */
-static void test_macos_zombie_readonly(void)
-{
-    static psd_proc_t all[8192];
-    psd_proc_t        cur;
-    pid_t             child = fork();
-    int               n;
-    int               i;
-
-    if (child == 0)
-    {
-        _exit(0);
-    }
-    CHECK(child > 0);
-    if (child <= 0)
-    {
-        return;
-    }
-    usleep(200000);   /* let it exit; we have not reaped it, so it is a zombie */
-
-    n = proc_macos_list(all, 8192);
-    i = index_of(all, n, (int) child);
-    CHECK(i >= 0);
-    CHECK(proc_macos_lookup((int) child, &cur) == 1);
-    if (i >= 0)
-    {
-        CHECK(psd_proc_same(&cur, (int) child, all[i].start_token, all[i].name));
-    }
-
-    waitpid(child, NULL, 0);
-    CHECK(proc_macos_lookup((int) child, &cur) == 0);
-}
-
-/* Link-time seam: these definitions take the place of libSystem's
- * getpriority/setpriority for this test binary only, so the native renice is
- * observed without changing the priority of any real process. Nothing else in
- * this binary calls them. */
-static int   seam_setpriority_calls;
-static id_t  seam_setpriority_who;
-
-int getpriority(int which, id_t who)
-{
-    (void) which;
-    (void) who;
-    errno = 0;
-    return 0;
-}
-
-int setpriority(int which, id_t who, int prio)
-{
-    (void) which;
-    (void) prio;
-    seam_setpriority_calls++;
-    seam_setpriority_who = who;
-    return 0;
-}
-
-extern const proc_backend_t proc_macos_backend;
-
-/* The native renice refuses pid <= 1, as the native kill does, both raw and
- * through the checked wrapper. */
-static void test_macos_renice_refuses_reserved(void)
-{
-    static const int bad[] = { 1, 0, -1, INT_MIN };
-    size_t           i;
-
-    /* Control first: a valid pid (our own, delta 0) must reach the seam. If
-     * it does not, the seam is not in effect, and renicing pid 1 below could
-     * reach the OS, so stop here. */
-    seam_setpriority_calls = 0;
-    proc_macos_renice((int) getpid(), 0);
-    CHECK(seam_setpriority_calls == 1);
-    CHECK(seam_setpriority_who == (id_t) getpid());
-    if (seam_setpriority_calls != 1)
-    {
-        fprintf(stderr, "  setpriority seam not in effect; skipping pid <= 1 calls\n");
-        return;
-    }
-
-    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
-    {
-        seam_setpriority_calls = 0;
-        proc_macos_renice(bad[i], 4);
-        CHECK(seam_setpriority_calls == 0);
-        if (seam_setpriority_calls != 0)
-        {
-            fprintf(stderr, "  native renice reached setpriority for pid %d\n", bad[i]);
-        }
-    }
-
-    proc_backend_set(&proc_macos_backend);
-    seam_setpriority_calls = 0;
-    CHECK(psd_proc_renice_checked(1, 0ULL, "launchd", 4) == PSD_ACT_REFUSED);
-    CHECK(psd_proc_renice_checked(0, 0ULL, "kernel_task", 4) == PSD_ACT_REFUSED);
-    CHECK(psd_proc_renice_checked(-1, 0ULL, "", 4) == PSD_ACT_REFUSED);
-    CHECK(seam_setpriority_calls == 0);
-    proc_backend_set(NULL);
-}
-#endif
-
 int main(int argc, char **argv)
 {
     /* fd probe mode: run as the poll command (prints one entity whose label
@@ -1120,9 +916,6 @@ int main(int argc, char **argv)
         g_self[0] = '\0';
     }
 
-    test_triage_filters_and_ranking();
-    test_triage_all_users();
-    test_triage_truncation();
     test_collect_and_action_log();
     test_child_count();
     test_script_parse();
@@ -1146,13 +939,9 @@ int main(int argc, char **argv)
     test_end_action();
     test_end_reason();
     test_legacy_process_monster();
-#ifdef __APPLE__
-    test_macos_start_token_readonly();
-    test_macos_zombie_readonly();
-    test_macos_renice_refuses_reserved();
-#endif
     script_grade_tests(&checks_run, &checks_failed);
     script_request_tests(&checks_run, &checks_failed);
+    summoner_bundle_tests(&checks_run, &checks_failed);
     summoner_e2e_tests(&checks_run, &checks_failed);
     iwad_select_tests(&checks_run, &checks_failed);
 

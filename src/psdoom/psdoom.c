@@ -8,7 +8,7 @@
  * returns into monsters and keeps them reconciled with the live set. Wounding
  * a process-monster renices its process; killing it sends SIGTERM.
  *
- *     proc_macos  ->  proc_select  ->  psdoom (here)
+ *     Summoner (proc_script)  ->  proc_select  ->  psdoom (here)
  *     (read OS)       (triage)         (spawn/reconcile/wound/kill/label)
  *
  * Engine integration points (see third_party/README.md):
@@ -33,6 +33,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>   /* _NSGetExecutablePath: find the bundled Summoner */
+#endif
+#include <limits.h>        /* PATH_MAX */
+#include <stdlib.h>        /* realpath */
 
 #include "doomtype.h"
 #include "doomdef.h"
@@ -992,13 +998,56 @@ int psdoom_intro_active(void)
     return psd_intro_state == PSD_INTRO_ACTIVE;
 }
 
+/* The bundled Summoner, found from this engine's own executable path. */
+static boolean PSD_InstallBundledSummoner(void)
+{
+    char exe[PATH_MAX];
+    char real[PATH_MAX];
+
+#ifdef __APPLE__
+    uint32_t size = sizeof(exe);
+
+    if (_NSGetExecutablePath(exe, &size) != 0 || realpath(exe, real) == NULL)
+    {
+        return proc_script_install_bundled(NULL) != 0;
+    }
+    return proc_script_install_bundled(real) != 0;
+#else
+    (void) exe;
+    (void) real;
+    return proc_script_install_bundled(NULL) != 0;
+#endif
+}
+
+/* Say once, on screen, why there are no process monsters. */
+static void PSD_ShowStatus(void)
+{
+    static char shown[160];
+    const char *why = proc_script_status();
+
+    if (why == NULL)
+    {
+        shown[0] = '\0';
+        return;
+    }
+    if (strcmp(shown, why) != 0 && playeringame[consoleplayer])
+    {
+        snprintf(shown, sizeof(shown), "%s", why);
+        players[consoleplayer].message = shown;
+    }
+}
+
 void psdoom_init(void)
 {
     /* If PSDOOM_POLL_CMD is set, swap the native OS backend for the external
      * script backend before anything reads the process list or the uid. */
-    if (proc_script_install_from_env())
+    /* Summoner is the only path to real processes. PSDOOM_POLL_CMD (and
+     * PSDOOM_RESPOND_CMD) override it for development; otherwise the copy
+     * bundled in Contents/Resources/summoner runs. If it cannot, psDoom
+     * shows no process monsters and touches nothing (proc_none_backend). */
+    if (proc_script_install_from_env() || PSD_InstallBundledSummoner())
     {
-        /* Ask a curating backend for as many candidates as triage keeps. */
+        /* Ask the curating backend for as many candidates as we keep. */
         proc_script_set_limit(PSD_CANDIDATE_CAP);
     }
 
@@ -1177,6 +1226,7 @@ void psdoom_sync(void)
     /* Ask the triage layer for the curated, ranked, truncated collection. */
     n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
     psd_selected_n = n;
+    PSD_ShowStatus();
     psd_collect_count++;
 
     psd_fog_sound_played = false;
@@ -1257,7 +1307,9 @@ void psdoom_wound(struct mobj_s *target)
     {
         proc_script_set_mode(PSD_ScriptMode());
     }
-    if (mo != NULL && mo->psd_pid > 1 && (script || psdoom_should_renice()))
+    /* Only Summoner acts on processes; with no Summoner there is nothing
+     * to tell. */
+    if (mo != NULL && mo->psd_pid > 1 && script)
     {
         psd_act_result_t r;
 
@@ -1305,7 +1357,7 @@ void psdoom_kill(struct mobj_s *target)
     {
         proc_script_set_mode(PSD_ScriptMode());
     }
-    if (proc_script_active() || psdoom_should_kill())
+    if (proc_script_active())
     {
         psd_act_result_t r;
 

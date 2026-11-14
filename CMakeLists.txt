@@ -18,7 +18,7 @@ set(CMAKE_XCODE_GENERATE_SCHEME ON)
 #   third_party/crispy-doom/  vendored engine, kept pristine (built here)
 #   src/app/macos/            the .app launcher (this bundle's executable)
 #   src/psdoom/               process<->monster game logic        (added later)
-#   src/platform/macos/       native libproc/renice/kill backend  (added later)
+#   summoner/                 Summoner, bundled: the only path to real processes
 #
 # Build (command line):
 #   tools/fetch-freedoom.sh              # once: the bundled Freedoom IWAD
@@ -48,13 +48,11 @@ target_sources(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_options.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_menu.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c")
 target_compile_definitions(doom PRIVATE PSD_BUILD_ID=\"${PSD_BUILD_ID}\")
 target_include_directories(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src/doom")
 
@@ -192,10 +190,30 @@ if(PSDOOM_BUNDLE_FREEDOOM)
     string(APPEND _PSD_LINK_DEPENDS
         ";${_PSD_FREEDOOM_WAD};${_PSD_FREEDOOM_COPYING};${_PSD_FREEDOOM_CREDITS};${_PSD_FREEDOOM_MUSIC}")
 endif()
+# Summoner, bundled: the command, its core and its built-in plugins (not its
+# tests). It is the only path psDoom has to real processes.
+set(_PSD_SUMMONER_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/summoner/summon"
+    "${CMAKE_CURRENT_SOURCE_DIR}/summoner/summoner.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/summoner/README.md")
+file(GLOB _PSD_SUMMONER_PLUGINS "${CMAKE_CURRENT_SOURCE_DIR}/summoner/plugins/*.py")
+string(APPEND _PSD_LINK_DEPENDS ";${_PSD_SUMMONER_FILES};${_PSD_SUMMONER_PLUGINS}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/summoner/plugins")
 set_target_properties(psDoom PROPERTIES LINK_DEPENDS "${_PSD_LINK_DEPENDS}")
 
 set(_PSD_MACOS_DIR "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/MacOS")
 set(_PSD_RES_DIR   "$<TARGET_BUNDLE_CONTENT_DIR:psDoom>/Resources")
+
+add_custom_command(TARGET psDoom POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_PSD_RES_DIR}/summoner"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_PSD_RES_DIR}/summoner/plugins"
+    COMMAND ${CMAKE_COMMAND} -E copy ${_PSD_SUMMONER_FILES}
+        "${_PSD_RES_DIR}/summoner/"
+    COMMAND ${CMAKE_COMMAND} -E copy ${_PSD_SUMMONER_PLUGINS}
+        "${_PSD_RES_DIR}/summoner/plugins/"
+    VERBATIM
+)
 
 add_custom_command(TARGET psDoom POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_PSD_RES_DIR}"
@@ -266,6 +284,7 @@ add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/summoner_e2e_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_grade_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_request_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/summoner_bundle_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_grade.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos/iwad_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
@@ -273,7 +292,7 @@ add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_fake.c")
-target_compile_definitions(psdoom_tests PRIVATE PSD_NO_NATIVE_BACKEND
+target_compile_definitions(psdoom_tests PRIVATE
     # summoner_e2e_test.c: run summoner/ through the script backend on a CSV
     # it writes under the build tree (never the home directory).
     PSD_PYTHON3="${Python3_EXECUTABLE}"
@@ -283,16 +302,6 @@ target_include_directories(psdoom_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos")
-if(APPLE)
-    # Linked for read-only listing/lookup checks and the renice pid <= 1 check;
-    # the tests never call the native kill, and the native renice reaches only
-    # the test binary's own getpriority/setpriority seam, never the OS.
-    target_sources(psdoom_tests PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/proc_macos.c")
-    target_include_directories(psdoom_tests PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos")
-endif()
-
 add_test(NAME psdoom_tests COMMAND psdoom_tests)
 
 # Summoner (summoner/) and its plugins, with an explicit scratch root in
@@ -301,6 +310,18 @@ add_test(NAME psdoom_summoner_tests
     COMMAND ${Python3_EXECUTABLE} -I
             "${CMAKE_CURRENT_SOURCE_DIR}/summoner/tests/run_tests.py"
             --scratch "${CMAKE_CURRENT_BINARY_DIR}/summoner-tests")
+
+# psDoom itself never reads, renices or signals real processes: Summoner is
+# the only path (static scan of src/).
+add_test(NAME psdoom_no_native_process_access
+    COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/no_native_process_access.cmake")
+
+# The built app bundles Summoner, and the bundled copy runs (read-only).
+add_test(NAME psdoom_app_bundle
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_bundle_test.sh"
+            "$<TARGET_BUNDLE_DIR:psDoom>"
+            "${CMAKE_CURRENT_BINARY_DIR}/app-bundle-test")
 
 # The reference scripts honour mode= and the poller skips its calling chain
 # (stubbed copies: nothing is signalled).

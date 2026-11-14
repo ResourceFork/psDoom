@@ -7,7 +7,7 @@
  * backend-agnostic, and lets a test swap in a deterministic fake backend -- or
  * a future Linux backend drop in -- with no changes above this interface.
  *
- *     proc_backend (this)  <-  proc_macos / proc_fake / proc_linux ...
+ *     proc_backend (this)  <-  proc_script (Summoner) / proc_fake (tests) / none
  *            ^
  *            |  proc_backend()->list(...), psd_proc_*_checked(...)
  *     proc_select, psdoom
@@ -55,7 +55,10 @@ typedef struct
     int          preserves_order;
 } proc_backend_t;
 
-/* The backend in effect. Never NULL on a supported platform. */
+/* The inert backend: lists nothing, acts on nothing (the default). */
+extern const proc_backend_t proc_none_backend;
+
+/* The backend in effect. Never NULL. */
 const proc_backend_t *proc_backend(void);
 
 /* Override the active backend (tests / a future replay backend). Passing NULL

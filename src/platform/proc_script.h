@@ -94,6 +94,34 @@ void proc_script_cycle_sort(int dir);
  * default after install is "dryrun". */
 int proc_script_set_mode(const char *mode);
 
+/* ---- the bundled Summoner (the default backend) ---------------------- */
+
+/* Pure: the bundled `summon` for an executable at
+ * <bundle>/Contents/MacOS/<exe>: <bundle>/Contents/Resources/summoner/summon.
+ * Returns 0 if `exe` is not absolute or not inside Contents/MacOS. */
+int psd_summon_bundle_path(const char *exe, char *out, size_t cap);
+
+/* Pure: the first usable python3 (Homebrew, then the real Command Line Tools
+ * or Xcode python3; never the /usr/bin/python3 install shim), as judged by
+ * `usable`. Returns 0 if none is. */
+int psd_python_choose(int (*usable)(const char *path), char *out, size_t cap);
+
+/* Pure: `in` single-quoted for sh. Returns 0 if it does not fit. */
+int psd_sh_quote(const char *in, char *out, size_t cap);
+
+/*
+ * Install the bundled Summoner as the backend: poll `python3 summon get`
+ * (quoted, via sh), respond with the argv [python3, summon, verb, id, ...].
+ * If the bundle or python3 is missing, installs the inert backend instead
+ * (no process monsters, no process effects), records why in
+ * proc_script_status() and logs it once. Returns 1 if Summoner is in use.
+ */
+int proc_script_install_bundled(const char *exe_path);
+
+/* Why there are no process monsters (missing Summoner, no python3, a poll
+ * that failed), or NULL while all is well. */
+const char *proc_script_status(void);
+
 #ifdef __cplusplus
 }
 #endif

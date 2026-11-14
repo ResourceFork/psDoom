@@ -30,7 +30,6 @@ enum
     psd_row_killpolicy,
     psd_row_monstercap,
     psd_row_classify,
-    psd_row_allusers,
     psd_row_showlabels,
     psd_row_showpid,
     psd_row_labelrange,
@@ -39,9 +38,9 @@ enum
 
 static const char *const psd_killpolicy_names[PSD_KILL_NUM] =
 {
-    "none (just a game)",
-    "renice (no kill)",
-    "renice + KILL",
+    "none (dry run)",
+    "post only (renice)",
+    "post + delete (KILL)",
 };
 
 static const char *const psd_labelrange_names[PSD_LABELRANGE_NUM] =
@@ -69,7 +68,6 @@ static menuitem_t PsDoomMenu[] =
     {3, "", psdoom_opt_cycle_killpolicy,  'k'},
     {3, "", psdoom_opt_adjust_monstercap, 'm'},
     {3, "", psdoom_opt_cycle_classifyby,  'c'},
-    {3, "", psdoom_opt_toggle_allusers,   'a'},
     {3, "", psdoom_opt_toggle_labels,     'l'},
     {3, "", psdoom_opt_toggle_pid,        'i'},
     {3, "", psdoom_opt_cycle_labelrange,  'd'},
@@ -114,7 +112,7 @@ static void M_DrawPsDoom(void)
             psdoom_kill_policy == PSD_KILL_SIMULATE ? crstr[CR_GRAY] :
                                                       crstr[CR_GREEN];
         char buf[80];
-        snprintf(buf, sizeof(buf), "%sEffect on real processes: %s%s",
+        snprintf(buf, sizeof(buf), "%sEffect via Summoner: %s%s",
                  crstr[CR_NONE], vc, psd_killpolicy_names[psdoom_kill_policy]);
         M_WriteText(PSD_MENU_X, PSD_MENU_Y + psd_row_killpolicy * PSD_MENU_LH, buf);
     }
@@ -137,8 +135,6 @@ static void M_DrawPsDoom(void)
                 psd_classify_names[psdoom_classify_by], 1, 1);
     }
 
-    PSD_Row(psd_row_allusers, "Target all users' processes",
-            psdoom_all_users ? "on" : "off", 1, psdoom_all_users);
     PSD_Row(psd_row_showlabels, "Show process labels",
             psdoom_show_labels ? "on" : "off", 1, psdoom_show_labels);
     PSD_Row(psd_row_showpid, "Show PID in label",
