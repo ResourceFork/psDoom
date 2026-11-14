@@ -975,6 +975,38 @@ class CliTests(Base):
         self.assertEqual(len(lists), 1)          # no respawn per poll
         self.assertLess(took, 3 * 0.7)           # and no 700 ms wait each
 
+    def test_unknown_chain_fails_closed(self):
+        from unittest import mock
+        self.named("pids", [{"key": "p", "name": "Proc", "pid": 4242},
+                            {"key": "row", "name": "Row"}])
+        self.r("use", "pids")
+        self.wait_rows()               # a cache exists
+        cfg = H.load_named(self.hroot, "pids")
+        with mock.patch.object(H, "ancestor_pids", return_value=None), \
+                mock.patch.object(H, "spawn_refresher"), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            H.cmd_poll(cfg)
+        labels = [r["label"] for r in parse_v1(out.getvalue())]
+        self.assertEqual(labels, ["Row"])     # nothing with a pid
+
+    def test_dirty_cache_does_not_rearm_a_failing_refresh(self):
+        spec = self.dims_spec()
+        spec["list_fail"] = True
+        self.named("bad", [{"key": "a"}], spec=spec, cache_ttl_s=30)
+        self.r("use", "bad")
+        self.r("get")
+        self._reap_refresher(self.configs[-1])
+        state = os.path.join(self.hroot, "state", "bad")
+        self.assertTrue(os.path.exists(os.path.join(state, "refresh.failed")))
+        dirty = os.path.join(state, "dirty")
+        open(dirty, "w").close()
+        os.utime(dirty, (time.time() - 60, time.time() - 60))   # an old action
+        for _ in range(3):
+            self.r("get")
+        self._reap_refresher(self.configs[-1])
+        lists = [c for c in self.calls() if c and c[0] == "list"]
+        self.assertEqual(len(lists), 1)
+
     def test_get_never_serves_its_own_calling_chain(self):
         # Items naming the test process (which runs `summon get`) are
         # dropped at serve time, even from a cache built for another caller.

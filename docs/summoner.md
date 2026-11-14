@@ -134,6 +134,7 @@ or `relative` (the default). The `meaning` strings are for people (`describe` pr
 | `grade` | number 0..1 | no | Where the item sits on the requested primary dimension (1 = the best end of its direction). Clamped. It picks the monster. Missing: Summoner computes it from `values[primary]`, else from size, load or position. |
 | `values` | object | no | The item's raw value per numeric dimension id (for a missing grade, and for people reading `describe`). |
 | `group` | string | no | The item's group when the host asked for `group=`; Summoner trims it like a label. |
+| `pid` | integer > 1 | no | The local process the item stands for. Each `get` drops items whose pid is in its own calling chain (fail-closed: if the chain cannot be read, no item with a pid is served). Must be a JSON integer; a string is ignored. |
 | `size` | number ≥ 0 | no | The poll's `weight` (bytes, or scaled). If no item has a size, the position decides (first = biggest). |
 | `load` | number ≥ 0 | no | The poll's `load`. |
 | `parent` | string | no | Key of a parent item (fork-bomb grouping). Unknown parents become `0`. |
@@ -455,6 +456,9 @@ a line above it goes. Rules of thumb:
 
 ## Limits of the prototype
 
+- The serve-time drop of the caller's own chain happens after `limit`, grading and grouping,
+  so a listing made for another caller can reach the game one item short, with a gap in its
+  grades.
 - One plugin per game session: the games run one poll command. Switching with `use` takes
   effect at the next poll; the new plugin has its own ids, so the old monsters retire.
 - After a `remove`, a refresh that had already started listing can bring the item back for

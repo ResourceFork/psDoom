@@ -29,39 +29,51 @@ check() {   # name expected actual
     fi
 }
 
+# Shell functions shadow the commands the responders call, injected right
+# after the shebang, so a real renice, kill or docker can never run however
+# a responder spells the call. A path-qualified call (/bin/kill) would bypass
+# a function, so any is refused outright. The target pid is beyond any pid a
+# system hands out (macOS stops at 99998, Linux pid_max at 4194304).
+TARGET=2147483646
 stub() {    # src dst
-    sed -e 's|renice "$amount" -p "$id".*|echo RENICE|' \
-        -e 's|kill "$id" >/dev/null 2>&1.*|echo KILL|' \
-        -e 's|docker update --cpu-shares 256 "$cid".*|echo THROTTLE|' \
-        -e 's|docker kill "$cid".*|echo DKILL|' \
-        -e 's|^command -v docker.*||' \
-        -e 's|^for c in \$(docker ps -q 2>/dev/null); do|for c in fake; do|' \
-        -e "s|p=\$(docker inspect -f '{{.State.Pid}}' \"\$c\" 2>/dev/null)|p=999999|" \
-        "$1" > "$2"
-    chmod +x "$2"
-    if grep -qE '^[^#]*(renice "|kill "\$id"|docker (update|kill|ps|inspect))' "$2"; then
-        echo "FAIL stub left a real action in $2"; exit 1
+    if grep -qE '/(usr/)?(s?bin)/(kill|renice|docker)|command +(kill|renice)|builtin +kill' "$1"; then
+        echo "FAIL $1 calls kill/renice/docker by path; cannot stub safely"; exit 1
     fi
+    {
+        head -n 1 "$1"
+        # The responders discard their output, so the stubs record to a log.
+        echo "renice() { echo RENICE >> '$work/stub.log'; }"
+        echo "kill() { echo KILL >> '$work/stub.log'; }"
+        echo "docker() { case \"\$1\" in ps) echo fake;; inspect) echo $TARGET;; update) echo THROTTLE >> '$work/stub.log';; kill) echo DKILL >> '$work/stub.log';; esac; }"
+        tail -n +2 "$1"
+    } > "$2"
+    chmod +x "$2"
 }
 
 stub "$repo/scripts/respond-processes.sh" "$work/proc.sh"
 stub "$repo/examples/docker/respond-containers.sh" "$work/docker.sh"
 
+run() {    # responder args...: what the stubs recorded
+    : > "$work/stub.log"
+    "$@" >/dev/null 2>&1 || true
+    tr -d '\n' < "$work/stub.log"
+}
+
 for s in proc docker; do
     post=RENICE; del=KILL
     [[ $s == docker ]] && { post=THROTTLE; del=DKILL; }
     r="$work/$s.sh"
-    check "$s no mode post"       ""      "$("$r" post 999999 amount=4)"
-    check "$s no mode delete"     ""      "$("$r" delete 999999)"
-    check "$s dryrun post"        ""      "$("$r" post 999999 amount=4 mode=dryrun)"
-    check "$s dryrun delete"      ""      "$("$r" delete 999999 mode=dryrun)"
-    check "$s post-only post"     "$post" "$("$r" post 999999 amount=4 mode=post-only)"
-    check "$s post-only delete"   ""      "$("$r" delete 999999 mode=post-only)"
-    check "$s delete post"        "$post" "$("$r" post 999999 amount=4 mode=delete)"
-    check "$s delete delete"      "$del"  "$("$r" delete 999999 mode=delete)"
-    check "$s unknown mode"       ""      "$("$r" delete 999999 mode=kill-all)"
-    check "$s last mode wins"     ""      "$("$r" delete 999999 mode=delete mode=dryrun)"
-    check "$s label no smuggle"   ""      "$("$r" delete 999999 label=mode=delete)"
+    check "$s no mode post"       ""      "$(run "$r" post $TARGET amount=4)"
+    check "$s no mode delete"     ""      "$(run "$r" delete $TARGET)"
+    check "$s dryrun post"        ""      "$(run "$r" post $TARGET amount=4 mode=dryrun)"
+    check "$s dryrun delete"      ""      "$(run "$r" delete $TARGET mode=dryrun)"
+    check "$s post-only post"     "$post" "$(run "$r" post $TARGET amount=4 mode=post-only)"
+    check "$s post-only delete"   ""      "$(run "$r" delete $TARGET mode=post-only)"
+    check "$s delete post"        "$post" "$(run "$r" post $TARGET amount=4 mode=delete)"
+    check "$s delete delete"      "$del"  "$(run "$r" delete $TARGET mode=delete)"
+    check "$s unknown mode"       ""      "$(run "$r" delete $TARGET mode=kill-all)"
+    check "$s last mode wins"     ""      "$(run "$r" delete $TARGET mode=delete mode=dryrun)"
+    check "$s label no smuggle"   ""      "$(run "$r" delete $TARGET label=mode=delete)"
 done
 
 # The poller runs under this shell: neither this shell, the poller's own
@@ -84,6 +96,6 @@ else
     check "poller skips protected and setuid names" 0 0
 fi
 
-rm -f "$work/proc.sh" "$work/docker.sh"
+rm -f "$work/proc.sh" "$work/docker.sh" "$work/stub.log"
 rmdir "$work"
 exit $fail

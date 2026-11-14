@@ -32,8 +32,8 @@ Safety: this plugin is trusted; psDoom does not filter what it lists
   the usual terminal apps;
 - pid 0 and 1, and any process whose effective or real uid is not yours
   (`ps -x` selects by real uid, so a setuid `login` or `sudo` would show);
-- session plumbing: login, sudo, su, sshd, ssh-agent, tmux, screen,
-  iTermServer-*, and the common terminal apps;
+- session plumbing: login, sudo, su, sshd, sshd-session, ssh-agent, tmux,
+  screen, iTermServer-*, login shells ("-zsh"), and the common terminal apps;
 - itself, its own parent chain and its direct children (its `ps`);
 - the host chain Summoner passes in $SUMMONER_HOST_PIDS: the `summon get`
   that psDoom ran, its shell, psDoom itself and the launchers above it
@@ -66,10 +66,12 @@ DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
         "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom",
         "Terminal", "iTerm2",
         # session plumbing a terminal runs: ending it ends a tab or session
-        "login", "sudo", "su", "sshd", "ssh-agent", "tmux", "screen",
+        "login", "sudo", "su", "sshd", "sshd-session", "ssh-agent", "tmux",
+        "screen",
         "Ghostty", "ghostty", "Alacritty", "alacritty", "kitty", "WezTerm",
         "wezterm-gui"}
-DENY_PREFIX = ("iTermServer",)
+DENY_PREFIX = ("iTermServer",
+               "-")     # a login shell ("-zsh"): ending it ends that tab
 
 PS_FIELDS = "pid=,ppid=,uid=,ruid=,rss=,pcpu=,tt=,lstart=,comm="
 

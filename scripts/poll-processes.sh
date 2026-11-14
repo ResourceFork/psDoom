@@ -61,9 +61,10 @@ BEGIN {
     # Session-critical names (the native deny-list), the games, terminal
     # apps and the session plumbing they run, so a stray shot cannot end your
     # GUI or terminal session. Extend this list to taste.
-    if (name ~ /^(loginwindow|WindowServer|Dock|Finder|SystemUIServer|launchd|kernel_task|psDoom|psdoom|crispy-doom|Terminal|iTerm2|login|sudo|su|sshd|ssh-agent|tmux|screen|Ghostty|ghostty|Alacritty|alacritty|kitty|WezTerm|wezterm-gui)$/)
+    if (name ~ /^(loginwindow|WindowServer|Dock|Finder|SystemUIServer|launchd|kernel_task|psDoom|psdoom|crispy-doom|Terminal|iTerm2|login|sudo|su|sshd|sshd-session|ssh-agent|tmux|screen|Ghostty|ghostty|Alacritty|alacritty|kitty|WezTerm|wezterm-gui)$/)
         next
     if (name ~ /^iTermServer/) next
+    if (name ~ /^-/) next             # a login shell (-zsh): its tab
 
     weight = rss * 1024              # KiB -> bytes (matches the size ladder)
     load   = int(cpu + 0.5)          # %CPU -> load (100 = one core)

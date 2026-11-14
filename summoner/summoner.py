@@ -312,7 +312,7 @@ def ancestor_pids(pid):
                              stdin=subprocess.DEVNULL, capture_output=True,
                              text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
-        return [pid]
+        return None      # unknown: callers must fail closed
     parent = {}
     for line in out.splitlines():
         f = line.split()
@@ -339,7 +339,8 @@ def run_plugin(cfg, args, stdin_data=None, timeout=None):
     if timeout is None:
         timeout = float(cfg["plugin"]["timeout_s"])
     env = dict(os.environ)
-    host = sorted(set(cfg.get("host_pids", [])) | set(ancestor_pids(os.getpid())))
+    host = sorted(set(cfg.get("host_pids", [])) |
+                  set(ancestor_pids(os.getpid()) or [os.getpid()]))
     env[HOST_PIDS_ENV] = ",".join(str(p) for p in host)
     proc = subprocess.Popen(
         cmd,
@@ -866,6 +867,9 @@ def refresh(cfg, words=()):
         started = time.time()
         with open(state_path(cfg, "refresh.pid"), "w") as f:
             f.write("%d\n" % os.getpid())
+        failed_mark = state_path(cfg, "refresh.failed")
+        with open(failed_mark, "w"):
+            pass        # removed only once this refresh has written a cache
         desc = describe(cfg)
         applied, notes, pwords = apply_request(req, desc, unknown)
         # A plugin that declares no dimensions gets the plain `list`.
@@ -892,6 +896,10 @@ def refresh(cfg, words=()):
                 "items": items,
                 "skipped": skipped,
             })
+            try:
+                os.unlink(failed_mark)
+            except FileNotFoundError:
+                pass
             try:
                 # An action that landed while list ran keeps the cache dirty,
                 # so the next poll refreshes again.
@@ -981,17 +989,23 @@ def cmd_poll(cfg, words=()):
         last_try = os.stat(state_path(cfg, "refresh.pid")).st_mtime
     except FileNotFoundError:
         last_try = 0
-    # A plugin whose last refresh failed (no cache written since it began)
-    # is retried once per cache_ttl_s, not on every poll -- whether or not
-    # the request changed.
-    failed = last_try > (cache.get("fetched_at", 0) if cache else 0) + 0.5
-    backoff = failed and not dirty and now - last_try < cfg["cache_ttl_s"]
+    # A plugin whose last refresh failed (it left refresh.failed behind) is
+    # retried once per cache_ttl_s, not on every poll -- whether or not the
+    # request changed. An action newer than that attempt may retry once.
+    failed = os.path.exists(state_path(cfg, "refresh.failed"))
+    try:
+        dirty_new = dirty and \
+            os.stat(state_path(cfg, "dirty")).st_mtime > last_try
+    except FileNotFoundError:
+        dirty_new = False
+    backoff = failed and not dirty_new and \
+        now - last_try < cfg["cache_ttl_s"]
     spawned = False
     if stale and not backoff and not refresher_running(cfg):
         # The refresher runs detached, so it cannot see who called get:
         # hand it this get's chain.
         spawn_refresher(cfg, list(words) +
-                        ["host_pids=" + ",".join(str(p) for p in chain)])
+                        ["host_pids=" + ",".join(str(p) for p in chain or [])])
         spawned = True
     if (cache is None or changed) and (spawned or refresher_running(cfg)):
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
@@ -1002,8 +1016,13 @@ def cmd_poll(cfg, words=()):
                 break
             time.sleep(0.02)
     items = cache["items"] if cache else []
-    mine = set(chain)
-    items = [it for it in items if it.get("pid") not in mine]
+    if chain is None:
+        # The calling chain could not be read: fail closed, serving nothing
+        # that stands for a local process.
+        items = [it for it in items if it.get("pid") is None]
+    else:
+        mine = set(chain)
+        items = [it for it in items if it.get("pid") not in mine]
     sys.stdout.write(render(items, cache))
     return 0
 
