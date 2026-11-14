@@ -1,12 +1,12 @@
-"""Tests for the plugin harness and its two plugins.
+"""Tests for Summoner and its two plugins.
 
 Rules these tests keep:
 - every state root is a fresh directory under SCRATCH (set by run_tests.py);
 - the processes plugin is only ever exercised read-only (`describe`, `list`)
-  or through the harness in dry-run, so no real process is signalled or
+  or through Summoner in dry-run, so no real process is signalled or
   reniced; the real-action path is tested through the CSV plugin on CSV
   files these tests create;
-- any refresher the harness detaches is waited for, and only killed by the
+- any refresher Summoner detaches is waited for, and only killed by the
   pid it recorded after checking that pid still runs this test's config.
 """
 
@@ -24,11 +24,11 @@ import unittest
 
 SCRATCH = None   # set by run_tests.py
 
-HARNESS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HARNESS = os.path.join(HARNESS_DIR, "psdoom_harness.py")
-CSV_PLUGIN = os.path.join(HARNESS_DIR, "plugins", "csv_rows.py")
-PROC_PLUGIN = os.path.join(HARNESS_DIR, "plugins", "processes.py")
-PS_HARNESS = os.path.join(HARNESS_DIR, "ps-harness")
+SUMMONER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SUMMONER_PY = os.path.join(SUMMONER_DIR, "summoner.py")
+CSV_PLUGIN = os.path.join(SUMMONER_DIR, "plugins", "csv_rows.py")
+PROC_PLUGIN = os.path.join(SUMMONER_DIR, "plugins", "processes.py")
+SUMMON_CMD = os.path.join(SUMMONER_DIR, "summon")
 PY = sys.executable
 
 
@@ -39,7 +39,7 @@ def _load(name, path):
     return mod
 
 
-H = _load("psdoom_harness", HARNESS)
+H = _load("summoner", SUMMONER_PY)
 P = _load("processes_plugin", PROC_PLUGIN)
 
 # A scriptable fake plugin: behaviour comes from a JSON spec file named on
@@ -150,39 +150,39 @@ class Base(unittest.TestCase):
 
     def env(self, **extra):
         """A child environment that can never reach the real home: HOME is
-        a fake one under this test's root, and PS_HARNESS_ROOT is unset
+        a fake one under this test's root, and SUMMONER_ROOT is unset
         unless a test sets it on purpose."""
-        env = {k: v for k, v in os.environ.items() if k != "PS_HARNESS_ROOT"}
+        env = {k: v for k, v in os.environ.items() if k != "SUMMONER_ROOT"}
         env["HOME"] = os.path.join(self.root, "fakehome")
         env.update(extra)
         return env
 
-    def harness(self, cfg, *args, timeout=20):
+    def summon(self, cfg, *args, timeout=20):
         args = list(args)
         if args and args[0] == "poll":
             args[0] = "get"          # the tests' shorthand for the game's get
         t0 = time.monotonic()
-        r = subprocess.run([PY, HARNESS, "--config", cfg] + args,
+        r = subprocess.run([PY, SUMMONER_PY, "--config", cfg] + args,
                            stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=timeout, cwd=self.root,
                            env=self.env())
         return r, time.monotonic() - t0
 
     def cli(self, *args, env=None, exe=None, timeout=20):
-        """Run the ps-harness launcher itself (its shebang interpreter is
+        """Run the summon launcher itself (its shebang interpreter is
         bypassed so the suite's own Python runs it)."""
-        r = subprocess.run([PY, exe or PS_HARNESS] + list(args),
+        r = subprocess.run([PY, exe or SUMMON_CMD] + list(args),
                            stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=timeout, cwd=self.root,
                            env=env or self.env())
         return r
 
     def refresh(self, cfg):
-        r, _ = self.harness(cfg, "refresh")
+        r, _ = self.summon(cfg, "refresh")
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def poll(self, cfg):
-        r, _ = self.harness(cfg, "poll")
+        r, _ = self.summon(cfg, "poll")
         self.assertEqual(r.returncode, 0, r.stderr)
         return parse_v1(r.stdout)
 
@@ -333,22 +333,22 @@ class ConfigTests(Base):
             with open(path, "w") as f:
                 json.dump(dict(bad, plugin={"name": "x", "command": ["x"]}),
                           f)
-            with self.assertRaises(H.HarnessError):
+            with self.assertRaises(H.SummonerError):
                 H.load_config(path)
 
     def test_bad_config_poll_still_speaks_the_contract(self):
         path = os.path.join(self.root, "bad.json")
         with open(path, "w") as f:
             f.write("{")
-        r, _ = self.harness(path, "poll")
+        r, _ = self.summon(path, "poll")
         self.assertEqual(r.returncode, 0)
         self.assertFalse(r.stdout.startswith("#!"))   # no header
         self.assertEqual(parse_v1(r.stdout), [])
 
     def test_shipped_examples_need_a_real_state_dir(self):
-        ex_dir = os.path.join(HARNESS_DIR, "examples")
+        ex_dir = os.path.join(SUMMONER_DIR, "examples")
         for name in ("processes.json", "csv.json"):
-            with self.assertRaises(H.HarnessError):
+            with self.assertRaises(H.SummonerError):
                 H.load_config(os.path.join(ex_dir, name))
         with open(os.path.join(ex_dir, "processes.json")) as f:
             c = json.load(f)
@@ -359,17 +359,17 @@ class ConfigTests(Base):
         cfg = H.load_config(path)
         self.assertTrue(cfg["dry_run"])
         self.assertFalse(cfg["plugin"]["allow_remove"])
-        r, _ = self.harness(path, "describe")
+        r, _ = self.summon(path, "describe")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["name"], "processes")
 
-    def test_harness_dir_placeholder(self):
-        cfg = self.config(["${HARNESS_DIR}/plugins/csv_rows.py"])
+    def test_summoner_dir_placeholder(self):
+        cfg = self.config(["${SUMMONER_DIR}/plugins/csv_rows.py"])
         self.assertEqual(H.load_config(cfg)["plugin"]["command"][0],
                          CSV_PLUGIN)
 
 
-# ---------------------------------------------------- harness behaviour --
+# ---------------------------------------------------- Summoner behaviour --
 
 class IdTests(Base):
 
@@ -421,7 +421,7 @@ class CacheTests(Base):
         cfg = self.config(cmd, cache_ttl_s=0)
         # No cache yet: the poll waits at most first_poll_wait_ms, then
         # answers with an empty (but valid) listing.
-        r, took = self.harness(cfg, "poll")
+        r, took = self.summon(cfg, "poll")
         self.assertLess(took, 1.0)
         self.assertEqual(parse_v1(r.stdout), [])
         self.assertFalse(r.stdout.startswith("#!"))   # no header
@@ -433,7 +433,7 @@ class CacheTests(Base):
             rows = self.poll(cfg)
         self.assertEqual([r["label"] for r in rows], ["slow one"])
         # With a cache, a stale poll answers at once from it.
-        r, took = self.harness(cfg, "poll")
+        r, took = self.summon(cfg, "poll")
         self.assertLess(took, 1.0)
         self.assertEqual(len(parse_v1(r.stdout)), 1)
 
@@ -441,7 +441,7 @@ class CacheTests(Base):
         cmd = self.fake([{"key": "k"}], list_sleep=1.0)
         cfg = self.config(cmd, cache_ttl_s=0, first_poll_wait_ms=0)
         for _ in range(5):
-            self.harness(cfg, "poll")
+            self.summon(cfg, "poll")
         self._reap_refresher(cfg)
         lists = [c for c in self.calls() if c and c[0] == "list"]
         self.assertEqual(len(lists), 1)
@@ -449,7 +449,7 @@ class CacheTests(Base):
     def test_plugin_timeout_is_bounded(self):
         cmd = self.fake([{"key": "k"}], list_sleep=30)
         cfg = self.config(cmd, plugin={"timeout_s": 0.5})
-        r, took = self.harness(cfg, "refresh")
+        r, took = self.summon(cfg, "refresh")
         self.assertEqual(r.returncode, 1)
         self.assertIn("timed out", r.stderr)
         self.assertLess(took, 5)
@@ -470,7 +470,7 @@ class RespondTests(Base):
         return cfg
 
     def respond(self, cfg, *args):
-        r, _ = self.harness(cfg, *args)
+        r, _ = self.summon(cfg, *args)
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_dry_run_is_the_default(self):
@@ -591,14 +591,14 @@ class CsvPluginTests(Base):
                           plugin={"allow_remove": True})
         self.refresh(cfg)
         ident = self.id_for(self.poll(cfg), "B, quoted")
-        r, _ = self.harness(cfg, "delete", ident)
+        r, _ = self.summon(cfg, "delete", ident)
         self.assertNotIn("quoted", self.read(path))
         action = self.audit()[-1]["action_id"]
-        r, _ = self.harness(cfg, "undo", action)
+        r, _ = self.summon(cfg, "undo", action)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.read(path), original)   # byte-identical
         # a second undo of the same action is refused
-        r, _ = self.harness(cfg, "undo", action)
+        r, _ = self.summon(cfg, "undo", action)
         self.assertEqual(r.returncode, 1)
         self.assertIn("already undone", r.stderr)
         self.assertEqual(self.read(path), original)
@@ -608,10 +608,10 @@ class CsvPluginTests(Base):
         cfg = self.config(self.csv_cmd(path, "--priority-column", "priority"),
                           name="csv", dry_run=False)
         self.refresh(cfg)
-        self.harness(cfg, "post", self.poll(cfg)[0]["id"],
+        self.summon(cfg, "post", self.poll(cfg)[0]["id"],
                      "amount=4")
         self.assertEqual(self.read(path), "id,name,priority\na,A,3\n")
-        r, _ = self.harness(cfg, "undo", self.audit()[-1]["action_id"])
+        r, _ = self.summon(cfg, "undo", self.audit()[-1]["action_id"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.read(path), "id,name,priority\na,A,7\n")
 
@@ -652,7 +652,7 @@ class CsvPluginTests(Base):
 
 
 class CliTests(Base):
-    """The ps-harness command line: verbs, aliases, plugin selection."""
+    """The summon command line: verbs, aliases, plugin selection."""
 
     def setUp(self):
         super().setUp()
@@ -767,7 +767,7 @@ class CliTests(Base):
         for line in res.stdout.splitlines():
             self.assertTrue(line.split("\t")[-1].startswith("label="))
         res = self.r("--plugin", "nope", "get")
-        self.assertTrue(res.stdout.startswith("# harness error"))
+        self.assertTrue(res.stdout.startswith("# summon error"))
         self.assertEqual(parse_v1(res.stdout), [])
 
     def test_grade_source_order_and_max_tier(self):
@@ -895,7 +895,7 @@ class CliTests(Base):
     def test_loose_umask_still_makes_private_dirs(self):
         root = os.path.join(self.root, "umaskroot")
         res = subprocess.run(
-            ["/bin/sh", "-c", 'umask 002; exec "$0" "$@"', PY, PS_HARNESS,
+            ["/bin/sh", "-c", 'umask 002; exec "$0" "$@"', PY, SUMMON_CMD,
              "--root", root, "get"],
             capture_output=True, text=True, env=self.env(), cwd=self.root)
         self.assertEqual(res.returncode, 0, res.stderr)
@@ -904,7 +904,7 @@ class CliTests(Base):
                   os.path.join(root, "state", "ps")):
             self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
         res = self.cli("--root", root, "get")
-        self.assertNotIn("harness error", res.stdout)
+        self.assertNotIn("summon error", res.stdout)
 
     def _ps_reap_at(self, root):
         path = os.path.join(self.root, "reap-%d.json" % len(self.configs))
@@ -1027,7 +1027,7 @@ class CliTests(Base):
         self.assertFalse(os.path.exists(os.path.join(self.hroot, "current")))
         res = self.r("--plugin", "nope", "get")
         self.assertEqual(res.returncode, 0)                # never break poll
-        self.assertTrue(res.stdout.startswith("# harness error"))
+        self.assertTrue(res.stdout.startswith("# summon error"))
         self.assertIn("unknown plugin", res.stdout)
         self.assertEqual(parse_v1(res.stdout), [])
         self.assertEqual(self.r("--plugin", "nope", "delete", "5").returncode,
@@ -1040,18 +1040,18 @@ class CliTests(Base):
     def test_root_resolution(self):
         envroot = os.path.join(self.root, "envroot")
         fakehome = os.path.join(self.root, "fakehome")
-        # neither --root nor the variable: ~/.config/ps-harness (fake home)
+        # neither --root nor the variable: ~/.config/summoner (fake home)
         self.assertEqual(self.cli("use", "ps").returncode, 0)
         self.assertTrue(os.path.exists(os.path.join(
-            fakehome, ".config", "ps-harness", "current")))
+            fakehome, ".config", "summoner", "current")))
         # the variable
         self.assertEqual(self.cli("use", "ps", env=self.env(
-            PS_HARNESS_ROOT=envroot)).returncode, 0)
+            SUMMONER_ROOT=envroot)).returncode, 0)
         self.assertTrue(os.path.exists(os.path.join(envroot, "current")))
         # --root beats the variable
         other = os.path.join(self.root, "optroot")
         self.assertEqual(self.cli("--root", other, "use", "ps", env=self.env(
-            PS_HARNESS_ROOT=envroot)).returncode, 0)
+            SUMMONER_ROOT=envroot)).returncode, 0)
         self.assertTrue(os.path.exists(os.path.join(other, "current")))
         res = self.cli("--root", "relative/root", "use", "ps")
         self.assertEqual(res.returncode, 1)
@@ -1074,9 +1074,9 @@ class CliTests(Base):
         self.named("fake", [{"key": "a", "name": "Linked"}])
         bindir = os.path.join(self.root, "bin")
         os.makedirs(bindir)
-        link = os.path.join(bindir, "ps-harness")
-        os.symlink(PS_HARNESS, link)
-        self.assertTrue(os.access(PS_HARNESS, os.X_OK))
+        link = os.path.join(bindir, "summon")
+        os.symlink(SUMMON_CMD, link)
+        self.assertTrue(os.access(SUMMON_CMD, os.X_OK))
         deadline = time.monotonic() + 10
         rows = []
         while not rows and time.monotonic() < deadline:
@@ -1100,7 +1100,7 @@ class ReviewFixTests(Base):
         self.refresh(cfg)
         rows = self.poll(cfg)
         self.assertNotIn("SecondRow", [r["label"] for r in rows])
-        self.harness(cfg, "delete", self.id_for(rows, "FirstRow"))
+        self.summon(cfg, "delete", self.id_for(rows, "FirstRow"))
         text = self.read(path)
         self.assertNotIn("FirstRow", text)
         self.assertIn("SecondRow", text)
@@ -1109,19 +1109,19 @@ class ReviewFixTests(Base):
         cfg = self.config(self.fake([{"key": "a"}]))
         self.refresh(cfg)
         os.unlink(os.path.join(self.state, "ids.json"))
-        r, _ = self.harness(cfg, "refresh")
+        r, _ = self.summon(cfg, "refresh")
         self.assertEqual(r.returncode, 1)
         self.assertIn("ids.json", r.stderr)
         with open(os.path.join(self.state, "ids.json"), "w") as f:
             f.write("{not json")
-        r, _ = self.harness(cfg, "refresh")
+        r, _ = self.summon(cfg, "refresh")
         self.assertEqual(r.returncode, 1)
 
     def test_state_dir_must_be_private(self):
         os.makedirs(self.state, mode=0o700)
         os.chmod(self.state, 0o777)
         cfg = self.config(self.fake([{"key": "a"}]))
-        r, _ = self.harness(cfg, "refresh")
+        r, _ = self.summon(cfg, "refresh")
         self.assertEqual(r.returncode, 1)
         self.assertIn("writable by group or others", r.stderr)
         os.chmod(self.state, 0o700)
@@ -1132,7 +1132,7 @@ class ReviewFixTests(Base):
         c["state_dir"] = link
         with open(cfg, "w") as f:
             json.dump(c, f)
-        r, _ = self.harness(cfg, "refresh")
+        r, _ = self.summon(cfg, "refresh")
         self.assertEqual(r.returncode, 1)
         self.assertIn("symlink", r.stderr)
 
@@ -1151,10 +1151,10 @@ class ReviewFixTests(Base):
     def test_odd_ids_and_bad_rate_state_are_audited(self):
         cfg = self.config(self.fake([{"key": "a"}]), dry_run=False)
         self.refresh(cfg)
-        self.harness(cfg, "delete", "²")
+        self.summon(cfg, "delete", "²")
         with open(os.path.join(self.state, "rate.json"), "w") as f:
             json.dump(["x", None, 1], f)
-        self.harness(cfg, "post", self.poll(cfg)[0]["id"])
+        self.summon(cfg, "post", self.poll(cfg)[0]["id"])
         self.assertEqual([e["outcome"] for e in self.audit()],
                          ["unknown-id", "ok"])
 
@@ -1174,7 +1174,7 @@ class ReviewFixTests(Base):
     def test_undo_needs_restore_verb(self):
         cfg = self.config(self.fake([{"key": "a"}]))
         self.refresh(cfg)
-        r, _ = self.harness(cfg, "undo", "abc")
+        r, _ = self.summon(cfg, "undo", "abc")
         self.assertEqual(r.returncode, 1)
         self.assertIn("restore", r.stderr)
 
@@ -1201,7 +1201,7 @@ class HostileTests(Base):
                  for i, n in enumerate(self.HOSTILE)]
         cfg = self.config(self.fake(items))
         self.refresh(cfg)
-        r, _ = self.harness(cfg, "poll")
+        r, _ = self.summon(cfg, "poll")
         lines = [ln for ln in r.stdout.split("\n")
                  if ln and not ln.startswith("#")]
         self.assertEqual(len(lines), len(self.HOSTILE))   # no forged records
@@ -1233,13 +1233,13 @@ class HostileTests(Base):
         rows = self.poll(cfg)
         for rec in rows:
             # A label that is not the item's: refused, nothing happens.
-            self.harness(cfg, "delete", rec["id"],
+            self.summon(cfg, "delete", rec["id"],
                          "label=$(touch PWNED_L)", "amount=`touch PWNED_A`")
         self.assertEqual({e["outcome"] for e in self.audit()},
                          {"label-mismatch"})
         self.assertEqual(self.read(path).count("\n"), len(keys) + 1)
         for rec in rows:
-            self.harness(cfg, "delete", rec["id"], "label=" + rec["label"],
+            self.summon(cfg, "delete", rec["id"], "label=" + rec["label"],
                          "amount=`touch PWNED_A`")
         # every row removed by its exact key, nothing executed
         self.assertEqual(self.read(path), "id,name\n")
@@ -1251,7 +1251,7 @@ class HostileTests(Base):
         cfg = self.config(self.fake([{"key": "k\nforged", "name": "a\nb"}]),
                           dry_run=True)
         self.refresh(cfg)
-        self.harness(cfg, "delete", self.poll(cfg)[0]["id"],
+        self.summon(cfg, "delete", self.poll(cfg)[0]["id"],
                      "label=x\ny")
         with open(os.path.join(self.state, "audit.jsonl")) as f:
             text = f.read()
@@ -1296,7 +1296,7 @@ class ProcessesPluginTests(Base):
         for key in ("notapid@x", "1@x", "0@x", "12", "@", ""):
             self.assertIsNone(P.resolve(key))
 
-    def test_list_through_harness_is_on_the_ladder(self):
+    def test_list_through_summoner_is_on_the_ladder(self):
         cfg = self.config([PY, PROC_PLUGIN], name="processes")
         self.refresh(cfg)
         rows = self.poll(cfg)
@@ -1321,8 +1321,8 @@ class ProcessesPluginTests(Base):
         with open(cfg, "w") as f:
             json.dump(c, f)
         for r in rows[:3]:
-            self.harness(cfg, "delete", r["id"])
-            self.harness(cfg, "post", r["id"], "amount=4")
+            self.summon(cfg, "delete", r["id"])
+            self.summon(cfg, "post", r["id"], "amount=4")
         outcomes = [e["outcome"] for e in self.audit()]
         self.assertEqual(set(outcomes), {"dry-run"})
         self.assertEqual(len(outcomes), 2 * min(3, len(rows)))

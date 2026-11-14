@@ -1,85 +1,85 @@
-# ps-harness — the plugin harness, design
+# Summoner — design
 
 The [script backend](script-backend.md) lets psDoom show and act on anything a script can
 list. Each backend script pair re-solves the same problems: stable integer ids, scaling a
 metric onto the monster ladders, trimming labels, staying under the 1-second poll timeout,
-and not deleting the wrong thing. The **plugin harness** solves them once. A *plugin* then
+and not deleting the wrong thing. **Summoner** solves them once. A *plugin* then
 only has to answer three questions about its domain: *what is there* (GET), *push this one
 down* (POST), *get rid of this one* (DELETE).
 
 ```
- psDoom / psQuake                    ps-harness                               plugin
+ psDoom / psQuake                    summon                               plugin
  ───────────────                     ──────────                               ──────
  PSDOOM_POLL_CMD  ── sh -c ──▶  get ── reads cache.json ──────────────┐
-   "ps-harness get"                  └─ stale? spawn detached refresh ─┼─▶  describe, list
+   "summon get"                  └─ stale? spawn detached refresh ─┼─▶  describe, list
    (1 s timeout)                                                      │
  PSDOOM_RESPOND_CMD ─ exec ──▶  post|delete <id> ─▶ id → key ─────────┼─▶  nudge <key> amount=N
-   "ps-harness"                      dry run? opt-in? rate? audit     │    remove <key>
+   "summon"                      dry run? opt-in? rate? audit     │    remove <key>
                                                                       │
  you, at a terminal  ────────▶  undo <action-id> ────────────────────┴─▶  restore  (stdin)
 ```
 
-The harness speaks the apps' [script contract](script-backend.md): TAB-separated
+Summoner speaks the apps' [script contract](script-backend.md): TAB-separated
 `key=value` lines with a 0..1 `grade` per item, and the game sends `post` / `delete`. To the
-game, the harness is just a poll command and a responder. Further contract ideas are in
+game, Summoner is just a poll command and a responder. Further contract ideas are in
 the [appendix](#appendix-contract-proposals), as proposals only.
 
 ## Where it lives and what it needs
 
-- `harness/ps-harness` — the command: a thin launcher for the harness (put it on PATH or
+- `summoner/summon` — the command: a thin launcher for Summoner (put it on PATH or
   symlink it; nothing is installed for you).
-- `harness/psdoom_harness.py` — the harness, one file.
-- `harness/plugins/processes.py` — your own processes, the native behaviour.
-- `harness/plugins/csv_rows.py` — rows of a CSV file.
-- `harness/tests/` — unit and subprocess tests of the harness and both plugins. Run them
-  from a plain checkout with `python3 -I harness/tests/run_tests.py` (no CMake; scratch goes
-  to `harness/tests/.scratch/`, ignored by `harness/.gitignore`; a symlinked root is
-  refused). psDoom's `ctest` also runs them as `psdoom_harness_tests`, with a scratch root
+- `summoner/summoner.py` — Summoner, one file.
+- `summoner/plugins/processes.py` — your own processes, the native behaviour.
+- `summoner/plugins/csv_rows.py` — rows of a CSV file.
+- `summoner/tests/` — unit and subprocess tests of Summoner and both plugins. Run them
+  from a plain checkout with `python3 -I summoner/tests/run_tests.py` (no CMake; scratch goes
+  to `summoner/tests/.scratch/`, ignored by `summoner/.gitignore`; a symlinked root is
+  refused). psDoom's `ctest` also runs them as `psdoom_summoner_tests`, with a scratch root
   in its build tree.
-- `tests/harness_e2e_test.c` — psDoom's app-side conformance test ([below](#one-contract-for-every-ps-app)).
+- `tests/summoner_e2e_test.c` — psDoom's app-side conformance test ([below](#one-contract-for-every-ps-app)).
 
 Python 3.10+ standard library only. The build already requires Python 3.10 (`CMakeLists.txt`
-uses it for the WAD tools), so the harness adds no dependency. A top-level `harness/` keeps it
+uses it for the WAD tools), so Summoner adds no dependency. A top-level `summoner/` keeps it
 apart from `scripts/` (the copy-me `sh` reference pair) and `tools/` (build-time tools): it is
 a runtime component with its own tests.
 
-**Self-contained.** Nothing in `harness/` imports or reads from psDoom's source or build, and
+**Self-contained.** Nothing in `summoner/` imports or reads from psDoom's source or build, and
 its tests need only Python, and it carries its own `.gitignore` and a summary of the script
 contract in its README, so the folder can later move to its own repository unchanged.
 psDoom keeps only two hooks into it: the `ctest` registration and the conformance test.
 
 ## One contract for every ps-app
 
-The harness's poll output and its responder calls *are* the
+Summoner's poll output and its responder calls *are* the
 [script-backend contract](script-backend.md). That is the single
-contract every ps-app recognizes, whatever plugin sits behind the harness:
+contract every ps-app recognizes, whatever plugin sits behind Summoner:
 
 ```
- ps-app (psDoom, psQuake, ...)  ◀── script contract ──▶  harness  ◀── plugin contract ──▶  plugin
-       app conformance test                    harness tests (plugins tested here, no app)
+ ps-app (psDoom, psQuake, ...)  ◀── script contract ──▶  summon  ◀── plugin contract ──▶  plugin
+       app conformance test                    Summoner tests (plugins tested here, no app)
 ```
 
 That splits the testing in two:
 
-- **Harness and plugins** are tested against the harness alone (`harness/tests/`), with no game
-  involved: a plugin is correct if the harness turns its output into a valid poll and its
+- **Summoner and plugins** are tested against Summoner alone (`summoner/tests/`), with no game
+  involved: a plugin is correct if Summoner turns its output into a valid poll and its
   actions into the right plugin calls.
 - **Each app** proves its side once with a conformance test: the app's real script backend runs
-  the harness's poll command, sees the listed entities, and its injure and kill reach the
-  harness's responder and land on a test file. For psDoom that is `tests/harness_e2e_test.c`
-  (inside `psdoom_tests`): the human's setup (`ps-harness get` and `ps-harness`), with
+  Summoner's poll command, sees the listed entities, and its injure and kill reach the
+  Summoner's responder and land on a test file. For psDoom that is `tests/summoner_e2e_test.c`
+  (inside `psdoom_tests`): the human's setup (`summon get` and `summon`), with
   grades arriving and a live `delete` and `post` against a CSV it writes, then the default
   dry run leaving the CSV alone.
 
 **psQuake, or any later app, gets the same conformance test**: drive its own script backend
-against the harness and the CSV plugin on a CSV it creates, with an explicit state root, and
+against Summoner and the CSV plugin on a CSV it creates, with an explicit state root, and
 check the same things (entities listed with the expected labels and grades, `delete` removes
 the row, `post` lowers the priority, dry run changes nothing). No plugin needs an app-specific
 change, and a new plugin needs no app test.
 
 ## Plugin contract
 
-A plugin is any executable. The harness runs it with an **argument vector, never a shell**,
+A plugin is any executable. Summoner runs it with an **argument vector, never a shell**,
 stdin at `/dev/null` (except `restore`), in its own process group, with a timeout
 (`plugin.timeout_s`, default 10 s; on timeout the whole group is killed). The configured
 command comes first, so a plugin can take its own options (`csv_rows.py --file F ...`), then:
@@ -92,7 +92,7 @@ command comes first, so a plugin can take its own options (`csv_rows.py --file F
 | `remove <key>` | no | one JSON result | Delete or stop the item. |
 | `restore` | no | one JSON result | Undo: the undo record from an earlier result arrives on stdin. |
 
-Exit 0 on success. Unknown subcommands: print `{"ok": false}` and exit non-zero; the harness
+Exit 0 on success. Unknown subcommands: print `{"ok": false}` and exit non-zero; Summoner
 only calls verbs that `describe` lists.
 
 ### `describe`
@@ -106,7 +106,7 @@ only calls verbs that `describe` lists.
  "remove": {"meaning": "delete the row", "undoable": true}}
 ```
 
-`size.scale` and `load.scale` pick how the harness puts the numbers on the games' ladders
+`size.scale` and `load.scale` pick how Summoner puts the numbers on the games' ladders
 ([below](#normalisation)): `native` (already bytes / percent), `linear` (with `min`, `max`),
 or `relative` (the default). The `meaning` strings are for people (`describe` prints them).
 
@@ -120,7 +120,7 @@ or `relative` (the default). The `meaning` strings are for people (`describe` pr
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `key` | string | yes | The plugin's own stable identity for the item. 1 to 1024 characters, no NUL, must not start with `-`. Unique; later duplicates are dropped. |
-| `name` | string | no | Shown above the monster (the harness trims it). Default: the key. |
+| `name` | string | no | Shown above the monster (Summoner trims it). Default: the key. |
 | `grade` | number 0..1 | no | Where the item sits on *its own* range (0 = least, 1 = most). Clamped. Wins over size and load for the `grade` the game sees. |
 | `size` | number ≥ 0 | no | Drives toughness by *weight*. If no item has a size, rank decides (top rank = biggest). |
 | `load` | number ≥ 0 | no | Drives toughness by *CPU/load*. |
@@ -138,7 +138,7 @@ The last non-empty stdout line, a JSON object:
 {"ok": true, "message": "row deleted", "undo": {"op": "insert", "key": "r2", "index": 1, "row": ["r2", "Fix bug", "9"]}}
 ```
 
-`undo` is opaque to the harness. It is stored in the audit log and handed back to `restore`
+`undo` is opaque to Summoner. It is stored in the audit log and handed back to `restore`
 on stdin. `null` means "not undoable".
 
 ### Why JSON Lines, not the poll's TAB format
@@ -146,14 +146,14 @@ on stdin. `null` means "not undoable".
 Plugin names come from spreadsheets, issue titles and agent prompts, and contain TABs,
 newlines and `=` signs. The poll format cannot carry those; JSON escapes anything. Every
 language parses it without a library (`json` in Python, `jq` or `python3 -c` in shell, built
-in for Node). Typed numbers and booleans avoid "is `1e3` a weight?" questions. The harness
+in for Node). Typed numbers and booleans avoid "is `1e3` a weight?" questions. Summoner
 does the one translation to the poll format, so the TAB framing rules live in one place.
 
-## What the harness adds
+## What Summoner adds
 
 ### Stable ids
 
-psDoom needs integer ids that never name two things. The harness keeps one map for the whole
+psDoom needs integer ids that never name two things. Summoner keeps one map for the whole
 root, `<root>/ids.json` (`{"version": 1, "next": N, "keys": {"<plugin>/<key>": {"id": n, "seen":
 t}}}`), so ids are unique across every plugin in it. `<plugin>` is the plugin's file name
 (`plugins/<plugin>.json`, or `ps`), which cannot contain `/`, never the free-text `plugin.name`
@@ -198,7 +198,7 @@ The ladders (from [script-backend.md](script-backend.md)):
 lower for the shareware WAD. Relative and linear values always land exactly on a rung.
 
 **Grade.** Each item also gets a `grade` from 0 to 1, so neither side needs to
-know the other's scale: the plugin (or the harness for it) maps onto 0..1, and the game maps
+know the other's scale: the plugin (or Summoner for it) maps onto 0..1, and the game maps
 0..1 onto however many monsters it can draw (`min(floor(grade × N), N − 1)`). The grade is
 the plugin's own `grade` if it sent one, else the item's size (or its rank, when no item has
 a size) on the declared `linear` or `relative` scale, else its load. A `native` scale (the
@@ -250,7 +250,7 @@ This tool can delete things. The defaults assume a mistake.
 | `amount` | clamped 1..100 | psDoom sends `amount=4`. |
 | No shell | always | Plugins get an argument vector; keys and labels are data. |
 | Audit log | always | `state_dir/audit.jsonl`: one JSON line per call, with outcome, key, name, amount, action id, plugin message and undo record. JSON escaping keeps hostile text on one line. |
-| Undo | where the plugin lists `restore` | `ps-harness undo <action-id>` feeds the stored record to `restore`, once (under a lock). A record holds the value *before* that action, so undo several actions on one item newest first. |
+| Undo | where the plugin lists `restore` | `summon undo <action-id>` feeds the stored record to `restore`, once (under a lock). A record holds the value *before* that action, so undo several actions on one item newest first. |
 | State location | always | A named plugin's state is always `<root>/state/<name>` (a `state_dir` in its config is refused); a bare `--config` file must name one, absolute and not `/`. |
 | Private root and configs | always | The root, and every config file, must be owned by you and not writable by group or others: a config names a command to run. |
 | Private state | always | `state_dir` must be a real directory (not a symlink) owned by you and not writable by group or others; it is created `0700`. Otherwise every command refuses, because `respond` trusts the cache in it to map ids to keys. |
@@ -258,7 +258,7 @@ This tool can delete things. The defaults assume a mistake.
 `post` and `delete` always exit 0 (the game does not read it); the audit log is the record.
 `get` always prints a valid poll, with a `#` comment on error.
 
-The harness does not decide what is *safe to list*. That stays the plugin's job, as in a hand-written script: the
+Summoner does not decide what is *safe to list*. That stays the plugin's job, as in a hand-written script: the
 processes plugin keeps the session-critical deny-list from `scripts/poll-processes.sh`, plus
 the game and the Terminal and iTerm2 apps. It has no launcher-chain guard like the native
 backend, and its pid-reuse check compares a start time with 1-second resolution, so a pid
@@ -267,7 +267,7 @@ reused within the same second would pass it.
 ## Configuration
 
 ```
-ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
+summon [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 ```
 
 | Command | What it does |
@@ -290,7 +290,7 @@ ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 <root>/state/<name>/         its cache, audit log and rate limit
 ```
 
-It is `--root DIR`, else `$PS_HARNESS_ROOT`, else `~/.config/ps-harness`. `--root` beats the
+It is `--root DIR`, else `$SUMMONER_ROOT`, else `~/.config/summoner`. `--root` beats the
 variable. **Which plugin**: `--config FILE` (a config file anywhere; it must name its own
 `state_dir`), else `--plugin NAME` for this one call, else the `current` file, else `ps`.
 `--plugin` and `--config` together are refused, and an unknown name fails with the list of
@@ -309,7 +309,7 @@ names it knows. `ps` (your own processes) is built in, dry run, remove off; a
   "rate_limit": {"actions": 10, "per_s": 60},
   "plugin": {
     "name": "csv",
-    "command": ["python3", "${HARNESS_DIR}/plugins/csv_rows.py",
+    "command": ["python3", "${SUMMONER_DIR}/plugins/csv_rows.py",
                 "--file", "/Users/you/todo.csv", "--priority-column", "priority"],
     "allow_remove": false,
     "timeout_s": 10
@@ -317,32 +317,32 @@ names it knows. `ps` (your own processes) is built in, dry run, remove off; a
 }
 ```
 
-`${HARNESS_DIR}` in `plugin.command` expands to the harness directory. `harness/examples/`
+`${SUMMONER_DIR}` in `plugin.command` expands to the `summoner/` directory. `summoner/examples/`
 has starting points (they carry a `state_dir` placeholder for `--config` use; remove that line
 for a file under `<root>/plugins/`, where it is refused).
 
-**Wire it to psDoom** (put `harness/` on PATH, or use the launcher's full path; paths must not
+**Wire it to psDoom** (put `summoner/` on PATH, or use the launcher's full path; paths must not
 contain spaces, `--root` included, because the respond command is split on whitespace):
 
 ```sh
-export PSDOOM_POLL_CMD="ps-harness get"
-export PSDOOM_RESPOND_CMD="ps-harness"          # psDoom appends post|delete <id> ...
+export PSDOOM_POLL_CMD="summon get"
+export PSDOOM_RESPOND_CMD="summon"          # psDoom appends post|delete <id> ...
 ```
 
 ### No-kill run against psDoom (dry run, your processes)
 
 ```sh
 cd ~/Source/psDoom-plugin-harness
-export PATH="$PWD/harness:$PATH"        # or: ln -s "$PWD/harness/ps-harness" ~/bin/
-ps-harness use ps                       # remembered in ~/.config/ps-harness/current
-ps-harness plugins                      # * ps   built-in
-ps-harness get | head                   # what psDoom will see (the first call may be empty)
-export PSDOOM_POLL_CMD="ps-harness get"
-export PSDOOM_RESPOND_CMD="ps-harness"
+export PATH="$PWD/summoner:$PATH"        # or: ln -s "$PWD/summoner/summon" ~/bin/
+summon use ps                       # remembered in ~/.config/summoner/current
+summon plugins                      # * ps   built-in
+summon get | head                   # what psDoom will see (the first call may be empty)
+export PSDOOM_POLL_CMD="summon get"
+export PSDOOM_RESPOND_CMD="summon"
 build/psDoom.app/Contents/MacOS/psDoom  # run from this shell so it inherits PATH and env
 ```
 
-Every shot is then audited in `~/.config/ps-harness/state/ps/audit.jsonl` as `dry-run`, and
+Every shot is then audited in `~/.config/summoner/state/ps/audit.jsonl` as `dry-run`, and
 nothing is signalled: the built-in `ps` is dry run with remove off.
 
 ## Writing a plugin
@@ -368,7 +368,7 @@ a line above it goes. Rules of thumb:
    changes when it is replaced (a start time) and check it before acting.
 2. **Re-check before acting.** The listing is up to `cache_ttl_s` old.
 3. **Return an undo record** for anything you can put back: the deleted row, the old value.
-4. **Be quick in `list`** if you can, but correctness first: the harness caches.
+4. **Be quick in `list`** if you can, but correctness first: Summoner caches.
 5. **Declare only the verbs you implement.** A read-only plugin lists `["list"]`.
 
 ## The examples
@@ -422,7 +422,7 @@ implemented, and each needs the project owner's go before any change to
 `docs/script-backend.md` or to how psDoom or psQuake call scripts.
 
 1. **String ids / `key=`.** Let a poll line carry the plugin's string key (or replace the
-   integer id), echoed back on respond, so the harness would not need its id map to act.
+   integer id), echoed back on respond, so Summoner would not need its id map to act.
 2. **`kind=` poll field.** A coarse category (`process`, `row`, `agent`) a game could theme by.
 3. **A result channel.** Have the game read a one-line status from the responder (or a
    status file), so the HUD can show "dry run", "blocked" or "rate limited" instead of a
@@ -433,5 +433,5 @@ implemented, and each needs the project owner's go before any change to
    grey out actions a backend does not support, and offer an in-game "resurrect" (undo).
 6. **`dry=1` respond extra** from a game-side no-kill toggle, so the safe mode can be set in
    the menu rather than in each config.
-7. **Longer labels / UTF-8**, if the renderer ever draws them; the harness would then raise
+7. **Longer labels / UTF-8**, if the renderer ever draws them; Summoner would then raise
    its 31-byte cut.

@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""summon: thin launcher for summoner.py.
+
+Put this folder on PATH, or symlink this file into a folder that is:
+
+    ln -s "$PWD/summoner/summon" ~/bin/summon
+
+The link is followed back here, so Summoner and its plugins are found
+next to the real file. See summoner.py (or `summon`) for usage.
+"""
+
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+
+import summoner  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(summoner.main(sys.argv[1:]))

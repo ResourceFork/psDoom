@@ -85,5 +85,5 @@ xcuserdata/
 # so a blanket *.wad ignore would be wrong here.
 /wads/
 
-# Python bytecode (harness/ tests import modules by path)
+# Python bytecode (summoner/ tests import modules by path)
 __pycache__/

@@ -263,7 +263,7 @@ enable_testing()
 add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/proc_select_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/iwad_select_test.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/harness_e2e_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/summoner_e2e_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_grade_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_grade.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos/iwad_select.c"
@@ -273,11 +273,11 @@ add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_fake.c")
 target_compile_definitions(psdoom_tests PRIVATE PSD_NO_NATIVE_BACKEND
-    # harness_e2e_test.c: run harness/ through the script backend on a CSV
+    # summoner_e2e_test.c: run summoner/ through the script backend on a CSV
     # it writes under the build tree (never the home directory).
     PSD_PYTHON3="${Python3_EXECUTABLE}"
-    PSD_HARNESS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/harness"
-    PSD_E2E_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}/harness-e2e")
+    PSD_SUMMONER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/summoner"
+    PSD_E2E_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}/summoner-e2e")
 target_include_directories(psdoom_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
@@ -294,12 +294,12 @@ endif()
 
 add_test(NAME psdoom_tests COMMAND psdoom_tests)
 
-# Plugin harness (harness/) and its plugins, with an explicit scratch root in
+# Summoner (summoner/) and its plugins, with an explicit scratch root in
 # the build tree. Python standard library only.
-add_test(NAME psdoom_harness_tests
+add_test(NAME psdoom_summoner_tests
     COMMAND ${Python3_EXECUTABLE} -I
-            "${CMAKE_CURRENT_SOURCE_DIR}/harness/tests/run_tests.py"
-            --scratch "${CMAKE_CURRENT_BINARY_DIR}/harness-tests")
+            "${CMAKE_CURRENT_SOURCE_DIR}/summoner/tests/run_tests.py"
+            --scratch "${CMAKE_CURRENT_BINARY_DIR}/summoner-tests")
 
 # Game code must act on processes only through the pid-reuse-checked wrappers.
 add_test(NAME psdoom_no_raw_backend_actions

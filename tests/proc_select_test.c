@@ -44,7 +44,7 @@ static int stub_all_users;
 int psdoom_all_users_enabled(void) { return stub_all_users; }
 
 void iwad_select_tests(int *checks_run, int *checks_failed); /* iwad_select_test.c */
-void harness_e2e_tests(int *checks_run, int *checks_failed); /* harness_e2e_test.c */
+void summoner_e2e_tests(int *checks_run, int *checks_failed); /* summoner_e2e_test.c */
 void script_grade_tests(int *checks_run, int *checks_failed); /* script_grade_test.c */
 
 /* ---- tiny check harness -------------------------------------------------- */
@@ -1151,7 +1151,7 @@ int main(int argc, char **argv)
     test_macos_renice_refuses_reserved();
 #endif
     script_grade_tests(&checks_run, &checks_failed);
-    harness_e2e_tests(&checks_run, &checks_failed);
+    summoner_e2e_tests(&checks_run, &checks_failed);
     iwad_select_tests(&checks_run, &checks_failed);
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);

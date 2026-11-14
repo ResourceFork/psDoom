@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""ps-harness -- one poll/respond pair for any list of things.
+"""Summoner (`summon`) -- one poll/respond pair for any list of things.
 
-The harness sits between a ps-app's script backend (the script contract,
+Summoner sits between a ps-app's script backend (the script contract,
 psDoom's docs/script-backend.md) and a *plugin*: a small
 executable that can list items, nudge one, and remove one. psDoom runs:
 
-    PSDOOM_POLL_CMD    = ps-harness get
-    PSDOOM_RESPOND_CMD = ps-harness          (psDoom appends post|delete <id>)
+    PSDOOM_POLL_CMD    = summon get
+    PSDOOM_RESPOND_CMD = summon          (psDoom appends post|delete <id>)
 
-and the harness adds what every plugin would otherwise rewrite: stable
+and Summoner adds what every plugin would otherwise rewrite: stable
 integer ids, size/load scaling onto the games' ladders, 31-byte labels,
 background caching under the 1-second poll timeout, and a safety layer
 (dry run by default, per-plugin remove opt-in, rate limit, audit log, undo).
 
-Design: psDoom docs/plugin-harness.md. Python 3.10+ standard library only.
-Self-contained: nothing here imports or reads from outside harness/.
+Design: psDoom docs/summoner.md. Python 3.10+ standard library only.
+Self-contained: nothing here imports or reads from outside summoner/.
 
-    ps-harness [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
+    summon [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
     get                        print the poll output (with a 0..1 `grade`)
     post <id> [k=v...]         nudge: lower its priority
@@ -28,7 +28,7 @@ Self-contained: nothing here imports or reads from outside harness/.
     undo <action-id>           replay a recorded undo through the plugin
 
 The root holds `current` and `plugins/<name>.json`; it is --root, else
-$PS_HARNESS_ROOT, else ~/.config/ps-harness. A plugin's state defaults to
+$SUMMONER_ROOT, else ~/.config/summoner. A plugin's state defaults to
 <root>/state/<name>. `ps` (your processes) is built in, dry run.
 """
 
@@ -46,7 +46,7 @@ import time
 import unicodedata
 
 PROTOCOL = 1
-HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
+SUMMONER_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # The games' ladders (the script contract's "Size ladder" / "Load ladder").
 SIZE_LADDER = [0, 16777216, 67108864, 201326592, 536870912, 1610612736,
@@ -55,7 +55,7 @@ LOAD_LADDER = [0, 5, 25, 60, 120, 250, 500]
 LABEL_MAX = 31            # bytes the games draw
 ID_MIN = 2                # 0 and 1 are reserved by the contract
 ID_MAX = 2147483647
-KEY_MAX = 1024            # longest plugin key the harness accepts
+KEY_MAX = 1024            # longest plugin key Summoner accepts
 OUTPUT_CAP = 8 * 1024 * 1024  # max bytes read from one plugin call
 ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
 
@@ -63,13 +63,13 @@ ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
 VERB_MAP = {"post": "nudge", "delete": "remove"}
 
 PLUGIN_NAME_RE = None   # compiled below, after `import re`
-ROOT_ENV = "PS_HARNESS_ROOT"
+ROOT_ENV = "SUMMONER_ROOT"
 DEFAULT_PLUGIN = "ps"
 # Built-in plugin configs, used when <root>/plugins/<name>.json is absent.
 BUILTINS = {
     "ps": {"plugin": {"name": "ps",
                       "command": [sys.executable,
-                                  "${HARNESS_DIR}/plugins/processes.py"]}},
+                                  "${SUMMONER_DIR}/plugins/processes.py"]}},
 }
 
 DEFAULTS = {
@@ -86,7 +86,7 @@ PLUGIN_DEFAULTS = {
 }
 
 
-class HarnessError(Exception):
+class SummonerError(Exception):
     pass
 
 
@@ -98,38 +98,38 @@ def check_private(path, what):
     names a command to run, and the state feeds respond its keys."""
     st = os.stat(path)
     if st.st_uid != os.getuid():
-        raise HarnessError("%s is not owned by this user: %s" % (what, path))
+        raise SummonerError("%s is not owned by this user: %s" % (what, path))
     if st.st_mode & 0o022:
-        raise HarnessError("%s is writable by group or others: %s"
+        raise SummonerError("%s is writable by group or others: %s"
                            % (what, path))
 
 
 def load_config(path, default_state=None, self_args=None):
     """Read and validate a config file."""
     if not path:
-        raise HarnessError("--config is required")
+        raise SummonerError("--config is required")
     path = os.path.abspath(path)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as e:
         if e.errno == errno.ELOOP:
-            raise HarnessError("config is a symlink: %s" % path)
+            raise SummonerError("config is a symlink: %s" % path)
         raise
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         # Check the file actually opened, not the path again: nothing can be
         # swapped in between.
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode):
-            raise HarnessError("config is not a regular file: %s" % path)
+            raise SummonerError("config is not a regular file: %s" % path)
         if st.st_uid != os.getuid():
-            raise HarnessError("config is not owned by this user: %s" % path)
+            raise SummonerError("config is not owned by this user: %s" % path)
         if st.st_mode & 0o022:
-            raise HarnessError("config is writable by group or others: %s"
+            raise SummonerError("config is writable by group or others: %s"
                                % path)
         try:
             raw = json.load(f)
         except ValueError:
-            raise HarnessError("config is not valid JSON: %s" % path)
+            raise SummonerError("config is not valid JSON: %s" % path)
     return config_from_dict(raw, path, default_state,
                             self_args or ["--config", path])
 
@@ -138,7 +138,7 @@ def config_from_dict(raw, path, default_state, self_args):
     """Validate a config. state_dir comes from the config, else from the
     root (named plugins); a bare --config file must name its own."""
     if not isinstance(raw, dict):
-        raise HarnessError("config must be a JSON object")
+        raise SummonerError("config must be a JSON object")
     cfg = dict(DEFAULTS)
     cfg.update(raw)
     rl = dict(DEFAULTS["rate_limit"])
@@ -154,32 +154,32 @@ def config_from_dict(raw, path, default_state, self_args):
     if state is None and default_state is not None:
         state = default_state
     if not isinstance(state, str) or not state:
-        raise HarnessError("config: state_dir is required (no default)")
+        raise SummonerError("config: state_dir is required (no default)")
     if not os.path.isabs(state):
-        raise HarnessError("config: state_dir must be an absolute path")
+        raise SummonerError("config: state_dir must be an absolute path")
     state = os.path.normpath(state)
     if state == os.sep:
-        raise HarnessError("config: state_dir must not be /")
+        raise SummonerError("config: state_dir must not be /")
     cfg["state_dir"] = state
 
     cmd = plugin.get("command")
     if not isinstance(cmd, list) or not cmd or \
             not all(isinstance(a, str) and a for a in cmd):
-        raise HarnessError("config: plugin.command must be a non-empty "
+        raise SummonerError("config: plugin.command must be a non-empty "
                            "list of strings")
-    # ${HARNESS_DIR} expands to this file's directory, so shipped example
+    # ${SUMMONER_DIR} expands to this file's directory, so shipped example
     # configs work from any checkout. Nothing is read from the environment.
-    plugin["command"] = [a.replace("${HARNESS_DIR}", HARNESS_DIR) for a in cmd]
+    plugin["command"] = [a.replace("${SUMMONER_DIR}", SUMMONER_DIR) for a in cmd]
     if not isinstance(plugin.get("name"), str) or not plugin["name"]:
-        raise HarnessError("config: plugin.name is required")
+        raise SummonerError("config: plugin.name is required")
     if not isinstance(cfg["dry_run"], bool):
-        raise HarnessError("config: dry_run must be true or false")
+        raise SummonerError("config: dry_run must be true or false")
     if not isinstance(plugin["allow_remove"], bool):
-        raise HarnessError("config: plugin.allow_remove must be true or false")
+        raise SummonerError("config: plugin.allow_remove must be true or false")
     tier = cfg["max_tier"]
     if not isinstance(tier, int) or isinstance(tier, bool) or \
             not 0 <= tier <= 6:
-        raise HarnessError("config: max_tier must be an integer 0..6")
+        raise SummonerError("config: max_tier must be an integer 0..6")
     return cfg
 
 
@@ -202,11 +202,11 @@ def ensure_state_dir(cfg):
     make_private_dirs(d)
     st = os.lstat(d)
     if not stat.S_ISDIR(st.st_mode):
-        raise HarnessError("state_dir is not a directory (or is a symlink)")
+        raise SummonerError("state_dir is not a directory (or is a symlink)")
     if st.st_uid != os.getuid():
-        raise HarnessError("state_dir is not owned by this user")
+        raise SummonerError("state_dir is not owned by this user")
     if st.st_mode & 0o022:
-        raise HarnessError("state_dir is writable by group or others")
+        raise SummonerError("state_dir is writable by group or others")
 
 
 def state_path(cfg, name):
@@ -325,10 +325,10 @@ def run_plugin(cfg, args, stdin_data=None, timeout=None):
         except ProcessLookupError:
             pass
         proc.communicate()
-        raise HarnessError("plugin %s timed out after %ss" %
+        raise SummonerError("plugin %s timed out after %ss" %
                            (args[0] if args else "?", timeout))
     if len(out) > OUTPUT_CAP:
-        raise HarnessError("plugin output exceeds %d bytes" % OUTPUT_CAP)
+        raise SummonerError("plugin output exceeds %d bytes" % OUTPUT_CAP)
     return proc.returncode, out.decode("utf-8", errors="replace")
 
 
@@ -347,30 +347,30 @@ def plugin_result(text):
 
 def validate_describe(d):
     if not isinstance(d, dict):
-        raise HarnessError("describe: not a JSON object")
+        raise SummonerError("describe: not a JSON object")
     verbs = d.get("verbs")
     if not isinstance(verbs, list) or "list" not in verbs:
-        raise HarnessError("describe: verbs must be a list including 'list'")
+        raise SummonerError("describe: verbs must be a list including 'list'")
     for k in ("size", "load"):
         spec = d.get(k) or {}
         if not isinstance(spec, dict):
-            raise HarnessError("describe: %s must be an object" % k)
+            raise SummonerError("describe: %s must be an object" % k)
         scale = spec.get("scale", "relative")
         if scale not in ("native", "linear", "relative"):
-            raise HarnessError("describe: %s.scale %r unknown" % (k, scale))
+            raise SummonerError("describe: %s.scale %r unknown" % (k, scale))
         if scale == "linear" and not _is_num(spec.get("max")):
-            raise HarnessError("describe: %s.scale linear needs max" % k)
+            raise SummonerError("describe: %s.scale linear needs max" % k)
     return d
 
 
 def describe(cfg):
     code, out = run_plugin(cfg, ["describe"])
     if code != 0:
-        raise HarnessError("plugin describe exited %d" % code)
+        raise SummonerError("plugin describe exited %d" % code)
     try:
         return validate_describe(json.loads(out))
     except ValueError:
-        raise HarnessError("describe: output is not JSON")
+        raise SummonerError("describe: output is not JSON")
 
 
 # ---------------------------------------------------------- normalisation --
@@ -631,7 +631,7 @@ def assign_ids(cfg, items, now):
                 not isinstance(m.get("keys"), dict):
             # Fail closed: restarting the counter could hand an id the game
             # still holds to a different item.
-            raise HarnessError(
+            raise SummonerError(
                 "%s is missing or damaged; ids could be reused. Delete %s "
                 "to start over." % (path, "the root's state/ and ids.json"
                                     if root else "the whole state_dir"))
@@ -641,7 +641,7 @@ def assign_ids(cfg, items, now):
             rec = keys.get(k)
             if rec is None:
                 if m["next"] > ID_MAX:
-                    raise HarnessError("id space exhausted")
+                    raise SummonerError("id space exhausted")
                 rec = {"id": m["next"]}
                 m["next"] += 1
                 keys[k] = rec
@@ -682,7 +682,7 @@ def refresh(cfg):
         desc = describe(cfg)
         code, out = run_plugin(cfg, ["list"])
         if code != 0:
-            raise HarnessError("plugin list exited %d" % code)
+            raise SummonerError("plugin list exited %d" % code)
         raw, skipped = parse_list(out)
         items = normalize(raw, desc, cfg)
         now = round(time.time(), 3)
@@ -868,7 +868,7 @@ def _respond(cfg, argv):
     entry["action_id"] = action_id
     try:
         code, out = run_plugin(cfg, args)
-    except (HarnessError, OSError) as e:
+    except (SummonerError, OSError) as e:
         audit(cfg, dict(entry, outcome="error", detail=str(e)[:200]))
         return 0
     res = plugin_result(out)
@@ -896,7 +896,7 @@ def cmd_undo(cfg, action_id):
     ensure_state_dir(cfg)
     desc = (read_cache(cfg) or {}).get("describe") or {}
     if "restore" not in (desc.get("verbs") or []):
-        raise HarnessError("the plugin does not list restore")
+        raise SummonerError("the plugin does not list restore")
     # One undo at a time, so the same action cannot be restored twice.
     with Locked(state_path(cfg, "undo.lock")):
         return _undo(cfg, action_id)
@@ -909,13 +909,13 @@ def _undo(cfg, action_id):
         if e.get("action_id") == action_id and e.get("outcome") == "ok":
             target = e
     if target is None:
-        raise HarnessError("no successful action %r in the audit log"
+        raise SummonerError("no successful action %r in the audit log"
                            % action_id)
     if any(e.get("verb") == "undo" and e.get("undoes") == action_id and
            e.get("outcome") == "ok" for e in log):
-        raise HarnessError("action %r was already undone" % action_id)
+        raise SummonerError("action %r was already undone" % action_id)
     if not isinstance(target.get("undo"), dict):
-        raise HarnessError("action %r has no undo record (the plugin "
+        raise SummonerError("action %r has no undo record (the plugin "
                            "reported it as not undoable)" % action_id)
     code, out = run_plugin(cfg, ["restore"],
                            stdin_data=json.dumps(target["undo"]))
@@ -927,7 +927,7 @@ def _undo(cfg, action_id):
     with open(state_path(cfg, "dirty"), "w"):
         pass
     if not ok:
-        raise HarnessError("plugin restore failed: %s"
+        raise SummonerError("plugin restore failed: %s"
                            % res.get("message", "exit %d" % code))
     print("undone %s" % action_id)
     return 0
@@ -937,20 +937,20 @@ def _undo(cfg, action_id):
 
 PLUGIN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
 
-USAGE = ("usage: ps-harness [--root DIR] [--plugin NAME | --config FILE] "
+USAGE = ("usage: summon [--root DIR] [--plugin NAME | --config FILE] "
          "(get | post ID [k=v...] | delete ID [k=v...] | use NAME | plugins "
          "| refresh | describe | undo ACTION_ID)")
 
 
 def resolve_root(opt_root):
-    """--root, else $PS_HARNESS_ROOT, else ~/.config/ps-harness."""
+    """--root, else $SUMMONER_ROOT, else ~/.config/summoner."""
     root = opt_root or os.environ.get(ROOT_ENV) or \
-        os.path.join(os.path.expanduser("~"), ".config", "ps-harness")
+        os.path.join(os.path.expanduser("~"), ".config", "summoner")
     if not os.path.isabs(root):
-        raise HarnessError("root must be an absolute path: %s" % root)
+        raise SummonerError("root must be an absolute path: %s" % root)
     root = os.path.normpath(root)
     if root == os.sep:
-        raise HarnessError("root must not be /")
+        raise SummonerError("root must not be /")
     return root
 
 
@@ -965,7 +965,7 @@ def plugin_config_path(root, name):
 
 def check_name(name):
     if not isinstance(name, str) or not PLUGIN_NAME_RE.match(name):
-        raise HarnessError("bad plugin name %r (lowercase letters, digits, "
+        raise SummonerError("bad plugin name %r (lowercase letters, digits, "
                            "- and _; up to 32)" % (name,))
     return name
 
@@ -1007,7 +1007,7 @@ def load_named(root, name):
         if cfg.get("state_dir") != os.path.normpath(default_state):
             # Every named plugin keeps its state under <root>/state/, so the
             # root's fail-closed id-map check can see all of it.
-            raise HarnessError("%s: a named plugin's state is always %s; "
+            raise SummonerError("%s: a named plugin's state is always %s; "
                                "remove state_dir from it (or use --config)"
                                % (path, default_state))
     elif name in BUILTINS:
@@ -1018,7 +1018,7 @@ def load_named(root, name):
         cfg["root"] = root
         cfg["plugin_id"] = name
         return cfg
-    raise HarnessError("unknown plugin %r: no %s, and it is not built in "
+    raise SummonerError("unknown plugin %r: no %s, and it is not built in "
                        "(known: %s)" % (name, path,
                                         ", ".join(known_plugins(root))))
 
@@ -1029,11 +1029,11 @@ def parse_global(argv):
     i = 0
     while i < len(argv) and argv[i] in ("--root", "--plugin", "--config"):
         if i + 1 >= len(argv):
-            raise HarnessError("%s needs a value" % argv[i])
+            raise SummonerError("%s needs a value" % argv[i])
         opts[argv[i][2:]] = argv[i + 1]
         i += 2
     if opts["plugin"] and opts["config"]:
-        raise HarnessError("give --plugin or --config, not both")
+        raise SummonerError("give --plugin or --config, not both")
     return opts, argv[i:]
 
 
@@ -1047,9 +1047,9 @@ def select_config(opts):
 
 def cmd_use(opts, rest):
     if len(rest) != 1:
-        raise HarnessError("usage: ps-harness use NAME")
+        raise SummonerError("usage: summon use NAME")
     if opts["config"] or opts["plugin"]:
-        raise HarnessError("use takes no --plugin or --config")
+        raise SummonerError("use takes no --plugin or --config")
     root = resolve_root(opts["root"])
     load_named(root, rest[0])          # refuse a name that cannot load
     make_private_dirs(root)
@@ -1077,15 +1077,15 @@ def cmd_plugins(opts):
 
 
 def poll_error(e):
-    sys.stdout.write("# harness error: %s\n" % sanitize_label(e, 200))
+    sys.stdout.write("# summon error: %s\n" % sanitize_label(e, 200))
     return 0
 
 
 def main(argv):
     try:
         opts, rest = parse_global(argv)
-    except HarnessError as e:
-        sys.stderr.write("ps-harness: %s\n%s\n" % (e, USAGE))
+    except SummonerError as e:
+        sys.stderr.write("summon: %s\n%s\n" % (e, USAGE))
         return 2
     if not rest:
         sys.stderr.write(USAGE + "\n")
@@ -1102,7 +1102,7 @@ def main(argv):
         try:
             return cmd_respond(select_config(opts), [cmd] + rest)
         except Exception as e:
-            sys.stderr.write("ps-harness: %s\n" % e)
+            sys.stderr.write("summon: %s\n" % e)
             return 0
     try:
         if cmd == "use":
@@ -1119,14 +1119,14 @@ def main(argv):
                 return 0
             if len(rest) == 1:
                 return cmd_undo(cfg, rest[0])
-            raise HarnessError("usage: ps-harness undo ACTION_ID")
-    except (HarnessError, OSError, ValueError) as e:
-        sys.stderr.write("ps-harness: %s\n" % e)
+            raise SummonerError("usage: summon undo ACTION_ID")
+    except (SummonerError, OSError, ValueError) as e:
+        sys.stderr.write("summon: %s\n" % e)
         return 1
     # Any other word: a newer game's verb, or a typo. A no-op that exits 0,
     # as the script contract asks of responders; audited as ignored-verb when
     # a plugin config loads.
-    sys.stderr.write("ps-harness: unknown command %r (ignored)\n%s\n"
+    sys.stderr.write("summon: unknown command %r (ignored)\n%s\n"
                      % (cmd, USAGE))
     try:
         cmd_respond(select_config(opts), [cmd] + rest)

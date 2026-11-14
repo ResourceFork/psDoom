@@ -1,20 +1,20 @@
 /*
- * psDoom -- end-to-end check of the plugin harness (harness/) through the
+ * psDoom -- end-to-end check of Summoner (summoner/) through the
  * real script backend.
  *
- * psDoom's own proc_script backend runs the harness exactly as the setup
- * PSDOOM_POLL_CMD="ps-harness get", PSDOOM_RESPOND_CMD="ps-harness" would:
+ * psDoom's own proc_script backend runs Summoner exactly as the setup
+ * PSDOOM_POLL_CMD="summon get", PSDOOM_RESPOND_CMD="summon" would:
  * the poll through `sh -c` under the 1-second timeout, the responder exec'd
  * detached with `verb id [key=value...]`: grades arrive, a kill sends
  * `delete` and a wound `post`, live; then the default dry run leaves the CSV
  * alone. The
- * harness drives the CSV plugin on a CSV file this test writes, so the real
+ * Summoner drives the CSV plugin on a CSV file this test writes, so the real
  * action path is proven on that file only. No process is ever signalled.
  *
- * All harness state lives under PSD_E2E_SCRATCH (a directory in the build
+ * All Summoner state lives under PSD_E2E_SCRATCH (a directory in the build
  * tree, set by CMakeLists.txt); nothing is read from the environment.
  *
- * Registered from proc_select_test.c's main (harness_e2e_tests()).
+ * Registered from proc_select_test.c's main (summoner_e2e_tests()).
  */
 
 #include "proc_backend.h"
@@ -33,8 +33,8 @@
 #ifndef PSD_PYTHON3
 #error "PSD_PYTHON3 must be defined (CMakeLists.txt)"
 #endif
-#ifndef PSD_HARNESS_DIR
-#error "PSD_HARNESS_DIR must be defined (CMakeLists.txt)"
+#ifndef PSD_SUMMONER_DIR
+#error "PSD_SUMMONER_DIR must be defined (CMakeLists.txt)"
 #endif
 #ifndef PSD_E2E_SCRATCH
 #error "PSD_E2E_SCRATCH must be defined (CMakeLists.txt)"
@@ -124,7 +124,7 @@ static int wait_file(const char *path, const char *needle, int want, int ms)
     return 0;
 }
 
-/* The harness detaches its refresher; wait until none holds the lock. */
+/* Summoner detaches its refresher; wait until none holds the lock. */
 static void wait_refresher(const char *state)
 {
     char lock[1024];
@@ -146,7 +146,7 @@ static void wait_refresher(const char *state)
         usleep(50000);
         waited += 50;
     }
-    fprintf(stderr, "harness_e2e: a refresher still holds %s\n", lock);
+    fprintf(stderr, "summoner_e2e: a refresher still holds %s\n", lock);
 }
 
 static void clear_state(const char *state)
@@ -176,7 +176,7 @@ static int find_named(const psd_proc_t *out, int n, const char *name)
 }
 
 /* Poll through the backend until `want` entities appear (each poll also
- * kicks the harness's background refresh). */
+ * kicks Summoner's background refresh). */
 static int collect_until(psd_proc_t *out, int max, int want, int tries)
 {
     int n = 0;
@@ -192,9 +192,9 @@ static int collect_until(psd_proc_t *out, int max, int want, int tries)
     return n;
 }
 
-/* One ps-harness root: <root>/plugins/csv.json (the CSV plugin on this test's
+/* One summon root: <root>/plugins/csv.json (the CSV plugin on this test's
  * CSV; no state_dir, so state goes to <root>/state/csv) and <root>/current
- * naming it, as `ps-harness use csv` would. */
+ * naming it, as `summon use csv` would. */
 static void write_root(const char *root, const char *csv, int live)
 {
     char path[1024];
@@ -211,7 +211,7 @@ static void write_root(const char *root, const char *csv, int live)
              "   \"--file\", \"%s\", \"--priority-column\", \"priority\"]}}\n",
              live ? "\"dry_run\": false," : "",
              live ? "\"allow_remove\": true," : "",
-             PSD_PYTHON3, PSD_HARNESS_DIR, csv);
+             PSD_PYTHON3, PSD_SUMMONER_DIR, csv);
     E2E_CHECK(write_text(path, cfg));
     path_join(path, sizeof(path), root, "current");
     E2E_CHECK(write_text(path, "csv\n"));
@@ -238,23 +238,23 @@ static void clear_root(const char *root)
     (void) rmdir(root);
 }
 
-/* The human's setup: PSDOOM_POLL_CMD="ps-harness get" and
- * PSDOOM_RESPOND_CMD="ps-harness", with the launcher by its path and an
+/* The human's setup: PSDOOM_POLL_CMD="summon get" and
+ * PSDOOM_RESPOND_CMD="summon", with the launcher by its path and an
  * explicit --root (never the home directory). */
 static void install(const char *root)
 {
     char poll[2048];
     char respond[2048];
-    snprintf(poll, sizeof(poll), "'%s/ps-harness' --root '%s' get",
-             PSD_HARNESS_DIR, root);
+    snprintf(poll, sizeof(poll), "'%s/summon' --root '%s' get",
+             PSD_SUMMONER_DIR, root);
     /* PSDOOM_RESPOND_CMD is split on whitespace, never run by a shell. */
-    snprintf(respond, sizeof(respond), "%s/ps-harness --root %s",
-             PSD_HARNESS_DIR, root);
+    snprintf(respond, sizeof(respond), "%s/summon --root %s",
+             PSD_SUMMONER_DIR, root);
     proc_script_install(poll, respond, 1000);
     psd_select_init();
 }
 
-void harness_e2e_tests(int *checks_run, int *checks_failed)
+void summoner_e2e_tests(int *checks_run, int *checks_failed)
 {
     const char *dir = PSD_E2E_SCRATCH;
     char        csv[1024], csvlock[1024], root[1024], root_dry[1024];
@@ -267,7 +267,7 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
 
     /* The responder command is split on whitespace (docs/script-backend.md). */
     /* ...and the paths are pasted into a JSON config unescaped. */
-    E2E_CHECK(strpbrk(PSD_PYTHON3 PSD_HARNESS_DIR PSD_E2E_SCRATCH, " \t\"\\'") == NULL);
+    E2E_CHECK(strpbrk(PSD_PYTHON3 PSD_SUMMONER_DIR PSD_E2E_SCRATCH, " \t\"\\'") == NULL);
     E2E_CHECK(dir[0] == '/' && strlen(dir) > 1);
     if (mkdir(dir, 0700) != 0 && errno != EEXIST)
     {
@@ -310,17 +310,17 @@ void harness_e2e_tests(int *checks_run, int *checks_failed)
     E2E_CHECK(out[a].footprint == 201326592ULL);
     E2E_CHECK(out[c].footprint == 0);
 
-    /* kill -> `ps-harness delete <id>` -> the row is deleted from the CSV. */
+    /* kill -> `summon delete <id>` -> the row is deleted from the CSV. */
     E2E_CHECK(psd_proc_kill_checked(out[b].pid, 0, "Bravo") == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "Bravo", 0, 5000));
-    /* wound (amount=4) -> `ps-harness post <id> amount=4` -> 5 becomes 1. */
+    /* wound (amount=4) -> `summon post <id> amount=4` -> 5 becomes 1. */
     E2E_CHECK(psd_proc_renice_checked(out[a].pid, 0, "Alpha", 4) == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "r1,Alpha,1", 1, 5000));
     E2E_CHECK(wait_file(audit, "\"action\": \"nudge\"", 1, 3000));
     E2E_CHECK(count_in(audit, "\"outcome\": \"ok\"") == 2);
 
-    /* A label cut at 31 bytes: psDoom sends back exactly what the harness
-     * listed, so the harness's label check lets the real kill through. */
+    /* A label cut at 31 bytes: psDoom sends back exactly what Summoner
+     * listed, so Summoner's label check lets the real kill through. */
     E2E_CHECK(strlen(out[d].name) == 31);
     E2E_CHECK(psd_proc_kill_checked(out[d].pid, 0, out[d].name) == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "thirty-one", 0, 5000));

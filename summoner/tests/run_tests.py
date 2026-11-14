@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Run the harness tests. Needs only Python 3.10+, no build system:
+"""Run the Summoner tests. Needs only Python 3.10+, no build system:
 
-    python3 -I harness/tests/run_tests.py [--scratch /abs/dir]
+    python3 -I summoner/tests/run_tests.py [--scratch /abs/dir]
 
 Every test makes its own directory under the scratch root and points the
-harness's state_dir there. The scratch root is --scratch when given (ctest
+Summoner's state_dir there. The scratch root is --scratch when given (ctest
 passes one in its build tree), otherwise `.scratch/` next to this file
-(git-ignored by harness/.gitignore). A symlinked root is refused. It is
-never the home directory and never chosen by an environment variable. The tests use only files inside harness/, so this
+(git-ignored by summoner/.gitignore). A symlinked root is refused. It is
+never the home directory and never chosen by an environment variable. The tests use only files inside summoner/, so this
 folder runs the same on its own.
 """
 
@@ -19,7 +19,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # -I drops the script dir from sys.path
 
-import test_harness  # noqa: E402
+import test_summoner  # noqa: E402
 
 
 def main():
@@ -34,9 +34,9 @@ def main():
     os.makedirs(scratch, exist_ok=True)
     if os.path.islink(scratch) or not os.path.isdir(scratch):
         sys.exit("scratch root is not a plain directory: %s" % scratch)
-    test_harness.SCRATCH = scratch
+    test_summoner.SCRATCH = scratch
     os.chdir(scratch)   # hostile-label checks look for stray files here too
-    suite = unittest.defaultTestLoader.loadTestsFromModule(test_harness)
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_summoner)
     res = unittest.TextTestRunner(verbosity=2).run(suite)
     os.chdir(HERE)
     try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""psDoom harness plugin: your own processes (the native behaviour).
+"""Summoner plugin: your own processes (the native behaviour).
 
     processes.py describe
     processes.py list                  one JSON object per process you own

@@ -122,7 +122,7 @@ $PSDOOM_RESPOND_CMD <verb> <id> [key=value ...]
   like a process that ignores `SIGTERM`. Exiting `0` on success is still good hygiene (it matters
   when you run the script yourself), but psDoom does not act on it.
 - `PSDOOM_RESPOND_CMD` is split on whitespace into a command plus fixed leading arguments, so
-  `PSDOOM_RESPOND_CMD="ps-harness --plugin csv"` works; psDoom appends `verb`, `id`, and the
+  `PSDOOM_RESPOND_CMD="summon --plugin csv"` works; psDoom appends `verb`, `id`, and the
   extras as further arguments. If your command's path contains spaces, wrap it in a script.
 
 ### Example responder (`sh`)

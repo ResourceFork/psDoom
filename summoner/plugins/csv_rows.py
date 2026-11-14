@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""psDoom harness plugin: rows of a CSV file.
+"""Summoner plugin: rows of a CSV file.
 
     csv_rows.py --file F [--key-column id] [--name-column name]
                 [--priority-column P] [--size-column S] [--load-column L]
