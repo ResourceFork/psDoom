@@ -57,6 +57,15 @@ static int  script_timeout_ms = 1000;
 static psd_proc_t script_last[SCRIPT_SNAPSHOT_MAX];
 static int        script_last_n;
 
+/* The dimensions the last poll declared (`# dim` lines), the sort it says
+ * it applied (`# sort`), and the host's request: the sort the player chose
+ * ("" = the plugin's default) and the candidate limit. */
+static psd_script_dim_t script_dims[PSD_SCRIPT_DIMS_MAX];
+static int              script_ndims;
+static char             script_applied[PSD_SCRIPT_ID_MAX + 1];
+static char             script_req_sort[PSD_SCRIPT_ID_MAX + 1];
+static int              script_req_limit;
+
 /* --------------------------------------------------------------- pure parse */
 
 /* Parse `val` as plain decimal digits (no sign, space or trailing character)
@@ -209,6 +218,11 @@ static int script_parse_line(const char *line, psd_proc_t *p)
             strncpy(p->name, val, sizeof(p->name) - 1);
             p->name[sizeof(p->name) - 1] = '\0';
         }
+        else if (strcmp(key, "group") == 0)
+        {
+            strncpy(p->group, val, sizeof(p->group) - 1);
+            p->group[sizeof(p->group) - 1] = '\0';
+        }
         else if (strcmp(key, "grade") == 0)
         {
             double g;
@@ -224,6 +238,146 @@ static int script_parse_line(const char *line, psd_proc_t *p)
     }
 
     return have_id;
+}
+
+int psd_script_id_ok(const char *id)
+{
+    size_t i;
+
+    if (id == NULL || !(id[0] >= 'a' && id[0] <= 'z'))
+    {
+        return 0;
+    }
+    for (i = 0; id[i] != '\0'; i++)
+    {
+        char c = id[i];
+        if (i >= PSD_SCRIPT_ID_MAX
+            || !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The value of `key=` among space-separated words in `s` (the rest of the
+ * line for `label`), copied into out; 1 if found. */
+static int script_header_word(const char *s, const char *key, int rest,
+                              char *out, size_t cap)
+{
+    size_t klen = strlen(key);
+    const char *p = s;
+
+    while (*p != '\0')
+    {
+        while (*p == ' ')
+        {
+            p++;
+        }
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=')
+        {
+            const char *v = p + klen + 1;
+            size_t      n = rest ? strlen(v) : strcspn(v, " ");
+            if (n >= cap)
+            {
+                n = cap - 1;
+            }
+            memcpy(out, v, n);
+            out[n] = '\0';
+            while (n > 0 && (out[n - 1] == '\r' || out[n - 1] == ' '))
+            {
+                out[--n] = '\0';
+            }
+            return 1;
+        }
+        p += strcspn(p, " ");
+    }
+    return 0;
+}
+
+int psd_script_parse_header(const char *buf, psd_script_dim_t *dims, int max,
+                            char *applied, size_t applied_cap)
+{
+    const char *line = buf;
+    int         n = 0;
+
+    if (applied != NULL && applied_cap > 0)
+    {
+        applied[0] = '\0';
+    }
+    while (line != NULL && *line != '\0')
+    {
+        const char *nl  = strchr(line, '\n');
+        size_t      len = (nl != NULL) ? (size_t) (nl - line) : strlen(line);
+        char        l[SCRIPT_LINE_MAX];
+
+        if (line[0] != '#')
+        {
+            break;              /* the header is the leading comment block */
+        }
+        if (len < sizeof(l))
+        {
+            char id[64];
+            char roles[64];
+
+            memcpy(l, line, len);
+            l[len] = '\0';
+            if (strncmp(l, "# dim ", 6) == 0 && dims != NULL && n < max
+                && script_header_word(l + 6, "id", 0, id, sizeof(id))
+                && psd_script_id_ok(id))
+            {
+                psd_script_dim_t *d = &dims[n];
+                char kind[16] = "";
+                memset(d, 0, sizeof(*d));
+                snprintf(d->id, sizeof(d->id), "%s", id);
+                (void) script_header_word(l + 6, "kind", 0, kind,
+                                          sizeof(kind));
+                roles[0] = '\0';
+                (void) script_header_word(l + 6, "roles", 0, roles,
+                                          sizeof(roles));
+                d->numeric   = strcmp(kind, "numeric") == 0;
+                d->sortable  = strstr(roles, "sort") != NULL && d->numeric;
+                d->groupable = strstr(roles, "group") != NULL;
+                if (!script_header_word(l + 6, "label", 1, d->label,
+                                        sizeof(d->label)) || !d->label[0])
+                {
+                    snprintf(d->label, sizeof(d->label), "%s", d->id);
+                }
+                n++;
+            }
+            else if (strncmp(l, "# sort ", 7) == 0 && applied != NULL
+                     && script_header_word(l + 7, "id", 0, id, sizeof(id))
+                     && psd_script_id_ok(id))
+            {
+                snprintf(applied, applied_cap, "%s", id);
+            }
+        }
+        line = (nl != NULL) ? nl + 1 : NULL;
+    }
+    return n;
+}
+
+int psd_script_poll_command(const char *base, const char *sort, int limit,
+                            char *out, size_t cap)
+{
+    char words[64] = "";
+    int  w = 0;
+
+    if (sort != NULL && sort[0] != '\0' && psd_script_id_ok(sort))
+    {
+        w += snprintf(words + w, sizeof(words) - (size_t) w, " sort=%s", sort);
+    }
+    if (limit > 0 && limit <= 4096)
+    {
+        w += snprintf(words + w, sizeof(words) - (size_t) w, " limit=%d",
+                      limit);
+    }
+    if (snprintf(out, cap, "%s%s", base, words) >= (int) cap)
+    {
+        snprintf(out, cap, "%s", base);   /* too long: no request at all */
+        return 0;
+    }
+    return 1;
 }
 
 int psd_script_parse(const char *buf, psd_proc_t *out, int max)
@@ -751,13 +905,41 @@ static int script_list(psd_proc_t *out, int max)
     int          n;
     int          i;
 
-    if (script_run_capture(script_poll_cmd, buf, sizeof(buf), script_timeout_ms) < 0)
+    char         cmd[SCRIPT_CMD_MAX + 64];
+
+    /* A request rides on the poll only once the backend has declared
+     * dimensions: a plain script never gets words it did not ask for. */
+    if (script_ndims > 0)
+    {
+        int sortable = 0;
+        int d;
+        for (d = 0; d < script_ndims; d++)
+        {
+            if (script_dims[d].sortable
+                && strcmp(script_dims[d].id, script_req_sort) == 0)
+            {
+                sortable = 1;
+            }
+        }
+        (void) psd_script_poll_command(script_poll_cmd,
+                                       sortable ? script_req_sort : NULL,
+                                       script_req_limit, cmd, sizeof(cmd));
+    }
+    else
+    {
+        snprintf(cmd, sizeof(cmd), "%s", script_poll_cmd);
+    }
+
+    if (script_run_capture(cmd, buf, sizeof(buf), script_timeout_ms) < 0)
     {
         script_last_n = 0;   /* state unknown: nothing counts as live */
         return 0;
     }
 
     n = psd_script_parse(buf, out, max);
+    script_ndims = psd_script_parse_header(buf, script_dims,
+                                           PSD_SCRIPT_DIMS_MAX, script_applied,
+                                           sizeof(script_applied));
 
     /* Stamp the current uid so script entities pass the (uid) triage filter,
      * and cache the snapshot for label lookup during a response. */
@@ -822,6 +1004,7 @@ static const proc_backend_t script_backend =
     script_renice,
     script_kill,
     script_lookup,
+    1,               /* preserves_order: the plugin curates */
 };
 
 /* ----------------------------------------------------------------- install */
@@ -835,6 +1018,10 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
              respond_cmd != NULL ? respond_cmd : "");
     script_timeout_ms = (timeout_ms > 0) ? timeout_ms : 1000;
     script_last_n     = 0;
+    script_ndims      = 0;
+    script_applied[0] = '\0';
+    script_req_sort[0] = '\0';
+    script_req_limit  = 0;
 
     proc_backend_set(&script_backend);
 }
@@ -861,4 +1048,76 @@ int proc_script_install_from_env(void)
     proc_script_install(poll, respond, ms);
     fprintf(stderr, "psDoom: script backend active (poll: %s)\n", poll);
     return 1;
+}
+
+/* ------------------------------------------------------- sort request (host) */
+
+int proc_script_active(void)
+{
+    return proc_backend() == &script_backend;
+}
+
+void proc_script_set_limit(int limit)
+{
+    script_req_limit = limit;
+}
+
+/* The sortable dimension the next poll asks for: the player's choice if the
+ * backend still offers it, else what the last poll applied. */
+static int script_current_sort_index(void)
+{
+    const char *want = script_req_sort[0] ? script_req_sort : script_applied;
+    int         i;
+
+    for (i = 0; i < script_ndims; i++)
+    {
+        if (script_dims[i].sortable && strcmp(script_dims[i].id, want) == 0)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int proc_script_sort_count(void)
+{
+    int i, n = 0;
+
+    for (i = 0; i < script_ndims; i++)
+    {
+        n += script_dims[i].sortable;
+    }
+    return n;
+}
+
+const char *proc_script_sort_label(void)
+{
+    int i = script_current_sort_index();
+    return (i >= 0) ? script_dims[i].label : NULL;
+}
+
+void proc_script_cycle_sort(int dir)
+{
+    int start = script_current_sort_index();
+    int i;
+    int k;
+
+    if (proc_script_sort_count() == 0)
+    {
+        return;
+    }
+    if (start < 0)
+    {
+        start = (dir >= 0) ? script_ndims - 1 : 0;
+    }
+    for (k = 1; k <= script_ndims; k++)
+    {
+        i = (start + (dir >= 0 ? k : -k) + script_ndims * k) % script_ndims;
+        if (script_dims[i].sortable)
+        {
+            snprintf(script_req_sort, sizeof(script_req_sort), "%s",
+                     script_dims[i].id);
+            return;
+        }
+    }
 }

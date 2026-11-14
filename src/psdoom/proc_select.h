@@ -69,6 +69,14 @@ int psd_select_triage(const psd_proc_t *raw, int n_raw,
                       unsigned int uid, int self_pid, int all_users,
                       psd_proc_t *out, int max);
 
+/* As psd_select_triage, with the same filters, but the survivors keep the
+ * order of `raw` instead of being ranked: for a backend whose entities are
+ * already curated (the script backend). psd_select_collect picks this when
+ * the active backend sets preserves_order. */
+int psd_select_triage_ordered(const psd_proc_t *raw, int n_raw,
+                              unsigned int uid, int self_pid, int all_users,
+                              psd_proc_t *out, int max);
+
 #ifdef __cplusplus
 }
 #endif

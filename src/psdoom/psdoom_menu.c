@@ -9,6 +9,7 @@
 
 #include "psdoom_menu.h"
 #include "psdoom_options.h"
+#include "proc_script.h"   /* "Sort by" from the script backend */
 
 #include <stdio.h>
 
@@ -125,8 +126,16 @@ static void M_DrawPsDoom(void)
         PSD_Row(psd_row_monstercap, "Max live monsters", numbuf, 1, 1);
     }
 
-    PSD_Row(psd_row_classify, "Monster size by",
-            psd_classify_names[psdoom_classify_by], 1, 1);
+    if (proc_script_active() && proc_script_sort_count() > 0)
+    {
+        const char *label = proc_script_sort_label();
+        PSD_Row(psd_row_classify, "Sort by", label ? label : "default", 1, 1);
+    }
+    else
+    {
+        PSD_Row(psd_row_classify, "Monster size by",
+                psd_classify_names[psdoom_classify_by], 1, 1);
+    }
 
     PSD_Row(psd_row_allusers, "Target all users' processes",
             psdoom_all_users ? "on" : "off", 1, psdoom_all_users);

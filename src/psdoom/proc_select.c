@@ -210,9 +210,27 @@ void psd_select_init(void)
     select_self_pid = (int) getpid();
 }
 
+static int select_triage(const psd_proc_t *raw, int n_raw,
+                         unsigned int uid, int self_pid, int all_users,
+                         psd_proc_t *out, int max, int keep_order);
+
 int psd_select_triage(const psd_proc_t *raw, int n_raw,
                       unsigned int uid, int self_pid, int all_users,
                       psd_proc_t *out, int max)
+{
+    return select_triage(raw, n_raw, uid, self_pid, all_users, out, max, 0);
+}
+
+int psd_select_triage_ordered(const psd_proc_t *raw, int n_raw,
+                              unsigned int uid, int self_pid, int all_users,
+                              psd_proc_t *out, int max)
+{
+    return select_triage(raw, n_raw, uid, self_pid, all_users, out, max, 1);
+}
+
+static int select_triage(const psd_proc_t *raw, int n_raw,
+                         unsigned int uid, int self_pid, int all_users,
+                         psd_proc_t *out, int max, int keep_order)
 {
     int ancestors[PSD_MAX_ANCESTORS];
     int n_ancestors;
@@ -242,8 +260,13 @@ int psd_select_triage(const psd_proc_t *raw, int n_raw,
         select_work[kept++] = *p;
     }
 
-    /* Rank by relevance, then truncate to the caller's capacity. */
-    qsort(select_work, (size_t) kept, sizeof(psd_proc_t), select_cmp);
+    /* Rank by relevance, then truncate to the caller's capacity. A backend
+     * whose entities arrive already curated (the script backend) keeps its
+     * order: the same safety filters ran above, only the sort is skipped. */
+    if (!keep_order)
+    {
+        qsort(select_work, (size_t) kept, sizeof(psd_proc_t), select_cmp);
+    }
 
     n = (kept < max) ? kept : max;
     for (i = 0; i < n; i++)
@@ -265,9 +288,10 @@ int psd_select_collect(psd_proc_t *out, int max)
 
     select_raw_count = n_raw;   /* remember for psd_select_child_count() */
 
-    return psd_select_triage(select_raw, n_raw,
-                             select_uid, select_self_pid,
-                             psdoom_all_users_enabled(), out, max);
+    return select_triage(select_raw, n_raw,
+                         select_uid, select_self_pid,
+                         psdoom_all_users_enabled(), out, max,
+                         proc_backend()->preserves_order);
 }
 
 int psd_select_child_count(int pid)

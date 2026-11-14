@@ -47,6 +47,11 @@ typedef struct
      * `out` and returns 1 if a live process (or entity) has that pid, 0 if
      * none does. */
     int          (*lookup)(int pid, psd_proc_t *out);
+
+    /* 1 if list() returns entities already in the order to show them (the
+     * script backend: its plugin curates), so triage must filter but not
+     * re-sort. 0 (the default when omitted) for native backends. */
+    int          preserves_order;
 } proc_backend_t;
 
 /* The backend in effect. Never NULL on a supported platform. */

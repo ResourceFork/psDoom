@@ -3,6 +3,7 @@
  */
 
 #include "psdoom_options.h"
+#include "proc_script.h"   /* the script backend's sort dimensions */
 
 #include "m_argv.h"   /* M_ParmExists */
 
@@ -138,6 +139,13 @@ void psdoom_opt_adjust_monstercap(int choice)
 
 void psdoom_opt_cycle_classifyby(int choice)
 {
+    /* A curating script backend offers its own dimensions: the row becomes
+     * "Sort by" and cycles through them (the next poll asks for it). */
+    if (proc_script_active() && proc_script_sort_count() > 0)
+    {
+        proc_script_cycle_sort(choice == 1 ? 1 : -1);
+        return;
+    }
     psd_cycle(&psdoom_classify_by, choice, PSD_CLASSIFY_NUM);
 }
 

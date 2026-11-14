@@ -128,6 +128,7 @@ static int        psd_collect_count;
 static int        psd_backend_action_count;
 static int        psd_next_sync;               /* leveltime gate              */
 static psd_proc_t psd_selected[PSD_CANDIDATE_CAP]; /* curated set, reused each sync */
+static int        psd_selected_n;                    /* entries valid in it      */
 
 /* Processes the player has killed on the current level. Remembered (by pid +
  * start token + name, so a reused pid isn't wrongly suppressed) so psdoom_sync
@@ -995,7 +996,11 @@ void psdoom_init(void)
 {
     /* If PSDOOM_POLL_CMD is set, swap the native OS backend for the external
      * script backend before anything reads the process list or the uid. */
-    proc_script_install_from_env();
+    if (proc_script_install_from_env())
+    {
+        /* Ask a curating backend for as many candidates as triage keeps. */
+        proc_script_set_limit(PSD_CANDIDATE_CAP);
+    }
 
     psd_select_init();
     psdoom_options_parse_args();   /* let -psdoom-* flags override the config */
@@ -1171,6 +1176,7 @@ void psdoom_sync(void)
 
     /* Ask the triage layer for the curated, ranked, truncated collection. */
     n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
+    psd_selected_n = n;
     psd_collect_count++;
 
     psd_fog_sound_played = false;
@@ -1466,6 +1472,21 @@ static void PSD_DrawCenteredHUString(int sprite_center_twice, int y,
     PSD_DrawHUString(x, y, str);
 }
 
+/* The group label of the curated entity `pid`, or NULL if it has none. */
+static const char *PSD_GroupFor(int pid)
+{
+    int i;
+
+    for (i = 0; i < psd_selected_n; i++)
+    {
+        if (psd_selected[i].pid == pid)
+        {
+            return psd_selected[i].group[0] ? psd_selected[i].group : NULL;
+        }
+    }
+    return NULL;
+}
+
 void psdoom_draw_label(int x1_fb, int x2_fb, int top_fb, int scale, int pid,
                        const char *name, int mobjflags)
 {
@@ -1536,6 +1557,25 @@ void psdoom_draw_label(int x1_fb, int x2_fb, int top_fb, int scale, int pid,
         snprintf(buf, sizeof(buf), "%d", pid);
         PSD_DrawCenteredHUString(sprite_center_twice, y, buf);
         y += PSD_LABEL_LINE_H;
+    }
+
+    /* A script entity's group (`group=`), when it differs from its name,
+     * goes on its own line above the name. */
+    {
+        const char *group = PSD_GroupFor(pid);
+        if (group != NULL && (name == NULL || strcmp(group, name) != 0))
+        {
+            char gbuf[sizeof(((psd_proc_t *) 0)->group)];
+            int  i;
+            for (i = 0; i < (int) sizeof(gbuf) - 1 && group[i] != '\0'; i++)
+            {
+                unsigned char c = (unsigned char) group[i];
+                gbuf[i] = (c >= 0x20 && c < 0x7f) ? (char) c : ' ';
+            }
+            gbuf[i] = '\0';
+            PSD_DrawCenteredHUString(sprite_center_twice, y, gbuf);
+            y += PSD_LABEL_LINE_H;
+        }
     }
 
     if (name != NULL)

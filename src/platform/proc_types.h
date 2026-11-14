@@ -36,6 +36,9 @@ typedef struct
      * native process, a script entity without grade) means weight/load. */
     int                has_grade;
     double             grade;
+    /* Script backend only: the entity's group label (`group=`), "" if none.
+     * Drawn above the monster's label; never part of its identity. */
+    char               group[PSD_PROC_NAME_MAX];
 } psd_proc_t;
 
 #endif /* PSDOOM_PROC_TYPES_H */
