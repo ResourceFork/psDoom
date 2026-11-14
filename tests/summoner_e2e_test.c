@@ -108,6 +108,22 @@ static int count_in(const char *path, const char *needle)
     return n;
 }
 
+/* Wait up to `ms` for `needle` to occur at least `want` times in `path`,
+ * then return the count. The plugin rewrites the CSV before Summoner appends
+ * its audit line, so the count can lag the CSV by a moment. */
+static int wait_count(const char *path, const char *needle, int want, int ms)
+{
+    int waited = 0;
+    int n = count_in(path, needle);
+    while (n < want && waited < ms)
+    {
+        usleep(20000);
+        waited += 20;
+        n = count_in(path, needle);
+    }
+    return n;
+}
+
 /* Wait until `path` does (want=1) or does not (want=0) contain `needle`. */
 static int wait_file(const char *path, const char *needle, int want, int ms)
 {
@@ -317,14 +333,14 @@ void summoner_e2e_tests(int *checks_run, int *checks_failed)
     E2E_CHECK(psd_proc_renice_checked(out[a].pid, 0, "Alpha", 4) == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "r1,Alpha,1", 1, 5000));
     E2E_CHECK(wait_file(audit, "\"action\": \"nudge\"", 1, 3000));
-    E2E_CHECK(count_in(audit, "\"outcome\": \"ok\"") == 2);
+    E2E_CHECK(wait_count(audit, "\"outcome\": \"ok\"", 2, 3000) == 2);
 
     /* A label cut at 31 bytes: psDoom sends back exactly what Summoner
      * listed, so Summoner's label check lets the real kill through. */
     E2E_CHECK(strlen(out[d].name) == 31);
     E2E_CHECK(psd_proc_kill_checked(out[d].pid, 0, out[d].name) == PSD_ACT_DONE);
     E2E_CHECK(wait_file(csv, "thirty-one", 0, 5000));
-    E2E_CHECK(count_in(audit, "\"outcome\": \"ok\"") == 3);
+    E2E_CHECK(wait_count(audit, "\"outcome\": \"ok\"", 3, 3000) == 3);
     E2E_CHECK(!file_has(audit, "label-mismatch"));
     E2E_CHECK(file_has(audit, "\"verb\": \"delete\""));
     E2E_CHECK(file_has(audit, "\"verb\": \"post\""));
