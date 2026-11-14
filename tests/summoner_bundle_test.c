@@ -251,6 +251,15 @@ static void test_bundled_summoner(void)
     BT_CHECK(bt_write(summon, "this is not python (\n"));
     n = psd_select_collect(ents, 4);
     BT_CHECK(n == 0);
+    BT_CHECK(proc_script_status() != NULL
+             && strstr(proc_script_status(), "failed") != NULL);
+    /* Summoner reporting an error (exit 0, "# summon error" only). */
+    BT_CHECK(bt_write(summon, "print('# summon error: root is writable')\n"));
+    BT_CHECK(proc_script_install_bundled(exe) == 1);
+    n = psd_select_collect(ents, 4);
+    BT_CHECK(n == 0);
+    BT_CHECK(proc_script_status() != NULL
+             && strstr(proc_script_status(), "failed") != NULL);
     BT_CHECK(psd_proc_kill_checked(77, 0, "stub") == PSD_ACT_GONE);
 
     /* Hung: a summon that never answers -> the poll times out, no

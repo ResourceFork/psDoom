@@ -4,7 +4,7 @@
   "cache_ttl_s": 2,
   "plugin": {
     "name": "csv",
-    "command": ["python3", "${SUMMONER_DIR}/plugins/csv_rows.py",
+    "command": ["${PYTHON}", "${SUMMONER_DIR}/plugins/csv_rows.py",
                 "--file", "REPLACE-WITH-AN-ABSOLUTE-PATH.csv",
                 "--key-column", "id", "--name-column", "name",
                 "--priority-column", "priority"],

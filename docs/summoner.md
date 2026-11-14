@@ -360,7 +360,7 @@ names it knows. `ps` (your own processes) is built in, dry run, remove off; a
   "rate_limit": {"actions": 10, "per_s": 60},
   "plugin": {
     "name": "csv",
-    "command": ["python3", "${SUMMONER_DIR}/plugins/csv_rows.py",
+    "command": ["${PYTHON}", "${SUMMONER_DIR}/plugins/csv_rows.py",
                 "--file", "/Users/you/todo.csv", "--priority-column", "priority"],
     "allow_remove": false,
     "timeout_s": 10

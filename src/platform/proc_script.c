@@ -54,7 +54,7 @@ static char script_respond_cmd[SCRIPT_CMD_MAX];
 /* A fixed responder argv (the bundled Summoner: python3 + summon), used
  * instead of splitting script_respond_cmd on whitespace, so paths with
  * spaces (an app in "/Applications/psDoom copy.app") stay one argument. */
-static char script_resp_fixed[2][SCRIPT_CMD_MAX];
+static char script_resp_fixed[4][SCRIPT_CMD_MAX];
 static int  script_resp_nfixed;
 
 /* Why there are no process monsters, once known ("" while all is well);
@@ -637,12 +637,15 @@ static void script_stop_group(pid_t pgid)
  * leader reaped, so no part of the command outlives the poll. Returns bytes
  * captured (>= 0), or -1 if the child could not be spawned.
  */
-/* 1 if the last capture was cut off (timeout, full buffer, error). */
+/* 1 if the last capture was cut off (timeout, full buffer, error), and the
+ * command's exit status when it exited on its own (0 otherwise). */
 static int script_capture_cut;
+static int script_capture_exit;
 
 static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_ms)
 {
-    script_capture_cut = 0;
+    script_capture_cut  = 0;
+    script_capture_exit = 0;
     int                fds[2];
     pid_t              pid;
     int                total = 0;
@@ -783,10 +786,15 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
      * and kept running. */
     while (!stop)
     {
-        pid_t w = waitpid(pid, NULL, WNOHANG);
+        int   st = 0;
+        pid_t w = waitpid(pid, &st, WNOHANG);
 
         if (w == pid || (w < 0 && errno != EINTR))
         {
+            if (w == pid && WIFEXITED(st))
+            {
+                script_capture_exit = WEXITSTATUS(st);
+            }
             return total;         /* exited and reaped */
         }
         if (script_mono_ms() >= deadline)
@@ -967,10 +975,10 @@ static int script_list(psd_proc_t *out, int max)
         || (script_capture_cut && strchr(buf, '\n') == NULL))
     {
         /* No process monsters until a poll works again; say why once. */
+        snprintf(script_status, sizeof(script_status),
+                 "No process monsters: Summoner did not answer");
         if (!script_poll_failing)
         {
-            snprintf(script_status, sizeof(script_status),
-                     "No process monsters: Summoner did not answer");
             fprintf(stderr, "psDoom: %s (poll: %s)\n", script_status,
                     script_poll_cmd);
         }
@@ -980,6 +988,23 @@ static int script_list(psd_proc_t *out, int max)
     }
 
     n = psd_script_parse(buf, out, max);
+    /* A poll that lists nothing because it failed -- it exited non-zero, or
+     * Summoner reported an error -- is a failure to report, not an empty
+     * list. */
+    if (n == 0 && (script_capture_exit != 0
+                   || strncmp(buf, "# summon error", 14) == 0))
+    {
+        snprintf(script_status, sizeof(script_status),
+                 "No process monsters: Summoner failed (see the log)");
+        if (!script_poll_failing)
+        {
+            fprintf(stderr, "psDoom: %s (exit %d; %.200s)\n", script_status,
+                    script_capture_exit, buf);
+        }
+        script_poll_failing = 1;
+        script_last_n = 0;
+        return 0;
+    }
     if (script_poll_failing)
     {
         fprintf(stderr, "psDoom: Summoner answers again\n");
@@ -1288,8 +1313,8 @@ static int script_readable(const char *path)
 
 int proc_script_install_bundled(const char *exe_path)
 {
-    char summon[SCRIPT_CMD_MAX];
-    char python[SCRIPT_CMD_MAX];
+    char summon[SCRIPT_CMD_MAX] = "";
+    char python[SCRIPT_CMD_MAX] = "";
     char qpy[SCRIPT_CMD_MAX];
     char qsummon[SCRIPT_CMD_MAX];
     char poll[SCRIPT_CMD_MAX];
@@ -1315,7 +1340,9 @@ int proc_script_install_bundled(const char *exe_path)
     }
     if (!psd_sh_quote(python, qpy, sizeof(qpy))
         || !psd_sh_quote(summon, qsummon, sizeof(qsummon))
-        || snprintf(poll, sizeof(poll), "%s %s get", qpy, qsummon)
+        /* -I: no PYTHONPATH or user site from the environment; -B: never
+         * write __pycache__ into the (signed) app bundle. */
+        || snprintf(poll, sizeof(poll), "%s -I -B %s get", qpy, qsummon)
            >= (int) sizeof(poll))
     {
         snprintf(script_status, sizeof(script_status),
@@ -1325,8 +1352,10 @@ int proc_script_install_bundled(const char *exe_path)
     }
     proc_script_install(poll, NULL, 0);
     snprintf(script_resp_fixed[0], sizeof(script_resp_fixed[0]), "%s", python);
-    snprintf(script_resp_fixed[1], sizeof(script_resp_fixed[1]), "%s", summon);
-    script_resp_nfixed = 2;
+    snprintf(script_resp_fixed[1], sizeof(script_resp_fixed[1]), "-I");
+    snprintf(script_resp_fixed[2], sizeof(script_resp_fixed[2]), "-B");
+    snprintf(script_resp_fixed[3], sizeof(script_resp_fixed[3]), "%s", summon);
+    script_resp_nfixed = 4;
     fprintf(stderr, "psDoom: Summoner active (%s %s)\n", python, summon);
     return 1;
 }
