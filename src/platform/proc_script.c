@@ -66,6 +66,10 @@ static char             script_applied[PSD_SCRIPT_ID_MAX + 1];
 static char             script_req_sort[PSD_SCRIPT_ID_MAX + 1];
 static int              script_req_limit;
 
+/* The host's effect mode, sent as `mode=` on every response so Summoner
+ * decides what runs: "dryrun" (the safe default), "post-only", "delete". */
+static char             script_mode[16] = "dryrun";
+
 /* --------------------------------------------------------------- pure parse */
 
 /* Parse `val` as plain decimal digits (no sign, space or trailing character)
@@ -816,6 +820,7 @@ static int script_run_respond(const char *verb, int id,
     char  idbuf[32];
     char  amountbuf[48];
     char  labelbuf[64];
+    char  modebuf[32];
     char *argv[SCRIPT_ARGV_MAX];
     int   n;
     int   fd_limit;
@@ -835,7 +840,7 @@ static int script_run_respond(const char *verb, int id,
      * command and its static args from the configured string, then the
      * psDoom-supplied arguments (the documented contract). */
     snprintf(cmd, sizeof(cmd), "%s", script_respond_cmd);
-    n = script_split_cmd(cmd, argv, SCRIPT_ARGV_MAX - 6);
+    n = script_split_cmd(cmd, argv, SCRIPT_ARGV_MAX - 7);
     if (n <= 0)
     {
         return 1;
@@ -853,6 +858,8 @@ static int script_run_respond(const char *verb, int id,
         snprintf(labelbuf, sizeof(labelbuf), "label=%s", label);
         argv[n++] = labelbuf;
     }
+    snprintf(modebuf, sizeof(modebuf), "mode=%s", script_mode);
+    argv[n++] = modebuf;
     argv[n]  = NULL;
     devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
@@ -1022,6 +1029,7 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
     script_applied[0] = '\0';
     script_req_sort[0] = '\0';
     script_req_limit  = 0;
+    snprintf(script_mode, sizeof(script_mode), "dryrun");
 
     proc_backend_set(&script_backend);
 }
@@ -1120,4 +1128,17 @@ void proc_script_cycle_sort(int dir)
             return;
         }
     }
+}
+
+int proc_script_set_mode(const char *mode)
+{
+    if (mode == NULL
+        || (strcmp(mode, "dryrun") != 0 && strcmp(mode, "post-only") != 0
+            && strcmp(mode, "delete") != 0))
+    {
+        snprintf(script_mode, sizeof(script_mode), "dryrun");
+        return 0;
+    }
+    snprintf(script_mode, sizeof(script_mode), "%s", mode);
+    return 1;
 }

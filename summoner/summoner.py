@@ -300,6 +300,36 @@ def read_audit(cfg):
 
 # --------------------------------------------------------- plugin running --
 
+HOST_PIDS_ENV = "SUMMONER_HOST_PIDS"
+
+
+def ancestor_pids(pid):
+    """pid and its ancestors (above 1), from one `ps` listing. Summoner
+    hands these to the plugin so it can leave out the host that called
+    Summoner (psDoom, its shell, its launchers) and Summoner itself."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid="],
+                             stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return [pid]
+    parent = {}
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) == 2 and f[0].isdigit() and f[1].isdigit():
+            parent[int(f[0])] = int(f[1])
+    chain, cur = [], pid
+    while cur > 1 and cur not in chain and len(chain) < 64:
+        chain.append(cur)
+        cur = parent.get(cur, 0)
+    return chain
+
+
+def parse_pid_list(text):
+    return [int(x) for x in (text or "").split(",")
+            if x.isdigit() and 1 < int(x) <= 2147483647][:256]
+
+
 def run_plugin(cfg, args, stdin_data=None, timeout=None):
     """Run the plugin with an argument vector (never a shell). Returns
     (exit_code, stdout_text). Stdin is /dev/null unless data is given. The
@@ -308,8 +338,12 @@ def run_plugin(cfg, args, stdin_data=None, timeout=None):
     cmd = list(cfg["plugin"]["command"]) + list(args)
     if timeout is None:
         timeout = float(cfg["plugin"]["timeout_s"])
+    env = dict(os.environ)
+    host = sorted(set(cfg.get("host_pids", [])) | set(ancestor_pids(os.getpid())))
+    env[HOST_PIDS_ENV] = ",".join(str(p) for p in host)
     proc = subprocess.Popen(
         cmd,
+        env=env,
         stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -815,6 +849,11 @@ def refresh(cfg, words=()):
     """Run describe + list (with the host's request, checked against the
     plugin's dimensions) and rewrite the cache. Single-flight: if another
     refresher holds refresh.lock this returns False without running."""
+    words = list(words)
+    host = [w for w in words if w.startswith("host_pids=")]
+    words = [w for w in words if not w.startswith("host_pids=")]
+    if host:
+        cfg = dict(cfg, host_pids=parse_pid_list(host[-1][10:]))
     req, unknown = canonical_request(words)
     ensure_state_dir(cfg)
     with Locked(state_path(cfg, "refresh.lock"), blocking=False) as lk:
@@ -918,6 +957,8 @@ def render(items, cache=None):
 
 def cmd_poll(cfg, words=()):
     ensure_state_dir(cfg)
+    # host_pids is Summoner's own word between get and its refresher.
+    words = [w for w in words if not w.startswith("host_pids=")]
     req, _ = canonical_request(words)
     key = request_key(req)
     cache = read_cache(cfg)
@@ -936,7 +977,11 @@ def cmd_poll(cfg, words=()):
     backoff = not dirty and not changed and \
         now - last_try < cfg["cache_ttl_s"]
     if stale and not backoff and not refresher_running(cfg):
-        spawn_refresher(cfg, words)
+        # The refresher runs detached, so it cannot see who called get:
+        # hand it this get's ancestors (the shell, the host, its launchers).
+        chain = ancestor_pids(os.getpid())
+        spawn_refresher(cfg, list(words) +
+                        ["host_pids=" + ",".join(str(p) for p in chain)])
     if cache is None or changed:
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
         while time.monotonic() < deadline:
@@ -992,12 +1037,20 @@ def cmd_respond(cfg, argv):
         return 0
 
 
+HOST_MODES = ("dryrun", "post-only", "delete")
+
+
 def _respond(cfg, argv):
     verb = argv[0] if argv else ""
     ident = argv[1] if len(argv) > 1 else ""
     extras = parse_extras(argv[2:])
+    # The host's effect mode. Missing or unknown counts as dryrun: an
+    # event never acts unless the host said it may.
+    mode = extras.get("mode")
+    if mode not in HOST_MODES:
+        mode = "dryrun"
     entry = {"verb": verb[:32], "id": ident[:16],
-             "game_label": extras.get("label", "")[:64]}
+             "game_label": extras.get("label", "")[:64], "mode": mode}
     pverb = VERB_MAP.get(verb)
     if pverb is None:
         audit(cfg, dict(entry, outcome="ignored-verb"))
@@ -1037,11 +1090,19 @@ def _respond(cfg, argv):
         amount = min(max(amount, 1), 100)
         args.append("amount=%d" % amount)
         entry["amount"] = amount
+    # The effective action is the stricter of the host's mode and this
+    # plugin's own config (dry_run, allow_remove).
+    if mode == "dryrun":
+        audit(cfg, dict(entry, outcome="dry-run", reason="host mode"))
+        return 0
     if cfg["dry_run"]:
-        audit(cfg, dict(entry, outcome="dry-run"))
+        audit(cfg, dict(entry, outcome="dry-run", reason="plugin config"))
+        return 0
+    if pverb == "remove" and mode != "delete":
+        audit(cfg, dict(entry, outcome="blocked", reason="host mode"))
         return 0
     if pverb == "remove" and not cfg["plugin"]["allow_remove"]:
-        audit(cfg, dict(entry, outcome="blocked"))
+        audit(cfg, dict(entry, outcome="blocked", reason="plugin config"))
         return 0
     with Locked(state_path(cfg, "state.lock")):
         allowed = rate_allow(cfg, time.time())

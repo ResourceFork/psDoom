@@ -1237,11 +1237,27 @@ void psdoom_sync(void)
     }
 }
 
+/* The script backend's mode for the current effect setting. Summoner, not
+ * psDoom, then decides what runs: the game always reports the event. */
+static const char *PSD_ScriptMode(void)
+{
+    if (psdoom_should_kill())
+    {
+        return "delete";
+    }
+    return psdoom_should_renice() ? "post-only" : "dryrun";
+}
+
 void psdoom_wound(struct mobj_s *target)
 {
     mobj_t *mo = (mobj_t *) target;
+    int     script = proc_script_active();
 
-    if (mo != NULL && mo->psd_pid > 1 && psdoom_should_renice())
+    if (script)
+    {
+        proc_script_set_mode(PSD_ScriptMode());
+    }
+    if (mo != NULL && mo->psd_pid > 1 && (script || psdoom_should_renice()))
     {
         psd_act_result_t r;
 
@@ -1285,7 +1301,11 @@ void psdoom_kill(struct mobj_s *target)
         return;
     }
 
-    if (psdoom_should_kill())
+    if (proc_script_active())
+    {
+        proc_script_set_mode(PSD_ScriptMode());
+    }
+    if (proc_script_active() || psdoom_should_kill())
     {
         psd_act_result_t r;
 

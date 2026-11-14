@@ -25,9 +25,17 @@ further ones are dropped (one browser's forty helpers would otherwise fill
 every monster slot). Noise names then move below everything else, on any
 sort (relevance also scores them down, as psDoom does).
 
-Safety: the session-critical names below are left out, but psDoom keeps
-its own protected-name, self and launcher-chain filters for every script
-entity: a plugin is never trusted to protect the session. Then `group` gathers members together, ordered by each
+Safety: this plugin is trusted; psDoom does not filter what it lists
+(docs/script-backend.md, "Trust"). So it leaves out, itself:
+- psDoom's protected, session-critical names (loginwindow, WindowServer,
+  Dock, Finder, SystemUIServer, launchd, kernel_task) plus the games and
+  the usual terminal apps;
+- pid 0 and 1;
+- itself and its own parent chain (the Summoner process running it);
+- the host chain Summoner passes in $SUMMONER_HOST_PIDS: the `summon get`
+  that psDoom ran, its shell, psDoom itself and the launchers above it
+  (psDoom's native "launcher chain" guard).
+Only your own processes are listed (`ps -x`). Then `group` gathers members together, ordered by each
 group's best member, and `limit` cuts the list. `grade` is the item's
 place on the primary dimension among the listed items (1 = the best end
 of the requested direction), so the monsters spread over the whole ladder.
@@ -46,9 +54,9 @@ import subprocess
 import sys
 import time
 
-# Session-critical names, mirroring psDoom's scripts/poll-processes.sh, plus
-# the games and the usual terminal apps that launch them (this plugin has no
-# launcher-chain guard like psDoom's native backend).
+# psDoom's protected, session-critical names (src/psdoom/proc_select.c
+# select_protected_names), plus the games and the usual terminal apps that
+# launch them. The launcher chain itself comes from SUMMONER_HOST_PIDS.
 DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
         "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom",
         "Terminal", "iTerm2"}
@@ -104,9 +112,32 @@ def describe():
     }
 
 
-def parse_ps(text, self_pid):
+def host_pids(env=None):
+    """The host chain Summoner passed: comma-separated pids above 1."""
+    text = (os.environ if env is None else env).get("SUMMONER_HOST_PIDS", "")
+    return {int(x) for x in text.split(",")
+            if x.isdigit() and 1 < int(x) <= 2147483647}
+
+
+def chain_of(pid, parent):
+    out = set()
+    while pid > 1 and pid not in out and len(out) < 64:
+        out.add(pid)
+        pid = parent.get(pid, 0)
+    return out
+
+
+def parse_ps(text, self_pid, exclude=()):
     """Parse `ps -xo PS_FIELDS` output. lstart is five words
-    ("Thu Nov 12 09:01:02 2026"); comm is the rest of the line."""
+    ("Thu Nov 12 09:01:02 2026"); comm is the rest of the line. Leaves out
+    pid <= 1, the protected names, `self_pid` and its parent chain, and
+    every pid in `exclude` (the host chain)."""
+    parent = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 2 and f[0].isdigit() and f[1].isdigit():
+            parent[int(f[0])] = int(f[1])
+    skip = chain_of(self_pid, parent) | set(exclude)
     rows = []
     for line in text.splitlines():
         f = line.split()
@@ -125,7 +156,7 @@ def parse_ps(text, self_pid):
         except ValueError:
             started = None
         name = os.path.basename(" ".join(f[10:]))
-        if pid <= 1 or pid == self_pid or name in DENY:
+        if pid <= 1 or pid in skip or name in DENY:
             continue
         rows.append({"pid": pid, "ppid": ppid, "rss": rss, "cpu": cpu,
                      "tty": tt, "start": start, "name": name,
@@ -271,7 +302,8 @@ def main(argv):
         return 0
     if verb == "list":
         sort, group, limit = parse_request(argv[1:])
-        listed = items(parse_ps(ps(["-xo", PS_FIELDS]), os.getpid()))
+        listed = items(parse_ps(ps(["-xo", PS_FIELDS]), os.getpid(),
+                                host_pids()))
         for it in curate(listed, sort, group, limit):
             print(json.dumps(it))
         return 0

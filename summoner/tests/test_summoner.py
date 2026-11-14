@@ -63,6 +63,22 @@ elif verb in ("nudge", "remove"):
 '''
 
 
+HOST_MODE = "delete"   # the helpers act as a host in its fullest mode
+
+
+def with_mode(args):
+    """Add `mode=delete` to a post/delete call that names no mode, as a host
+    in its fullest mode would, so a test's plugin config decides."""
+    args = list(args)
+    i = 0
+    while i < len(args) and args[i] in ("--root", "--plugin", "--config"):
+        i += 2
+    if i < len(args) and args[i] in ("post", "delete") and \
+            not any(a.startswith("mode=") for a in args[i:]):
+        args.append("mode=" + HOST_MODE)
+    return args
+
+
 def parse_v1(text):
     """Minimal reader of the v1 poll format, as the game splits it."""
     out = []
@@ -157,8 +173,8 @@ class Base(unittest.TestCase):
         env.update(extra)
         return env
 
-    def summon(self, cfg, *args, timeout=20):
-        args = list(args)
+    def summon(self, cfg, *args, timeout=20, raw=False):
+        args = list(args) if raw else with_mode(args)
         if args and args[0] == "poll":
             args[0] = "get"          # the tests' shorthand for the game's get
         t0 = time.monotonic()
@@ -171,7 +187,7 @@ class Base(unittest.TestCase):
     def cli(self, *args, env=None, exe=None, timeout=20):
         """Run the summon launcher itself (its shebang interpreter is
         bypassed so the suite's own Python runs it)."""
-        r = subprocess.run([PY, exe or SUMMON_CMD] + list(args),
+        r = subprocess.run([PY, exe or SUMMON_CMD] + with_mode(args),
                            stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=timeout, cwd=self.root,
                            env=env or self.env())
@@ -562,6 +578,49 @@ class RespondTests(Base):
     def respond(self, cfg, *args):
         r, _ = self.summon(cfg, *args)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_host_mode_decides_and_stricter_of_wins(self):
+        cfg = self.csv_config(dry_run=False, plugin={"allow_remove": True})
+        rows = self.poll(cfg)
+        a, b = self.id_for(rows, "Alpha"), self.id_for(rows, "Bravo")
+        for mode in (None, "dryrun", "bogus"):
+            extra = [] if mode is None else ["mode=" + mode]
+            self.summon(cfg, "post", a, "amount=4", *extra, raw=True)
+            self.summon(cfg, "delete", b, *extra, raw=True)
+        self.assertEqual(self.read(self.csv), self.original)   # nothing ran
+        self.summon(cfg, "delete", b, "mode=post-only", raw=True)
+        self.assertIn("Bravo", self.read(self.csv))           # refused
+        self.summon(cfg, "post", a, "amount=4", "mode=post-only", raw=True)
+        self.assertIn("a,Alpha,1", self.read(self.csv))       # post runs
+        self.summon(cfg, "delete", b, "mode=delete", raw=True)
+        self.assertNotIn("Bravo", self.read(self.csv))        # delete runs
+        log = self.audit()
+        self.assertEqual([(e["mode"], e["outcome"], e.get("reason"))
+                          for e in log],
+                         [("dryrun", "dry-run", "host mode")] * 6 +
+                         [("post-only", "blocked", "host mode"),
+                          ("post-only", "ok", None),
+                          ("delete", "ok", None)])
+
+    def test_plugin_config_is_the_stricter_limit(self):
+        # host says delete, the plugin config says dry run / remove off
+        cfg = self.csv_config()                       # dry_run default
+        ident = self.id_for(self.poll(cfg), "Bravo")
+        self.summon(cfg, "delete", ident, "mode=delete", raw=True)
+        cfg2 = self.config(self.csv_cmd(self.csv, "--priority-column",
+                                        "priority"), name="csv",
+                           dry_run=False,
+                           state_dir=os.path.join(self.root, "s2"))
+        self.summon(cfg2, "refresh")
+        ident = self.id_for(parse_v1(self.summon(cfg2, "get")[0].stdout),
+                            "Bravo")
+        self.summon(cfg2, "delete", ident, "mode=delete", raw=True)
+        self.assertEqual(self.read(self.csv), self.original)
+        self.assertEqual(self.audit()[-1]["reason"], "plugin config")
+        with open(os.path.join(self.root, "s2", "audit.jsonl")) as f:
+            e = json.loads(f.read().splitlines()[-1])
+        self.assertEqual((e["outcome"], e["reason"]),
+                         ("blocked", "plugin config"))
 
     def test_dry_run_is_the_default(self):
         cfg = self.csv_config(plugin={"allow_remove": True})
@@ -1441,7 +1500,7 @@ class ProcessesPluginTests(Base):
         "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock\n"
         "    1     0    100   0.0 ??       Thu Nov 12 08:00:00 2026 "
         "/sbin/launchd\n"
-        "  999   777    100   0.0 ??       Thu Nov 12 09:06:00 2026 "
+        "  999     1    100   0.0 ??       Thu Nov 12 09:06:00 2026 "
         "/bin/self\n"
         "garbage line\n")
 
@@ -1464,6 +1523,51 @@ class ProcessesPluginTests(Base):
                          "tty": tty, "start": "s%d" % pid, "name": name,
                          "started": 0})
         return rows
+
+    def test_excludes_protected_own_chain_and_host(self):
+        text = (
+            "  300     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/Term\n"
+            "  301   300  100 0.0 ?? Thu Nov 12 09:00:00 2026 /bin/zsh\n"
+            "  302   301  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/psDoom\n"
+            "  303   302  100 0.0 ?? Thu Nov 12 09:00:00 2026 /bin/sh\n"
+            "  400     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 /py/summon\n"
+            "  401   400  100 0.0 ?? Thu Nov 12 09:00:00 2026 /py/plugin\n"
+            "  500     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/Editor\n"
+            "  501     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 "
+            "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock\n"
+            "  502     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 "
+            "/System/Library/CoreServices/loginwindow\n"
+            "    1     0  100 0.0 ?? Thu Nov 12 09:00:00 2026 /sbin/launchd\n")
+        host = P.host_pids({"SUMMONER_HOST_PIDS": "303,302,301,300,x,1,0"})
+        self.assertEqual(host, {300, 301, 302, 303})
+        rows = P.parse_ps(text, self_pid=401, exclude=host)
+        self.assertEqual([r["name"] for r in rows], ["Editor"])
+        # without the host chain, only the plugin's own chain is left out
+        rows = P.parse_ps(text, self_pid=401)
+        self.assertNotIn("plugin", [r["name"] for r in rows])
+        self.assertNotIn("summon", [r["name"] for r in rows])
+        # the launchers are left out only by the host chain; psDoom's own
+        # name is on the deny list either way
+        self.assertIn("Term", [r["name"] for r in rows])
+        self.assertNotIn("psDoom", [r["name"] for r in rows])
+
+    def test_summoner_passes_the_host_chain_to_the_plugin(self):
+        out = os.path.join(self.root, "env.txt")
+        plugin = os.path.join(self.root, "envplug.py")
+        with open(plugin, "w") as f:
+            f.write("import json, os, sys\n"
+                    "if sys.argv[1] == 'describe':\n"
+                    "    print(json.dumps({'verbs': ['list']}))\n"
+                    "else:\n"
+                    "    open(%r, 'a').write(os.environ.get("
+                    "'SUMMONER_HOST_PIDS', '') + '\\n')\n" % out)
+        cfg = self.config([PY, plugin])
+        self.summon(cfg, "poll")
+        self._reap_refresher(cfg)
+        with open(out) as f:
+            pids = {int(x) for x in f.read().split()[-1].split(",")}
+        # the test process ran `summon get`: it is in the host chain
+        self.assertIn(os.getpid(), pids)
 
     def test_relevance_matches_psdooms_score(self):
         mem = 64 * 1024        # KiB: 64 MiB -> +2

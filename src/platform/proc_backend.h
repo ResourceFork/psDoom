@@ -48,9 +48,10 @@ typedef struct
      * none does. */
     int          (*lookup)(int pid, psd_proc_t *out);
 
-    /* 1 if list() returns entities already in the order to show them (the
-     * script backend: its plugin curates), so triage must filter but not
-     * re-sort. 0 (the default when omitted) for native backends. */
+    /* 1 if list() returns entities already curated (the script backend: its
+     * trusted plugin orders, trims and excludes), so triage neither filters
+     * nor re-sorts them. 0 (the default when omitted) for native backends,
+     * which keep every psDoom exclusion. */
     int          preserves_order;
 } proc_backend_t;
 

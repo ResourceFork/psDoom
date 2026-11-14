@@ -307,6 +307,7 @@ void summoner_e2e_tests(int *checks_run, int *checks_failed)
 
     /* ---- live plugin: real post/delete on the test CSV ---- */
     install(root);
+    proc_script_set_mode("delete");   /* as psDoom's Live effect setting */
     n = collect_until(out, 16, 4, 50);
     E2E_CHECK(n == 4);
     a = find_named(out, n, "Alpha");
@@ -361,6 +362,9 @@ void summoner_e2e_tests(int *checks_run, int *checks_failed)
 
     /* ---- default config: dry run, the CSV is left alone ---- */
     install(root_dry);
+    /* The host allows delete, but the plugin config is dry run: the
+     * stricter of the two wins, so nothing runs. */
+    proc_script_set_mode("delete");
     n = collect_until(out, 16, 2, 50);
     E2E_CHECK(n == 2);
     c = find_named(out, n, "Charlie");

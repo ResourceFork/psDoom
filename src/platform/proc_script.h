@@ -89,6 +89,11 @@ const char *proc_script_sort_label(void);
  * on the next poll. */
 void proc_script_cycle_sort(int dir);
 
+/* The host's effect mode, sent as `mode=` on every response: "dryrun",
+ * "post-only" or "delete". Anything else sets "dryrun" and returns 0. The
+ * default after install is "dryrun". */
+int proc_script_set_mode(const char *mode);
+
 #ifdef __cplusplus
 }
 #endif

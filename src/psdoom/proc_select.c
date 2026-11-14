@@ -243,6 +243,21 @@ static int select_triage(const psd_proc_t *raw, int n_raw,
         return 0;
     }
 
+    /* A trusted, curating backend (the script backend: Summoner and its
+     * plugin) owns selection: its entities are not filtered or ranked here,
+     * only cut to the caller's capacity in the order they arrived. The
+     * plugin is responsible for leaving out session-critical processes, the
+     * game and its launchers (docs/script-backend.md, "Trust"). */
+    if (keep_order)
+    {
+        n = (n_raw < max) ? n_raw : max;
+        for (i = 0; i < n; i++)
+        {
+            out[i] = raw[i];
+        }
+        return n;
+    }
+
     n_ancestors = select_build_ancestors(raw, n_raw, self_pid,
                                          ancestors, PSD_MAX_ANCESTORS);
 
@@ -260,13 +275,8 @@ static int select_triage(const psd_proc_t *raw, int n_raw,
         select_work[kept++] = *p;
     }
 
-    /* Rank by relevance, then truncate to the caller's capacity. A backend
-     * whose entities arrive already curated (the script backend) keeps its
-     * order: the same safety filters ran above, only the sort is skipped. */
-    if (!keep_order)
-    {
-        qsort(select_work, (size_t) kept, sizeof(psd_proc_t), select_cmp);
-    }
+    /* Rank by relevance, then truncate to the caller's capacity. */
+    qsort(select_work, (size_t) kept, sizeof(psd_proc_t), select_cmp);
 
     n = (kept < max) ? kept : max;
     for (i = 0; i < n; i++)

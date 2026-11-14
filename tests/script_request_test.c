@@ -120,9 +120,9 @@ static psd_proc_t rq_mk(int pid, const char *name, unsigned long long mem,
 
 static void test_triage_ordered(void)
 {
-    /* Small first, big last: the ranked triage puts the big one first, the
-     * ordered one keeps the input order; both drop the protected and the
-     * foreign-uid entries and self. */
+    /* Small first, big last. The ranked (native) triage drops the protected
+     * name and self and puts the big one first; the trusted (script) path
+     * filters nothing and keeps the input order: the plugin owns that. */
     psd_proc_t raw[5];
     psd_proc_t out[8];
     int        n;
@@ -135,11 +135,14 @@ static void test_triage_ordered(void)
     n = psd_select_triage(raw, 5, 501, 99, 0, out, 8);
     RQ_CHECK(n == 3 && out[0].pid == 13);
     n = psd_select_triage_ordered(raw, 5, 501, 99, 0, out, 8);
-    RQ_CHECK(n == 3);
-    RQ_CHECK(n == 3 && out[0].pid == 10 && out[1].pid == 12
-             && out[2].pid == 13);
+    RQ_CHECK(n == 5);
+    RQ_CHECK(n == 5 && out[0].pid == 10 && out[1].pid == 11
+             && out[2].pid == 12 && out[3].pid == 13 && out[4].pid == 99);
+    raw[2].uid = 777;                               /* another user's: kept */
     n = psd_select_triage_ordered(raw, 5, 501, 99, 0, out, 2);
-    RQ_CHECK(n == 2 && out[1].pid == 12);           /* the cut keeps the head */
+    RQ_CHECK(n == 2 && out[1].pid == 11);           /* the cut keeps the head */
+    n = psd_select_triage(raw, 5, 501, 99, 0, out, 8);
+    RQ_CHECK(n == 2);                               /* native: still filtered */
 }
 
 static int rq_write_exec(const char *path, const char *text)
@@ -245,10 +248,92 @@ static void test_backend_request_roundtrip(void)
     proc_script_cycle_sort(-1);
     RQ_CHECK(strcmp(proc_script_sort_label(), "CPU") == 0);
 
+    /* A protected name and psDoom's own pid, listed by the trusted backend,
+     * reach the game: no host-side filter on the script path. */
+    snprintf(body, sizeof(body),
+             "#!/bin/sh\nprintf 'id=%d\\tlabel=self\\n'\n"
+             "printf 'id=31\\tlabel=Dock\\n'\n"
+             "printf 'id=32\\tlabel=loginwindow\\n'\n", (int) getpid());
+    RQ_CHECK(rq_write_exec(plain, body));
+    snprintf(cmd, sizeof(cmd), "'%s'", plain);
+    proc_script_install(cmd, NULL, 1000);
+    psd_select_init();
+    n = psd_select_collect(ents, 8);
+    RQ_CHECK(n == 3 && ents[0].pid == (int) getpid() && ents[1].pid == 31
+             && ents[2].pid == 32);
+
     proc_backend_set(NULL);
     unlink(plain);
     unlink(dims);
     unlink(args);
+    (void) rmdir(dir);
+}
+
+/* Every response carries the host's mode; the default is dryrun, and an
+ * unknown mode falls back to it. psDoom never withholds the event. */
+static void test_mode_on_respond(void)
+{
+    const char *dir = PSD_E2E_SCRATCH;
+    char        poll[1024], resp[1024], out[1024], body[2048], cmd[1100];
+    char        last[512];
+    psd_proc_t  ents[4];
+
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST)
+    {
+        RQ_CHECK(!"cannot create PSD_E2E_SCRATCH");
+        return;
+    }
+    snprintf(poll, sizeof(poll), "%s/rq-mpoll.sh", dir);
+    snprintf(resp, sizeof(resp), "%s/rq-mresp.sh", dir);
+    snprintf(out,  sizeof(out),  "%s/rq-mresp.txt", dir);
+    unlink(out);
+    RQ_CHECK(rq_write_exec(poll,
+        "#!/bin/sh\nprintf 'id=41\\tlabel=x\\n'\n"));
+    snprintf(body, sizeof(body), "#!/bin/sh\necho \"$*\" >> '%s'\n", out);
+    RQ_CHECK(rq_write_exec(resp, body));
+    snprintf(cmd, sizeof(cmd), "'%s'", poll);
+    proc_script_install(cmd, resp, 1000);
+    (void) proc_backend()->list(ents, 4);
+
+    static const struct { const char *set; int ok; const char *want; } m[] = {
+        { NULL,        0, "delete 41 label=x mode=dryrun" },
+        { "post-only", 1, "delete 41 label=x mode=post-only" },
+        { "delete",    1, "delete 41 label=x mode=delete" },
+        { "kill-all",  0, "delete 41 label=x mode=dryrun" },
+    };
+    size_t i;
+    for (i = 0; i < sizeof(m) / sizeof(m[0]); i++)
+    {
+        int waited = 0;
+        if (m[i].set != NULL)
+        {
+            RQ_CHECK(proc_script_set_mode(m[i].set) == m[i].ok);
+        }
+        RQ_CHECK(psd_proc_kill_checked(41, 0, "x") == PSD_ACT_DONE);
+        while (waited < 3000 && (!rq_last_line(out, last, sizeof(last))
+                                 || strcmp(last, m[i].want) != 0))
+        {
+            usleep(20000);
+            waited += 20;
+        }
+        RQ_CHECK(strcmp(last, m[i].want) == 0);
+    }
+    RQ_CHECK(psd_proc_renice_checked(41, 0, "x", 4) == PSD_ACT_DONE);
+    {
+        int waited = 0;
+        while (waited < 3000 && (!rq_last_line(out, last, sizeof(last))
+                                 || strncmp(last, "post", 4) != 0))
+        {
+            usleep(20000);
+            waited += 20;
+        }
+        RQ_CHECK(strcmp(last, "post 41 amount=4 label=x mode=dryrun") == 0);
+    }
+
+    proc_backend_set(NULL);
+    unlink(poll);
+    unlink(resp);
+    unlink(out);
     (void) rmdir(dir);
 }
 
@@ -261,4 +346,5 @@ void script_request_tests(int *checks_run, int *checks_failed)
     test_poll_command();
     test_triage_ordered();
     test_backend_request_roundtrip();
+    test_mode_on_respond();
 }
