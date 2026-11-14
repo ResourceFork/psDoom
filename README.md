@@ -141,6 +141,9 @@ on processes. Settings are saved with Doom's configuration.
 
 ## More information
 
+- [docs/spec/](docs/spec/README.md): the normative specs (script contract, Summoner,
+  process access). Contributors and agents: see [AGENTS.md](AGENTS.md).
+
 For advanced technical details, including the app architecture and build
 internals, see [the architecture guide](docs/architecture.md). To make psDoom
 represent custom entities such as containers or jobs, see [the script backend
