@@ -13,6 +13,21 @@ command -v docker >/dev/null 2>&1 || exit 0
 verb=$1
 id=$2
 [ -n "$verb" ] && [ -n "$id" ] || exit 0
+shift 2
+
+# The host's effect mode (docs/script-backend.md): dryrun = act on nothing,
+# post-only = never delete, delete = both. Missing or unknown = dryrun.
+mode=dryrun
+for kv in "$@"; do
+    case $kv in
+        mode=post-only) mode=post-only ;;
+        mode=delete)    mode=delete ;;
+        mode=*)         mode=dryrun ;;
+    esac
+done
+case "$mode:$verb" in
+    dryrun:*|post-only:delete) exit 0 ;;
+esac
 
 # Find the container whose main PID matches `id`.
 cid=""

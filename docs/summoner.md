@@ -87,7 +87,7 @@ command comes first, so a plugin can take its own options (`csv_rows.py --file F
 | Subcommand | Required | Stdout | Meaning |
 | --- | --- | --- | --- |
 | `describe` | yes | one JSON object | What the plugin supports and what its numbers mean. |
-| `list` | yes | JSON Lines, one item per line | The items, in rank order or with `rank`. |
+| `list [sort=ID:dir,..] [group=ID] [limit=N]` | yes | JSON Lines, one item per line | The items, **curated**: in the order to show them, trimmed to `limit`, graded on the primary sort. The words come only to a plugin that declares dimensions. |
 | `nudge <key> amount=N` | no | one JSON result | Lower the item's priority, or move it down, by `N`. |
 | `remove <key>` | no | one JSON result | Delete or stop the item. |
 | `restore` | no | one JSON result | Undo: the undo record from an earlier result arrives on stdin. |
@@ -103,8 +103,18 @@ only calls verbs that `describe` lists.
  "size":   {"meaning": "priority", "scale": "relative"},
  "load":   {"meaning": "none", "scale": "relative"},
  "nudge":  {"meaning": "lower priority by amount"},
- "remove": {"meaning": "delete the row", "undoable": true}}
+ "remove": {"meaning": "delete the row", "undoable": true},
+ "dimensions": [
+   {"id": "priority", "label": "priority", "kind": "numeric", "dir": "desc", "roles": ["sort"]},
+   {"id": "team", "label": "Team", "kind": "category", "roles": ["group"]}],
+ "default_sort": "priority"}
 ```
+
+**Dimensions** are what a host may ask the plugin to sort or group by. Each has an `id`
+(`[a-z][a-z0-9_]{0,15}`, safe on a command line), a `label` (a game shows it in its menu), a
+`kind` (`numeric` sorts, `category` groups), a default `dir` (`asc` or `desc`), a `unit`, and
+`roles` (`sort`, `group`; default by kind). `default_sort` names the sort used when the host
+asks for none, or for one the plugin does not offer. Summoner validates all of it.
 
 `size.scale` and `load.scale` pick how Summoner puts the numbers on the games' ladders
 ([below](#normalisation)): `native` (already bytes / percent), `linear` (with `min`, `max`),
@@ -113,20 +123,21 @@ or `relative` (the default). The `meaning` strings are for people (`describe` pr
 ### `list` — one JSON object per line
 
 ```json
-{"key": "r2", "name": "Fix the login bug", "size": 9, "rank": 0}
-{"key": "4123@Thu-Nov-12-09:01:02-2026", "name": "node", "size": 734003200, "load": 140, "parent": "4000@...", "background": false}
+{"key": "r2", "name": "Fix the login bug", "size": 9, "values": {"priority": 9}, "grade": 1.0, "group": "red"}
+{"key": "4123@Thu-Nov-12-09:01:02-2026", "name": "node", "size": 734003200, "load": 140, "values": {"relevance": 142, "mem": 734003200, "cpu": 140.2, "age": 3600}, "grade": 0.97, "parent": "4000@...", "background": false}
 ```
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `key` | string | yes | The plugin's own stable identity for the item. 1 to 1024 characters, no NUL, must not start with `-`. Unique; later duplicates are dropped. |
 | `name` | string | no | Shown above the monster (Summoner trims it). Default: the key. |
-| `grade` | number 0..1 | no | Where the item sits on *its own* range (0 = least, 1 = most). Clamped. Wins over size and load for the `grade` the game sees. |
-| `size` | number ≥ 0 | no | Drives toughness by *weight*. If no item has a size, rank decides (top rank = biggest). |
-| `load` | number ≥ 0 | no | Drives toughness by *CPU/load*. |
-| `rank` | number | no | Lower = more important. Default: line order. Used to sort and to keep the top `max_items`. |
+| `grade` | number 0..1 | no | Where the item sits on the requested primary dimension (1 = the best end of its direction). Clamped. It picks the monster. Missing: Summoner computes it from `values[primary]`, else from size, load or position. |
+| `values` | object | no | The item's raw value per numeric dimension id (for a missing grade, and for people reading `describe`). |
+| `group` | string | no | The item's group when the host asked for `group=`; Summoner trims it like a label. |
+| `size` | number ≥ 0 | no | The poll's `weight` (bytes, or scaled). If no item has a size, the position decides (first = biggest). |
+| `load` | number ≥ 0 | no | The poll's `load`. |
 | `parent` | string | no | Key of a parent item (fork-bomb grouping). Unknown parents become `0`. |
-| `background` | bool | no | `true` sets the poll's `flags` bit 0 (ranked below interactive entities). |
+| `background` | bool | no | `true` sets the poll's `flags` bit 0. |
 
 Unknown fields are ignored, so a plugin can carry extra data for its own use.
 
@@ -181,6 +192,21 @@ an id must never name two entities at once.
 The processes plugin keys a process as `<pid>@<start time>`, so a pid the OS reuses becomes a
 new key, a new id and a new monster, and the plugin re-checks the start time before it acts.
 
+### Order: the plugin curates
+
+Summoner **never re-sorts**. The plugin's order is the poll's order, and psDoom keeps it
+([Trust](script-backend.md#trust)), so the first items become the monsters. `max_items` and the
+host's `limit` cut the tail. `rank` is no longer read.
+
+A host asks for an order with request words: `summon get sort=cpu:desc,mem group=app
+limit=64`. Summoner checks each id against `describe`. An unknown id, a wrong kind or a bad
+limit is dropped with a `# summon: ignored …` line, and `default_sort` takes the sort's
+place. The poll never fails because of a request. The checked words reach the plugin as
+`list sort=cpu:desc,mem:desc group=app limit=64`. The output starts with `# dim` lines for
+every dimension and `# sort` / `# group` lines for what was applied; items carry `group=`.
+**The cache is keyed by the request**, so a new request refreshes at once (waiting up to
+`first_poll_wait_ms`) instead of serving an answer to the old question.
+
 ### Normalisation
 
 The ladders (from [script-backend.md](script-backend.md)):
@@ -200,11 +226,11 @@ lower for the shareware WAD. Relative and linear values always land exactly on a
 **Grade.** Each item also gets a `grade` from 0 to 1, so neither side needs to
 know the other's scale: the plugin (or Summoner for it) maps onto 0..1, and the game maps
 0..1 onto however many monsters it can draw (`min(floor(grade × N), N − 1)`). The grade is
-the plugin's own `grade` if it sent one, else the item's size (or its rank, when no item has
-a size) on the declared `linear` or `relative` scale, else its load. A `native` scale (the
-processes plugin: bytes and CPU percent) is already in the game's own units, so those items
-carry **no grade** and the game's *Classify by* option decides, exactly as with psDoom's native
-backend. The order is: the plugin's `grade`, else size, else load, else rank. Below 6, `max_tier`
+the plugin's own `grade` if it sent one (both shipped plugins do: the item's place on the
+primary sort among the listed items); else, from the primary dimension's `values`, relative
+over the listing in the requested direction; else the item's size (or position) on the
+declared `linear` or `relative` scale, else its load. A `native` size scale with no other
+source gives **no grade**, and the game's *Monster size by* option decides. Below 6, `max_tier`
 scales every grade by (`max_tier` + 0.5) / 7: on the full ladder the top grade lands exactly on
 the capped monster, and on a WAD with fewer drawable tiers it never lands above it (it may land
 a tier lower). At the default 6, grades pass through unchanged.
@@ -240,8 +266,9 @@ This tool can delete things. The defaults assume a mistake.
 
 | Guard | Default | Effect |
 | --- | --- | --- |
-| `dry_run` | `true` | No plugin action runs. Each hit is audited as `dry-run`. |
-| `plugin.allow_remove` | `false` | With `dry_run: false`, `delete` is audited as `blocked`; only `post` (nudge) runs. |
+| Host `mode` | `dryrun` | Sent by the game with every event: `dryrun` runs nothing, `post-only` runs `post` and refuses `delete`, `delete` allows both. Missing or unknown = `dryrun`. Audited with `mode` and `reason: host mode`. |
+| `dry_run` | `true` | A per-plugin restriction on top of the host's mode: no plugin action runs. Audited `dry-run`, `reason: plugin config`. |
+| `plugin.allow_remove` | `false` | Also on top of the mode: `delete` is audited as `blocked`; only `post` (nudge) runs. The effective action is the **stricter** of the host's mode and these two. |
 | `rate_limit` | 10 actions / 60 s | Executed actions over the limit are audited as `rate-limited` and skipped. |
 | Listed-only | always | `post` / `delete` act only on an id in the current cache, and pass the plugin the key it listed. Unknown ids are `unknown-id` no-ops. |
 | Unique ids | always | Named plugins share one id map per root, so after `use` switches plugin, the old ids are no longer listed and psDoom's checked actions send nothing for them. |
@@ -258,11 +285,25 @@ This tool can delete things. The defaults assume a mistake.
 `post` and `delete` always exit 0 (the game does not read it); the audit log is the record.
 `get` always prints a valid poll, with a `#` comment on error.
 
-Summoner does not decide what is *safe to list*. That stays the plugin's job, as in a hand-written script: the
-processes plugin keeps the session-critical deny-list from `scripts/poll-processes.sh`, plus
-the game and the Terminal and iTerm2 apps. It has no launcher-chain guard like the native
-backend, and its pid-reuse check compares a start time with 1-second resolution, so a pid
-reused within the same second would pass it.
+### Trust
+
+**The plugin is trusted.** psDoom does not filter or rank what Summoner lists
+([script-backend.md](script-backend.md#trust)), and Summoner does not either: what is safe to
+list is the plugin's job. The game only reports which entity got `post` or `delete`, and its
+mode; Summoner decides what runs.
+
+So the `ps` plugin leaves out, itself, everything psDoom's native backend would:
+
+- psDoom's protected, session-critical names (loginwindow, WindowServer, Dock, Finder,
+  SystemUIServer, launchd, kernel_task), the games and the usual terminal apps;
+- pid 0 and 1;
+- itself and its own parent chain (the Summoner refresher running it);
+- the **host chain**: `summon get` walks its own parent chain (its shell, psDoom, psDoom's
+  launchers) and hands it to the detached refresher, which passes it to the plugin in
+  `SUMMONER_HOST_PIDS`. That is psDoom's native launcher-chain guard, moved into the plugin.
+
+It lists only your own processes (`ps -x`). Its pid-reuse check compares a start time with
+1-second resolution, so a pid reused within the same second would pass it.
 
 ## Configuration
 
@@ -272,7 +313,7 @@ summon [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
 | Command | What it does |
 | --- | --- |
-| `get` | Print the poll output (what the game reads). |
+| `get [sort=ID[:asc\|desc][,ID..]] [group=ID] [limit=N]` | Print the poll output (what the game reads), in the plugin's order for that request. |
 | `post <id> [key=value ...]` | Nudge the item: lower its priority, move it down, renice it. |
 | `delete <id> [key=value ...]` | Remove the item (only when its config allows it). |
 | `use <name>` | Set the current plugin, and remember it. |
@@ -373,11 +414,18 @@ a line above it goes. Rules of thumb:
 
 ## The examples
 
-- **Processes** (`plugins/processes.py`, shipped). Key `pid@start`, size = resident bytes
-  (`native`), load = CPU percent (`native`), `nudge` = raise nice by `amount` (cumulative,
-  capped at 20), `remove` = SIGTERM. Not undoable: an unprivileged user cannot lower nice
-  again, and a stopped process cannot be restarted.
-- **Spreadsheet rows** (`plugins/csv_rows.py`, shipped). Key = a key column; with a priority
+- **Processes** (`plugins/processes.py`, shipped, built in as `ps`). Key `pid@start`.
+  Dimensions: `relevance` (default), `mem`, `cpu`, `age`; groups `app`, `parent`.
+  `relevance` is psDoom's native score: base 100, +50 with a controlling terminal, −80 for a
+  background-noise name (psDoom's list), +1 per 32 MiB up to +120, the newer pid winning a
+  tie. After sorting, the 2nd and 3rd process of one name move below every first-of-its-name,
+  further ones are dropped, and noise names move to the end. It grades by place on the
+  primary sort. `nudge` = raise nice by `amount` (cumulative, capped at 20), `remove` =
+  SIGTERM. Not undoable: an unprivileged user cannot lower nice again, and a stopped process
+  cannot be restarted. Exclusions: [Trust](#trust).
+- **Spreadsheet rows** (`plugins/csv_rows.py`, shipped). Every other column is a dimension:
+  numeric columns sort, text columns group (ids are the column names folded to
+  `[a-z0-9_]`). Key = a key column; with a priority
   column, rank by it and `nudge` lowers it; without one, `nudge` moves the row down `amount`
   places. `remove` deletes the row and returns it as the undo record. Writes are atomic and
   locked by a sidecar `.<file>.lock`. For a live Excel or Google sheet, the same plugin shape
@@ -414,7 +462,9 @@ a line above it goes. Rules of thumb:
 ## Appendix: contract proposals
 
 **Done** (now in [script-backend.md](script-backend.md)): the 0..1 `grade` field, and the
-neutral response verbs `post` / `delete`, which replaced `wound` / `kill`. There is one contract;
+neutral response verbs `post` / `delete`, which replaced `wound` / `kill`; the host's sort
+request with `# dim` declarations and `group=`; and `mode=` on every event, with the plugin
+trusted to curate. There is one contract;
 the repo's scripts were ported to it.
 
 **Proposals only.** The script contract is a reserved surface; none of the following is
@@ -427,7 +477,7 @@ implemented, and each needs the project owner's go before any change to
 3. **A result channel.** Have the game read a one-line status from the responder (or a
    status file), so the HUD can show "dry run", "blocked" or "rate limited" instead of a
    monster that silently comes back.
-4. **`rank=` poll field.** Let the game's cap truncation use the plugin's order directly
+4. **Done: the plugin's order.** The game now keeps the plugin's order directly
    instead of only `flags` bit 0.
 5. **Declared capabilities.** A `# capabilities: post delete undo` first line, so the game can
    grey out actions a backend does not support, and offer an in-game "resurrect" (undo).

@@ -12,6 +12,8 @@
 #   id    : the pid from the poller
 #   amount: nice step for `post` (psDoom sends 4; absent for `delete`)
 #   label : the process name, when known (used only for logging here)
+#   mode  : dryrun | post-only | delete -- the game's effect setting; this
+#           script does nothing in dryrun and never deletes in post-only
 #
 # psDoom execs this directly (no shell), so $id/$label are inert arguments.
 
@@ -26,6 +28,20 @@ for kv in "$@"; do
         amount=*) amount=${kv#amount=} ;;
     esac
 done
+
+# The host's effect mode (docs/script-backend.md): dryrun = act on nothing,
+# post-only = never delete, delete = both. Missing or unknown = dryrun.
+mode=dryrun
+for kv in "$@"; do
+    case $kv in
+        mode=post-only) mode=post-only ;;
+        mode=delete)    mode=delete ;;
+        mode=*)         mode=dryrun ;;
+    esac
+done
+case "$mode:$verb" in
+    dryrun:*|post-only:delete) exit 0 ;;
+esac
 
 case "$verb" in
     post)

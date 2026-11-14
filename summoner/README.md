@@ -24,9 +24,13 @@ tests need only Python, so it can move to its own repository unchanged.
 ```
 summon [--root DIR] [--plugin NAME | --config FILE] COMMAND ...
 
-get                         the poll output: what the game reads
+get [sort=ID[:dir],..] [group=ID] [limit=N]
+                            the poll output, in the plugin's order for that request
 post <id> [key=value ...]   nudge it (lower its priority)
-delete <id> [key=value ...] remove it (only if its config allows)
+delete <id> [key=value ...] remove it
+                            post/delete act only as far as mode= allows (dryrun,
+                            post-only, delete; missing = dryrun) and the plugin's
+                            config allows (dry_run, allow_remove): the stricter wins
 use <name>                  set the current plugin, remembered
 plugins                     list known plugins; * marks the current one
 refresh | describe | undo <action-id>
@@ -39,6 +43,9 @@ refresh | describe | undo <action-id>
   built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`, with no
   `state_dir` in it (named plugins always keep state under `<root>/state/`).
 - Any other word exits 0 and does nothing (it is audited as `ignored-verb`).
+- **The plugin curates and is trusted.** Summoner keeps its order and the game filters
+  nothing, so the plugin leaves out what must never be touched. `ps` drops psDoom's
+  protected names, itself, and the host chain (`summon get`, the game and its launchers).
 
 ## Put it on PATH
 
@@ -76,10 +83,14 @@ The full contract is psDoom's `docs/script-backend.md`; this is the part Summone
   64M, 192M, 512M, 1.5G, 4G), `load` (percent; ladder 0, 5, 25, 60, 120, 250, 500), `flags`
   (bit 0 = background), `label` (at most 31 bytes drawn, no TAB or newline), `grade` (0..1,
   clamped), which picks the monster over the tiers the game can draw
-  (`min(floor(grade × N), N − 1)`). Lines starting with `#` are comments.
+  (`min(floor(grade × N), N − 1)`), `group`. Lines starting with `#` are comments; a
+  leading `# dim` block declares the sort and group dimensions, and then the game appends
+  `limit=64` and its chosen `sort=<id>` to the poll command. The game keeps the order and
+  filters nothing.
 - **Respond** (`PSDOOM_RESPOND_CMD`, split on whitespace, exec'd without a shell, detached,
   exit code ignored): `<cmd> <verb> <id> [key=value...]`: `post` (with `amount=N`) for a
-  wound, `delete` for a kill; optional `label=`. Unknown verbs and keys must be no-ops.
+  wound, `delete` for a kill; optional `label=`; always `mode=dryrun|post-only|delete`,
+  which the responder must honour. Unknown verbs and keys must be no-ops.
 
 ## One contract for the apps
 

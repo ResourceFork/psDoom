@@ -36,8 +36,11 @@ If `PSDOOM_POLL_CMD` is unset, psDoom uses its native OS backend as before.
 - An entity line is a set of **TAB-separated `key=value` fields**. Field order does not
   matter. Unknown keys are ignored. A repeated key takes its last value. A value may
   contain spaces, but never a TAB or newline (those delimit fields and records).
-- The game keeps at most 4096 entities per poll and shows the most relevant up to the
-  in-game live-monster cap.
+- The game keeps at most 4096 entities per poll. It **keeps the script's order and filters
+  nothing** ([Trust](#trust)): the first 64 become candidates, and the first ones up to the
+  in-game live-monster cap become monsters. Put the most important entities first.
+- A leading block of `#` lines may declare what the script can sort by
+  ([Ordering](#ordering-the-hosts-request)).
 
 ### Fields
 
@@ -49,6 +52,7 @@ If `PSDOOM_POLL_CMD` is unset, psDoom uses its native OS backend as before.
 | `weight` | unsigned integer | no | `0` | "Size" metric. Drives monster toughness when *Classify by* is **memory/weight** (the default). Compared against the [size ladder](#size-ladder). |
 | `load` | integer (percent; `100` = one core) | no | `0` | "Load" metric. Drives monster toughness when *Classify by* is **CPU/load**. Compared against the [load ladder](#load-ladder). |
 | `flags` | integer bitmask | no | `0` | Bit `0` (`1`) = background / low-priority: ranked below interactive entities when truncating to the cap. Other bits are reserved (emit `0` if unsure). |
+| `group` | string | no | `""` | The entity's group (an app, a team, a parent). Drawn on its own line above the label when it differs from it. Truncated to 31 bytes. |
 | `grade` | decimal number | no | — | Where the entity sits on its source's own full range: `0` = least, `1` = most. When present it **picks the monster**, overriding *Classify by* ([below](#grade)). Values below 0 or above 1 are clamped. A value that is not a finite decimal number (empty, `abc`, `0.5x`, a hex float such as `0x1p-1`, `nan`, `inf`, an overflow such as `1e999`, a leading space) is ignored, and the last valid `grade` on a line wins. |
 
 `weight` and `load` are deliberately the same two metrics the native backend reports
@@ -113,7 +117,13 @@ $PSDOOM_RESPOND_CMD <verb> <id> [key=value ...]
 | --- | --- |
 | `$1` `verb` | The action, lowercase: `post` when the monster was wounded (lower the entity's priority, move it down, renice it), `delete` when it was killed (remove or stop it). More verbs may be added later — **treat an unknown verb as a no-op and exit 0.** |
 | `$2` `id` | The entity `id` from the poll output. Always present. |
-| `$3…` `key=value` | Extensible, order-independent extras. Currently: `amount=<int>` (injury magnitude; present for `post`, absent for `delete`) and `label=<string>` (the entity's label, when known). Ignore keys you don't recognize. |
+| `$3…` `key=value` | Extensible, order-independent extras. Currently: `amount=<int>` (injury magnitude; present for `post`, absent for `delete`), `label=<string>` (the entity's label, when known) and `mode=<dryrun\|post-only\|delete>` (always present). Ignore keys you don't recognize. |
+
+**`mode`** is the game's effect setting, sent with every event: `dryrun` (psDoom *Simulate*:
+act on nothing), `post-only` (*Renice*: `post` may act, `delete` must not) or `delete` (*Live*:
+both may act). psDoom always reports the event and leaves the decision to the responder, so
+**a responder must honour `mode`**; treat a missing or unknown mode as `dryrun`. The
+reference responders in `scripts/` and `examples/` do.
 
 - **Exit code is not read.** psDoom runs the responder *detached* (double-forked) so it never
   blocks the game tick or leaves zombies — which means it does **not** capture the script's exit
@@ -131,13 +141,20 @@ $PSDOOM_RESPOND_CMD <verb> <id> [key=value ...]
 #!/bin/sh
 # $1=verb  $2=id  then key=value extras
 verb=$1; id=$2; shift 2
-amount=1
+amount=1; mode=dryrun
 for kv in "$@"; do
     case $kv in
-        amount=*) amount=${kv#amount=} ;;
-        label=*)  label=${kv#label=}   ;;
+        amount=*)       amount=${kv#amount=} ;;
+        label=*)        label=${kv#label=}   ;;
+        mode=post-only) mode=post-only ;;
+        mode=delete)    mode=delete ;;
     esac
 done
+
+# Honour the game's mode: nothing in dryrun, never delete in post-only.
+case "$mode:$verb" in
+    dryrun:*|post-only:delete) exit 0 ;;
+esac
 
 case $verb in
     post)   renice -n "$amount" -p "$id" >/dev/null 2>&1 ;;
@@ -163,6 +180,48 @@ ps -axo pid=,ppid=,rss=,%cpu=,comm= | awk '
 }'
 ```
 
+## Ordering: the host's request
+
+A script that can sort or group declares its **dimensions** in a leading block of `#` lines,
+before the first entity, on every poll:
+
+```
+# dim id=mem kind=numeric dir=desc roles=sort unit=bytes label=Memory
+# dim id=cpu kind=numeric dir=desc roles=sort unit=percent label=CPU
+# dim id=app kind=category dir=desc roles=group unit= label=App
+# sort id=mem dir=desc
+```
+
+- `# dim`: `id` (`[a-z][a-z0-9_]{0,15}`), `kind` (`numeric` sorts, `category` groups),
+  `dir` (a numeric dimension's default direction), `roles` (`sort`, `group`), `unit`, and
+  `label` (the rest of the line; shown in the game's menu).
+- `# sort id=… dir=…`: the sort the output is actually in.
+
+Once a poll has declared dimensions, psDoom appends the request to `PSDOOM_POLL_CMD` on each
+following poll: `limit=64` (its candidate cap) and, after the player picks one under
+**Sort by** in the psDoom options menu, `sort=<id>`. A changed choice reaches the next poll,
+about a second later. Only well-formed ids are appended, and a script that never declares a
+dimension never gets any words. The script answers in that order, trimmed to `limit`, and
+grades relative to the requested dimension.
+
+With [Summoner](summoner.md) the words are `summon get sort=ID[:asc|desc][,ID…] group=ID
+limit=N`; Summoner checks them against the plugin's dimensions and drops unknown ones with a
+`# summon:` note, falling back to the plugin's default sort.
+
+## Trust
+
+**The script is trusted with selection.** On the script path psDoom does not filter or rank
+entities: no protected-name list, no self or launcher-chain guard, no ranking by its own score.
+The script, or Summoner's plugin, decides what is listed and in what order. Leaving out
+session-critical processes, the game and whatever launched it is therefore **the script's job**.
+Summoner's `ps` plugin does it: psDoom's protected names, its own process chain, and the host
+chain Summoner passes it (the game and its launchers).
+
+**The game only reports.** It tells the responder which entity got `post` and which got
+`delete`, and its mode. The responder (Summoner) decides what runs.
+
+The native backend is unchanged: it keeps every exclusion and its own kill modes.
+
 ## Security model
 
 - The poll command is run through the shell **by you**, the user who set the env var; its
@@ -171,10 +230,12 @@ ps -axo pid=,ppid=,rss=,%cpu=,comm= | awk '
   shell string from entity data, so a hostile `label` (e.g. `; rm -rf ~`) is just an inert
   argument string, not a command.
 - Scripts run with **your** privileges and do whatever you write them to do. The native
-  backend's safety net (the protected-process deny-list, the launcher-chain guard) is
-  process-specific and does **not** apply to arbitrary entities — in script mode, deciding
-  what is safe to enumerate and act on is the script's responsibility. Treat
-  `PSDOOM_RESPOND_CMD` as you would any tool that can terminate things by id.
+  backend's safety net (the protected-process deny-list, the launcher-chain guard) does
+  **not** apply in script mode ([Trust](#trust)): deciding what is safe to list and act on is
+  the script's responsibility, and so is honouring `mode`. Treat `PSDOOM_RESPOND_CMD` as you
+  would any tool that can terminate things by id.
+- Request words appended to the poll command are limited to `sort=<id>` with a well-formed
+  id and `limit=<n>`, so they cannot carry shell syntax.
 
 ## Forward-compatibility
 
