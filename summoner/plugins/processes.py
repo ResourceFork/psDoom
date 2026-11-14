@@ -30,12 +30,17 @@ Safety: this plugin is trusted; psDoom does not filter what it lists
 - psDoom's protected, session-critical names (loginwindow, WindowServer,
   Dock, Finder, SystemUIServer, launchd, kernel_task) plus the games and
   the usual terminal apps;
-- pid 0 and 1;
-- itself and its own parent chain (the Summoner process running it);
+- pid 0 and 1, and any process whose effective or real uid is not yours
+  (`ps -x` selects by real uid, so a setuid `login` or `sudo` would show);
+- session plumbing: login, sudo, su, sshd, ssh-agent, tmux, screen,
+  iTermServer-*, and the common terminal apps;
+- itself, its own parent chain and its direct children (its `ps`);
 - the host chain Summoner passes in $SUMMONER_HOST_PIDS: the `summon get`
   that psDoom ran, its shell, psDoom itself and the launchers above it
   (psDoom's native "launcher chain" guard).
-Only your own processes are listed (`ps -x`). Then `group` gathers members together, ordered by each
+Each item also carries its `pid`, so every `summon get` drops whatever is
+in its own calling chain at serve time, even from a listing that was made
+for another caller. Then `group` gathers members together, ordered by each
 group's best member, and `limit` cuts the list. `grade` is the item's
 place on the primary dimension among the listed items (1 = the best end
 of the requested direction), so the monsters spread over the whole ladder.
@@ -59,9 +64,14 @@ import time
 # launch them. The launcher chain itself comes from SUMMONER_HOST_PIDS.
 DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
         "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom",
-        "Terminal", "iTerm2"}
+        "Terminal", "iTerm2",
+        # session plumbing a terminal runs: ending it ends a tab or session
+        "login", "sudo", "su", "sshd", "ssh-agent", "tmux", "screen",
+        "Ghostty", "ghostty", "Alacritty", "alacritty", "kitty", "WezTerm",
+        "wezterm-gui"}
+DENY_PREFIX = ("iTermServer",)
 
-PS_FIELDS = "pid=,ppid=,rss=,pcpu=,tt=,lstart=,comm="
+PS_FIELDS = "pid=,ppid=,uid=,ruid=,rss=,pcpu=,tt=,lstart=,comm="
 
 # psDoom's native noise list (src/psdoom/proc_select.c), matched as
 # case-insensitive substrings of the process name.
@@ -136,11 +146,14 @@ def chain_of(pid, parent):
     return out
 
 
-def parse_ps(text, self_pid, exclude=()):
+def parse_ps(text, self_pid, exclude=(), uid=None):
     """Parse `ps -xo PS_FIELDS` output. lstart is five words
     ("Thu Nov 12 09:01:02 2026"); comm is the rest of the line. Leaves out
-    pid <= 1, the protected names, `self_pid` and its parent chain, and
-    every pid in `exclude` (the host chain)."""
+    pid <= 1, the protected names, processes whose effective or real uid is
+    not `uid` (yours: `ps -x` selects by real uid only, so a setuid `login`
+    or `sudo` would otherwise appear), `self_pid` and its parent chain and
+    direct children, and every pid in `exclude` (the host chain)."""
+    uid = os.getuid() if uid is None else uid
     parent = {}
     for line in text.splitlines():
         f = line.split()
@@ -150,22 +163,25 @@ def parse_ps(text, self_pid, exclude=()):
     rows = []
     for line in text.splitlines():
         f = line.split()
-        if len(f) < 11:
+        if len(f) < 13:
             continue
         try:
-            pid, ppid, rss = int(f[0]), int(f[1]), int(f[2])
-            cpu = float(f[3])
+            pid, ppid, euid, ruid, rss = (int(f[0]), int(f[1]), int(f[2]),
+                                          int(f[3]), int(f[4]))
+            cpu = float(f[5])
         except ValueError:
             continue
-        tt = f[4]
-        start = "-".join(f[5:10])
+        tt = f[6]
+        start = "-".join(f[7:12])
         try:
-            started = time.mktime(time.strptime(" ".join(f[5:10]),
+            started = time.mktime(time.strptime(" ".join(f[7:12]),
                                                 "%a %b %d %H:%M:%S %Y"))
         except ValueError:
             started = None
-        name = os.path.basename(" ".join(f[10:]))
-        if pid <= 1 or pid in skip or name in DENY:
+        name = os.path.basename(" ".join(f[12:]))
+        if pid <= 1 or pid in skip or ppid == self_pid or \
+                euid != uid or ruid != uid or name in DENY or \
+                name.startswith(DENY_PREFIX):
             continue
         rows.append({"pid": pid, "ppid": ppid, "rss": rss, "cpu": cpu,
                      "tty": tt, "start": start, "name": name,
@@ -185,7 +201,7 @@ def items(rows, now=None):
         it = {"key": keys[r["pid"]], "name": r["name"],
               "size": r["rss"] * 1024, "load": int(r["cpu"] + 0.5),
               "background": r["tty"] == "??",
-              "pid": r["pid"],
+              "pid": r["pid"],      # Summoner drops it if it is the caller
               "values": {"relevance": relevance(r), "mem": r["rss"] * 1024,
                          "cpu": r["cpu"], "age": age},
               "categories": {"app": r["name"],
@@ -278,7 +294,6 @@ def curate(its, sort, group=None, limit=None):
                 round(1.0 - pos[v] / (len(vals) - 1), 4)
     for it in its:
         it.pop("categories", None)
-        it.pop("pid", None)
     return its
 
 

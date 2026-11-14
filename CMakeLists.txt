@@ -302,6 +302,13 @@ add_test(NAME psdoom_summoner_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/summoner/tests/run_tests.py"
             --scratch "${CMAKE_CURRENT_BINARY_DIR}/summoner-tests")
 
+# The reference scripts honour mode= and the poller skips its calling chain
+# (stubbed copies: nothing is signalled).
+add_test(NAME psdoom_reference_scripts
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_scripts_test.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}/reference-scripts-test")
+
 # Game code must act on processes only through the pid-reuse-checked wrappers.
 add_test(NAME psdoom_no_raw_backend_actions
     COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

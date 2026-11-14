@@ -201,7 +201,9 @@ Once a poll has declared dimensions, psDoom appends the request to `PSDOOM_POLL_
 following poll: `limit=64` (its candidate cap) and, after the player picks one under
 **Sort by** in the psDoom options menu, `sort=<id>`. A changed choice reaches the next poll,
 about a second later. Only well-formed ids are appended, and a script that never declares a
-dimension never gets any words. The script answers in that order, trimmed to `limit`, and
+dimension never gets any words. The words go on the **end** of the command line, so a
+dimension-declaring `PSDOOM_POLL_CMD` must end with the command that reads them: no pipeline
+stage after it and no trailing `# comment`. The script answers in that order, trimmed to `limit`, and
 grades relative to the requested dimension.
 
 With [Summoner](summoner.md) the words are `summon get sort=ID[:asc|desc][,ID…] group=ID
@@ -214,8 +216,11 @@ limit=N`; Summoner checks them against the plugin's dimensions and drops unknown
 entities: no protected-name list, no self or launcher-chain guard, no ranking by its own score.
 The script, or Summoner's plugin, decides what is listed and in what order. Leaving out
 session-critical processes, the game and whatever launched it is therefore **the script's job**.
-Summoner's `ps` plugin does it: psDoom's protected names, its own process chain, and the host
-chain Summoner passes it (the game and its launchers).
+Summoner's `ps` plugin does it: psDoom's protected names, session plumbing (login, sudo,
+tmux, iTermServer, terminal apps), processes not fully yours (effective and real uid), its
+own process chain, and the host chain Summoner passes it; and every `summon get` drops items
+in its own calling chain before printing. The reference `scripts/poll-processes.sh` does the
+same in `sh`: it skips its own ancestor chain (its shell, psDoom, psDoom's launchers).
 
 **The game only reports.** It tells the responder which entity got `post` and which got
 `delete`, and its mode. The responder (Summoner) decides what runs.

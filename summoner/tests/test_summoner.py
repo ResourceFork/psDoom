@@ -57,6 +57,8 @@ if verb == "describe":
                                                      "remove"]})))
 elif verb == "list":
     time.sleep(spec.get("list_sleep", 0))
+    if spec.get("list_fail"):
+        sys.exit(3)
     for it in spec["items"]:
         print(json.dumps(it))
 elif verb in ("nudge", "remove"):
@@ -956,6 +958,38 @@ class CliTests(Base):
         self.assertEqual(rows[0]["group"], "red x")
         self.assertNotIn("group", rows[1])
 
+    def test_failing_plugin_backs_off_even_for_a_new_request(self):
+        spec = self.dims_spec()
+        spec["list_fail"] = True
+        self.named("bad", [{"key": "a"}], spec=spec, cache_ttl_s=30)
+        self.r("use", "bad")
+        self.r("get", "sort=size")
+        self._reap_refresher(self.configs[-1])
+        t0 = time.monotonic()
+        for w in ("sort=size:asc", "sort=size:desc", "limit=3"):
+            res = self.r("get", w)
+            self.assertEqual(res.returncode, 0)
+        took = time.monotonic() - t0
+        self._reap_refresher(self.configs[-1])
+        lists = [c for c in self.calls() if c and c[0] == "list"]
+        self.assertEqual(len(lists), 1)          # no respawn per poll
+        self.assertLess(took, 3 * 0.7)           # and no 700 ms wait each
+
+    def test_get_never_serves_its_own_calling_chain(self):
+        # Items naming the test process (which runs `summon get`) are
+        # dropped at serve time, even from a cache built for another caller.
+        me = os.getpid()
+        self.named("pids", [{"key": "me", "name": "Me", "pid": me},
+                            {"key": "other", "name": "Other", "pid": 2},
+                            {"key": "none", "name": "None"},
+                            {"key": "bogus", "name": "Bogus", "pid": "x"}])
+        self.r("use", "pids")
+        rows = self.wait_rows()
+        self.assertEqual([r["label"] for r in rows],
+                         ["Other", "None", "Bogus"])
+        self.assertTrue(any(i.get("key") == "me" for i in json.load(open(
+            os.path.join(self.state, "cache.json")))["items"]))
+
     def test_plain_plugin_gets_plain_list(self):
         self.named("plain", [{"key": "a", "name": "A"}])
         self.r("use", "plain")
@@ -1493,20 +1527,20 @@ class ProcessesPluginTests(Base):
     """Read-only and dry-run only: nothing here signals or renices."""
 
     PS_SAMPLE = (
-        "  501     1  10240   0.0 ??       Thu Nov 12 09:01:02 2026 "
+        "  501     1 501 501  10240   0.0 ??       Thu Nov 12 09:01:02 2026 "
         "/usr/sbin/cfprefsd\n"
-        "  777   501  20480  12.6 ttys001  Thu Nov 12 09:05:00 2026 "
+        "  777   501 501 501  20480  12.6 ttys001  Thu Nov 12 09:05:00 2026 "
         "/Applications/My App.app/Contents/MacOS/My App\n"
-        "  888     1    100   0.0 ??       Thu Nov 12 09:00:00 2026 "
+        "  888     1 501 501    100   0.0 ??       Thu Nov 12 09:00:00 2026 "
         "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock\n"
-        "    1     0    100   0.0 ??       Thu Nov 12 08:00:00 2026 "
+        "    1     0 501 501    100   0.0 ??       Thu Nov 12 08:00:00 2026 "
         "/sbin/launchd\n"
-        "  999     1    100   0.0 ??       Thu Nov 12 09:06:00 2026 "
+        "  999     1 501 501    100   0.0 ??       Thu Nov 12 09:06:00 2026 "
         "/bin/self\n"
         "garbage line\n")
 
     def test_parse_and_items(self):
-        rows = P.parse_ps(self.PS_SAMPLE, self_pid=999)
+        rows = P.parse_ps(self.PS_SAMPLE, self_pid=999, uid=501)
         self.assertEqual([r["pid"] for r in rows], [501, 777])  # deny, self
         its = P.items(rows)
         self.assertEqual(its[0]["key"], "501@Thu-Nov-12-09:01:02-2026")
@@ -1527,24 +1561,24 @@ class ProcessesPluginTests(Base):
 
     def test_excludes_protected_own_chain_and_host(self):
         text = (
-            "  300     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/Term\n"
-            "  301   300  100 0.0 ?? Thu Nov 12 09:00:00 2026 /bin/zsh\n"
-            "  302   301  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/psDoom\n"
-            "  303   302  100 0.0 ?? Thu Nov 12 09:00:00 2026 /bin/sh\n"
-            "  400     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 /py/summon\n"
-            "  401   400  100 0.0 ?? Thu Nov 12 09:00:00 2026 /py/plugin\n"
-            "  500     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/Editor\n"
-            "  501     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 "
+            "  300     1 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/Term\n"
+            "  301   300 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /bin/zsh\n"
+            "  302   301 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/psDoom\n"
+            "  303   302 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /bin/sh\n"
+            "  400     1 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /py/summon\n"
+            "  401   400 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /py/plugin\n"
+            "  500     1 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /Apps/Editor\n"
+            "  501     1 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 "
             "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock\n"
-            "  502     1  100 0.0 ?? Thu Nov 12 09:00:00 2026 "
+            "  502     1 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 "
             "/System/Library/CoreServices/loginwindow\n"
-            "    1     0  100 0.0 ?? Thu Nov 12 09:00:00 2026 /sbin/launchd\n")
+            "    1     0 501 501  100 0.0 ?? Thu Nov 12 09:00:00 2026 /sbin/launchd\n")
         host = P.host_pids({"SUMMONER_HOST_PIDS": "303,302,301,300,x,1,0"})
         self.assertEqual(host, {300, 301, 302, 303})
-        rows = P.parse_ps(text, self_pid=401, exclude=host)
+        rows = P.parse_ps(text, self_pid=401, exclude=host, uid=501)
         self.assertEqual([r["name"] for r in rows], ["Editor"])
         # without the host chain, only the plugin's own chain is left out
-        rows = P.parse_ps(text, self_pid=401)
+        rows = P.parse_ps(text, self_pid=401, uid=501)
         self.assertNotIn("plugin", [r["name"] for r in rows])
         self.assertNotIn("summon", [r["name"] for r in rows])
         # the launchers are left out only by the host chain; psDoom's own

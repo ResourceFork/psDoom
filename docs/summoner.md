@@ -302,8 +302,17 @@ So the `ps` plugin leaves out, itself, everything psDoom's native backend would:
   launchers) and hands it to the detached refresher, which passes it to the plugin in
   `SUMMONER_HOST_PIDS`. That is psDoom's native launcher-chain guard, moved into the plugin.
 
-It lists only your own processes (`ps -x`). Its pid-reuse check compares a start time with
-1-second resolution, so a pid reused within the same second would pass it.
+It lists only processes whose effective and real uid are both yours (`ps -x` selects by
+real uid, so a setuid `login` or `sudo` would otherwise show), and leaves out session
+plumbing (login, sudo, su, sshd, ssh-agent, tmux, screen, iTermServer-*, common terminal
+apps). Each item carries its `pid`, and **every `summon get` drops items in its own calling
+chain before printing**, so a listing made for another caller (a second psDoom, a `summon get`
+from a terminal) can never hand psDoom its own chain. That serve-time filter is the guard
+that holds: psDoom double-forks its responder, so at `post`/`delete` time Summoner no longer
+sees psDoom among its ancestors (the plugin still re-checks the chain it does see). Its
+pid-reuse check compares a start time with 1-second resolution, so a pid reused within the
+same second would pass it. `relevance` uses resident memory (`ps` has no footprint), so it
+approximates psDoom's native score, which uses the physical footprint.
 
 ## Configuration
 
