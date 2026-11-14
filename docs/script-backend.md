@@ -22,11 +22,18 @@ Configuration is entirely via environment variables, read once at startup:
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `PSDOOM_POLL_CMD` | yes | — | Command whose **stdout** enumerates entities. Setting it switches psDoom to the script backend. Run via the shell, so pipelines are allowed (`ps -eo ... \| awk ...`). |
-| `PSDOOM_RESPOND_CMD` | no | — | Command invoked to **act** on an entity (`post` / `delete`). If unset, psDoom is a read-only visualizer: monsters appear and can be shot, but nothing is signalled. |
+| `PSDOOM_POLL_CMD` | no | the bundled Summoner | Command whose **stdout** enumerates entities, overriding the app's bundled Summoner (`python3 Contents/Resources/summoner/summon get`). Run via the shell, so pipelines are allowed (`ps -eo ... \| awk ...`). |
+| `PSDOOM_RESPOND_CMD` | no | — (bundled Summoner when `PSDOOM_POLL_CMD` is unset too) | Command invoked to **act** on an entity (`post` / `delete`). With `PSDOOM_POLL_CMD` set and this unset, psDoom is a read-only visualizer: monsters appear and can be shot, but nothing is acted on. |
 | `PSDOOM_POLL_TIMEOUT_MS` | no | `1000` | Max time to wait for `PSDOOM_POLL_CMD`. If it overruns, the child is killed and that poll yields no update (the game never blocks). |
 
-If `PSDOOM_POLL_CMD` is unset, psDoom uses its native OS backend as before.
+If `PSDOOM_POLL_CMD` is unset, psDoom runs the Summoner bundled in the app
+(`Contents/Resources/summoner`) with a `python3` it finds without a shell
+(Homebrew's, then the Command Line Tools' or Xcode's real one; never the
+`/usr/bin/python3` install shim). psDoom has **no native process backend**: if
+Summoner is missing, no `python3` is found, or a poll does not answer, there
+are no process monsters, psDoom says why once (log and HUD), and nothing is
+acted on. The variables are for development: pointing psDoom at another
+script, or at a `summon` with `--root` or `--plugin`.
 
 ## Poll output — what the game reads
 
@@ -225,7 +232,7 @@ same in `sh`: it skips its own ancestor chain (its shell, psDoom, psDoom's launc
 **The game only reports.** It tells the responder which entity got `post` and which got
 `delete`, and its mode. The responder (Summoner) decides what runs.
 
-The native backend is unchanged: it keeps every exclusion and its own kill modes.
+There is no other path: psDoom itself never lists, renices or signals a process.
 
 ## Security model
 

@@ -477,6 +477,11 @@ class ConfigTests(Base):
         self.assertEqual(H.load_config(cfg)["plugin"]["command"][0],
                          CSV_PLUGIN)
 
+    def test_python_placeholder_is_summoners_interpreter(self):
+        cfg = self.config(["${PYTHON}", "${SUMMONER_DIR}/plugins/csv_rows.py"])
+        cmd = H.load_config(cfg)["plugin"]["command"]
+        self.assertEqual(cmd, [sys.executable, CSV_PLUGIN])
+
 
 # ---------------------------------------------------- Summoner behaviour --
 

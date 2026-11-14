@@ -10,6 +10,15 @@ The `.app` builds and runs on the vendored engine, which carries only a thin set
 — a few `mobj_t` fields plus one-line call-sites, all recorded in
 [`../third_party/README.md`](../third_party/README.md); the rest of psDoom lives in `src/`.
 
+> **Update (Summoner).** psDoom no longer has a native process backend. The
+> only path to real processes is the bundled [Summoner](summoner.md), run
+> through the script backend (`src/platform/proc_script.c`); with no Summoner
+> the inert `proc_none_backend` lists and acts on nothing. `proc_select` keeps
+> Summoner's order and cuts to the candidate cap; the filtering and ranking
+> described below for the native backend now live in Summoner's `ps` plugin.
+> Sections below that describe `proc_macos` and `psd_select_triage` are
+> historical.
+
 ## Repository layout
 
 ```
@@ -46,7 +55,7 @@ backend           ->   proc_select         ->   psdoom
     The rest of psDoom calls `proc_backend()->…`, so the OS is swappable. The game acts only
     through `psd_proc_renice_checked` / `psd_proc_kill_checked` (see the
     [safety model](#safety-model)).
-  - `macos/proc_macos.c` — the native backend: enumerate via `sysctl(KERN_PROC_ALL)` (pid, ppid,
+  - (removed) `macos/proc_macos.c` was the native backend: enumerate via `sysctl(KERN_PROC_ALL)` (pid, ppid,
     uid, daemon flag, short name, start time), memory/CPU via `proc_pid_rusage`, re-read one pid
     via `sysctl(KERN_PROC_PID)`, renice via `setpriority`, kill via `kill(pid, SIGTERM)`.
     Registers `proc_macos_backend` (the default).

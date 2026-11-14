@@ -171,7 +171,11 @@ def config_from_dict(raw, path, default_state, self_args):
                            "list of strings")
     # ${SUMMONER_DIR} expands to this file's directory, so shipped example
     # configs work from any checkout. Nothing is read from the environment.
-    plugin["command"] = [a.replace("${SUMMONER_DIR}", SUMMONER_DIR) for a in cmd]
+    # ${PYTHON} is the interpreter running Summoner, so a plugin config needs
+    # no python3 on PATH (a Finder-launched game has only the system's,
+    # whose /usr/bin/python3 may be an install shim).
+    plugin["command"] = [a.replace("${SUMMONER_DIR}", SUMMONER_DIR)
+                         .replace("${PYTHON}", sys.executable) for a in cmd]
     if not isinstance(plugin.get("name"), str) or not plugin["name"]:
         raise SummonerError("config: plugin.name is required")
     if not isinstance(cfg["dry_run"], bool):

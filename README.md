@@ -4,11 +4,13 @@ psDoom is a macOS Doom app that turns running processes into labeled monsters.
 Play a short, one-time arena to see what is running on your Mac, then continue
 into the regular Doom campaign.
 
-> **Before you play:** psDoom can affect real processes. Its default setting only
-> lowers a process's scheduling priority when you wound its monster, and does
-> not terminate anything. Do not enable live killing unless you understand that
-> defeating a monster can send `SIGTERM` to the matching process without an
-> in-game confirmation or undo. Save your work first.
+> **Before you play:** psDoom can affect real processes, always through its
+> bundled [Summoner](docs/summoner.md). Out of the box nothing is changed:
+> Summoner's built-in `ps` plugin runs dry, so every hit is only logged. If you
+> allow it to act (see [Process controls](#process-controls-and-safety)),
+> wounding lowers a process's scheduling priority, and in live mode defeating
+> a monster sends `SIGTERM` to it without an in-game confirmation or undo.
+> Save your work first.
 
 ## What it does
 
@@ -35,6 +37,10 @@ to continue with the unmodified campaign from `E1M1` onward.
   ```
 
 - An internet connection the first time you build, to download Freedoom.
+- To play with process monsters: a `python3` psDoom can find without a shell
+  (Homebrew's `/opt/homebrew/bin/python3`, or the Command Line Tools,
+  `xcode-select --install`). Without one psDoom still runs, and says on screen
+  that there are no process monsters.
 
 You do not need any Doom game data. psDoom ships with
 [Freedoom](https://freedoom.github.io/) Phase 1, a free game compatible with
@@ -92,27 +98,43 @@ intro arena so they retain their usual behavior.
 
 ## Process controls and safety
 
+psDoom does not read or touch processes itself. It runs the copy of
+[Summoner](docs/summoner.md) bundled in the app (`Contents/Resources/summoner`),
+whose `ps` plugin lists your processes and acts on them. psDoom only tells
+Summoner which monster was hit and how far it may go.
+
 Open **Options** > **psDoom Options** to adjust how psDoom represents and acts
 on processes. Settings are saved with Doom's configuration.
 
-- **Effect on real processes:** the default is **renice (no kill)**. Wounding a
-  process monster lowers that process's scheduling priority; defeating it does
-  not terminate it. **None (just a game)** makes no real changes. **Renice +
-  KILL** is an explicit opt-in mode: wounding still lowers priority and
-  defeating the monster sends `SIGTERM` to its process.
-- **Targeting:** psDoom targets processes owned by the current user by default.
-  You can enable all users' processes, but macOS permissions can prevent actions
-  on processes you do not own.
-- **Built-in exclusions:** session-critical processes, the psDoom app itself,
-  and the shell or launcher chain that started it are not turned into monsters.
-  These safeguards reduce risk; they do not replace careful use of live-kill
-  mode.
+- **Effect via Summoner:** what psDoom allows. **none (dry run)** acts on
+  nothing; **post only (renice)**, the default, lets a wound lower a process's
+  scheduling priority; **post + delete (KILL)** also lets defeating a monster
+  send `SIGTERM`. Summoner's own per-plugin setting is the second limit, and
+  the stricter of the two wins. The built-in `ps` plugin is **dry run, remove
+  off** until you allow it, in `~/.config/summoner/plugins/ps.json`:
+
+  ```json
+  {"dry_run": false, "plugin": {"name": "ps",
+   "command": ["${PYTHON}", "${SUMMONER_DIR}/plugins/processes.py"],
+   "allow_remove": false}}
+  ```
+
+  (`"allow_remove": true` as well for live killing). Every hit, acted on or
+  not, is logged in `~/.config/summoner/state/ps/audit.jsonl`.
+- **Exclusions:** the `ps` plugin leaves out session-critical processes,
+  session plumbing (login, sudo, ssh, tmux, terminal apps, login shells),
+  processes not fully yours, psDoom itself and the shell or launcher chain
+  that started it. These safeguards reduce risk; they do not replace careful
+  use of live-kill mode.
 - **Arena readability:** psDoom displays up to 10 live process monsters by
   default. Adjust the cap from 5 to 35 in the options menu. The most relevant
-  processes are shown first.
-- **Monster size:** choose **Memory** (the default) or **CPU load** to decide
-  what makes a process monster tougher. psDoom updates a monster's size as its
-  process changes.
+  processes are shown first, in Summoner's order.
+- **Sort by:** Summoner's `ps` plugin offers **Relevance** (the default),
+  **Memory**, **CPU** and **Age**; psDoom asks for your choice on the next
+  update, and a process's monster reflects its place in that order.
+- **No process monsters?** psDoom says why once, on screen and in its log:
+  Summoner missing from the app, no `python3`, or Summoner not answering. It
+  never falls back to touching processes itself.
 - **Fork bursts:** if a process suddenly creates many children, psDoom can add a
   capped cosmetic swarm around its monster. Those swarm enemies do not represent
   processes and never renice or terminate anything.
