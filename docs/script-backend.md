@@ -148,6 +148,8 @@ reference responders in `scripts/` and `examples/` do.
 - `PSDOOM_RESPOND_CMD` is split on whitespace into a command plus fixed leading arguments, so
   `PSDOOM_RESPOND_CMD="summon --plugin csv"` works; psDoom appends `verb`, `id`, and the
   extras as further arguments. If your command's path contains spaces, wrap it in a script.
+  A command named without a path is looked up along `PATH` when psDoom sends the event,
+  before it forks; the child only execs the path found (a name found nowhere sends nothing).
 
 ### Example responder (`sh`)
 

@@ -37,12 +37,15 @@
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
 #ifdef __APPLE__
 #include <libproc.h>   /* proc_pidinfo(PROC_PIDLISTFDS) */
 #endif
+
+extern char **environ;
 
 /* ------------------------------------------------------------------ config */
 
@@ -581,15 +584,17 @@ static int script_open_devnull(void)
  * make `stdin_fd` (if >= 0; /dev/null, since a background group reading the
  * terminal would be stopped by SIGTTIN) its stdin and `stdout_fd` (if >= 0)
  * its stdout, close every descriptor above stderr up to `fd_limit` (the
- * game's files, sockets and WAD never reach a script), and exec `path` (or
- * search PATH for argv[0] if `path` is NULL). The game is multi-threaded, so
- * the parent builds argv and the limit before fork; setpgid, dup2, fcntl and
- * close are async-signal-safe, and execv is, but execvp's PATH search is not
- * strictly so (as before this change). Never returns.
+ * game's files, sockets and WAD never reach a script), and execve `path`
+ * with `envp`. The game is multi-threaded (the poll worker), so a forked
+ * child may only make async-signal-safe calls: the parent resolves the path
+ * (script_resolve_exec), builds argv, takes the environment and the close
+ * limit before fork, and the child makes only sigprocmask, setpgid, dup2,
+ * fcntl, close, execve and _exit calls -- no malloc, lock, stdio or PATH
+ * search. Never returns.
  */
 static void script_child_exec(int stdin_fd, int stdout_fd, int fd_limit,
                               const char *path, char *const argv[],
-                              const sigset_t *mask)
+                              char *const envp[], const sigset_t *mask)
 {
     int fd;
 
@@ -615,15 +620,53 @@ static void script_child_exec(int stdin_fd, int stdout_fd, int fd_limit,
     {
         (void) close(fd);
     }
-    if (path != NULL)
-    {
-        execv(path, argv);
-    }
-    else
-    {
-        execvp(argv[0], argv);
-    }
+    (void) execve(path, argv, envp);
     _exit(127);
+}
+
+/*
+ * Before fork: the executable `name` names, as exec would find it -- `name`
+ * itself if it holds a slash, else the first executable regular file
+ * <dir>/<name> along $PATH ("/usr/bin:/bin" if unset; an empty entry is the
+ * current directory). Returns 0 if there is none or it does not fit.
+ */
+static int script_resolve_exec(const char *name, char *out, size_t cap)
+{
+    const char *path;
+    const char *p;
+
+    if (name == NULL || name[0] == '\0')
+    {
+        return 0;
+    }
+    if (strchr(name, '/') != NULL)
+    {
+        return snprintf(out, cap, "%s", name) < (int) cap;
+    }
+    path = getenv("PATH");
+    if (path == NULL)
+    {
+        path = "/usr/bin:/bin";
+    }
+    for (p = path; ; )
+    {
+        size_t      len = strcspn(p, ":");
+        struct stat st;
+
+        if (snprintf(out, cap, "%.*s%s%s", (int) len, len ? p : "",
+                     len ? "/" : "", name) < (int) cap
+            && stat(out, &st) == 0 && S_ISREG(st.st_mode)
+            && access(out, X_OK) == 0)
+        {
+            return 1;
+        }
+        if (p[len] == '\0')
+        {
+            break;
+        }
+        p += len + 1;
+    }
+    return 0;
 }
 
 static void script_reap(pid_t pid)
@@ -723,6 +766,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     int                fd_limit;
     int                devnull;
     char              *argv[4];
+    char             **envp = environ;   /* taken before fork */
     unsigned long long deadline;
     sigset_t           nomask;
 
@@ -773,7 +817,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     }
     if (pid == 0)
     {
-        script_child_exec(devnull, fds[1], fd_limit, "/bin/sh", argv, &nomask);
+        script_child_exec(devnull, fds[1], fd_limit, "/bin/sh", argv, envp, &nomask);
     }
     if (devnull >= 0)
     {
@@ -948,6 +992,8 @@ static int script_run_respond(const char *verb, int id,
     int      devnull;
     pid_t    pid;
     sigset_t nomask;
+    char     exe[PATH_MAX];
+    char   **envp = environ;   /* taken before fork */
 
     if (id <= 1)
     {
@@ -993,6 +1039,10 @@ static int script_run_respond(const char *verb, int id,
     snprintf(modebuf, sizeof(modebuf), "mode=%s", script_mode);
     argv[n++] = modebuf;
     argv[n]  = NULL;
+    if (!script_resolve_exec(argv[0], exe, sizeof(exe)))
+    {
+        return 1;   /* nothing to run: as a failed exec, nothing happens */
+    }
     devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
     sigemptyset(&nomask);
@@ -1004,7 +1054,7 @@ static int script_run_respond(const char *verb, int id,
          * launchd (auto-reaped) and we never wait on the actual command. */
         if (fork() == 0)
         {
-            script_child_exec(devnull, -1, fd_limit, NULL, argv, &nomask);
+            script_child_exec(devnull, -1, fd_limit, exe, argv, envp, &nomask);
         }
         _exit(0);         /* intermediate child exits immediately */
     }

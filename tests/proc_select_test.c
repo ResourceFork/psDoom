@@ -587,6 +587,35 @@ static void test_script_exit_stops_running_poll(void)
     unlink(pidfile);
 }
 
+/* A responder named without a path is found along PATH before the fork (the
+ * child execs a resolved path; it never searches PATH itself). */
+static void test_script_respond_bare_name_resolved(void)
+{
+    char       script[512];
+    char       result[512];
+    char       respond[1200];
+    char       content[700];
+    psd_proc_t out[4];
+
+    snprintf(script, sizeof(script), "%s/psd_bresp_%d.sh", test_tmpdir(), (int) getpid());
+    snprintf(result, sizeof(result), "%s/psd_bres_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(result);
+    snprintf(content, sizeof(content), "echo \"$*\" >> '%s'\n", result);
+    write_executable(script, content);
+    snprintf(respond, sizeof(respond), "sh %s", script);   /* sh: from PATH */
+    proc_script_install("printf 'id=61\\n'", respond, 2000);
+    CHECK(psd_test_list_wait(out, 4) == 1);
+    CHECK(proc_backend()->kill(61) == 1);
+    CHECK(wait_for_contains(result, "delete 61 mode=dryrun", 3000));
+
+    /* A name found nowhere: nothing is dispatched, and nothing breaks. */
+    proc_script_install("printf 'id=62\\n'", "psd-no-such-responder-xyz", 2000);
+    CHECK(psd_test_list_wait(out, 4) == 1);
+    CHECK(proc_backend()->kill(62) == 1);
+    unlink(script);
+    unlink(result);
+}
+
 /* A post or delete never holds the caller either: the responder (here one
  * that sleeps 0.3 s first) runs detached. */
 static void test_script_respond_does_not_block_caller(void)
@@ -1245,6 +1274,7 @@ int main(int argc, char **argv)
     test_script_children_signal_mask_clear();
     test_script_stale_result_dropped();
     test_script_exit_stops_running_poll();
+    test_script_respond_bare_name_resolved();
     test_guard_same_process_acts();
     test_guard_reused_pid_refused();
     test_guard_vanished_pid_refused();

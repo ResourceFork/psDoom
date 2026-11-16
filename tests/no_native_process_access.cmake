@@ -40,6 +40,12 @@ foreach(_f IN LISTS _psd_sources)
                 list(APPEND _psd_bad "${_f}:${_ln}: ${_l}")
             endif()
         endif()
+        # Between fork and exec a multithreaded process may only call
+        # async-signal-safe functions: exec with a path resolved before the
+        # fork (execve), never one that searches PATH in the child.
+        if(_code MATCHES "(^|[^_a-zA-Z])(execvp|execlp|execvP|posix_spawnp)[ \t]*\\(")
+            list(APPEND _psd_bad "${_f}:${_ln}: (PATH-searching exec after fork) ${_l}")
+        endif()
         # proc_pidinfo: only for this process's own descriptor list.
         if(_code MATCHES "proc_pidinfo[ \t]*\\(")
             if(NOT _code MATCHES "proc_pidinfo\\(getpid\\(\\)")
