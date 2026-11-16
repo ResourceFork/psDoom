@@ -10,8 +10,10 @@
 #include <stdio.h>
 #include <string.h>
 
-static int checks_run;
-static int checks_failed;
+int checks_run;
+int checks_failed;
+
+void test_text_input_follows_text_fields(void);
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
@@ -289,6 +291,7 @@ int main(void)
     test_mouse_disabled();
     test_grab_disabled();
     test_release_warp();
+    test_text_input_follows_text_fields();
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);
     return checks_failed == 0 ? 0 : 1;

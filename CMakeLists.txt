@@ -384,9 +384,12 @@ add_test(NAME psdoom_no_raw_backend_actions
 
 if(NOT DEFINED EMSCRIPTEN)
     add_executable(psdoom_window_state_tests EXCLUDE_FROM_ALL
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/window_state_test.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/window_state_test.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_input_test.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src/i_input.c")
     target_include_directories(psdoom_window_state_tests PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src")
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src"
+        "${CMAKE_CURRENT_BINARY_DIR}/third_party/crispy-doom")
     target_link_libraries(psdoom_window_state_tests PRIVATE CrispyDoom::SDL2)
 
     add_test(NAME psdoom_window_state_tests COMMAND psdoom_window_state_tests)
