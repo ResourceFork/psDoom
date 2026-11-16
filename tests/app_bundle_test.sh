@@ -29,7 +29,7 @@ check "engine sits in MacOS"             '[[ -x "$app/Contents/MacOS/crispy-doom
 icon=$(plutil -extract CFBundleIconFile raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
 icns="$app/Contents/Resources/$icon"
 check "Info.plist sets CFBundleIconFile"   '[[ "$icon" == psDoom.icns ]]'
-check "the named .icns is in Resources"    '[[ -s "$icns" && "$(head -c 4 "$icns")" == icns ]]'
+check "the named .icns is in Resources"    '[[ -n "$icon" && -s "$icns" && "$(head -c 4 "$icns")" == icns ]]'
 check "the old doom.icns is not left behind" '[[ ! -e "$app/Contents/Resources/doom.icns" ]]'
 
 py=""
