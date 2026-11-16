@@ -966,6 +966,8 @@ void psdoom_end_intro(void)
 /* Forget everything psDoom tracks about the current level's monsters. */
 static void PSD_ResetLevelState(void)
 {
+    /* A poll result from before this level (or game) is out of date. */
+    proc_script_discard();
     psd_killed_count = 0;
     psd_grade_count  = 0;
     psd_fork_count   = 0;

@@ -21,6 +21,9 @@
 static psd_proc_t  select_bufs[2][PSD_RAW_MAX];
 static psd_proc_t *select_raw = select_bufs[0];  /* the last raw snapshot    */
 static int         select_raw_count;             /* its size                 */
+/* 1 while the spare buffer is still all zero: a backend that returns -1
+ * writes nothing, so it need not be cleared again for the next call. */
+static int         select_next_clean;
 
 void psd_select_init(void)
 {
@@ -41,12 +44,17 @@ int psd_select_collect(psd_proc_t *out, int max)
     /* Zero the scratch first: a backend fills only the fields it knows, so
      * nothing may carry over from an earlier list or another backend. */
     next = (select_raw == select_bufs[0]) ? select_bufs[1] : select_bufs[0];
-    memset(next, 0, sizeof(select_bufs[0]));
+    if (!select_next_clean)
+    {
+        memset(next, 0, sizeof(select_bufs[0]));
+    }
     n = proc_backend()->list(next, PSD_RAW_MAX);
     if (n < 0)
     {
-        return -1;          /* no new list yet: keep the last one */
+        select_next_clean = 1;   /* written nothing: still clean */
+        return -1;               /* no new list yet: keep the last one */
     }
+    select_next_clean = 0;
     if (n > PSD_RAW_MAX)
     {
         n = PSD_RAW_MAX;

@@ -51,6 +51,7 @@
 #define SCRIPT_LINE_MAX    2048   /* a longer poll line is dropped, not clipped  */
 #define SCRIPT_ARGV_MAX      64   /* argv slots for the response command         */
 #define SCRIPT_SNAPSHOT_MAX 4096  /* cached entities for label lookup            */
+#define SCRIPT_RESULT_MAX_WAIT_MS 1000 /* a result kept longer (plus the timeout) is dropped */
 
 /* ------------------------------------------------------------------- state */
 
@@ -103,6 +104,7 @@ static int             script_job_rc;         /* bytes captured, or -1      */
 static int             script_job_cut;        /* cut off before EOF         */
 static int             script_job_exit;       /* exit status, if it exited  */
 static int             script_job_timeout_ms;
+static unsigned long long script_job_done_ms; /* when it finished (mono)  */
 static char            script_job_cmd[SCRIPT_CMD_MAX + 64];
 /* Written only by whoever runs the job (state RUNNING), read only by the
  * game thread once it is DONE. */
@@ -117,6 +119,8 @@ static int             script_worker;
  * never act on a pid after it was reaped. */
 static pthread_mutex_t script_child_mu = PTHREAD_MUTEX_INITIALIZER;
 static pid_t           script_child;
+/* Set by the at-exit teardown: no poll child is started after it. */
+static int             script_child_closed;
 
 /* --------------------------------------------------------------- pure parse */
 
@@ -584,10 +588,15 @@ static int script_open_devnull(void)
  * strictly so (as before this change). Never returns.
  */
 static void script_child_exec(int stdin_fd, int stdout_fd, int fd_limit,
-                              const char *path, char *const argv[])
+                              const char *path, char *const argv[],
+                              const sigset_t *mask)
 {
     int fd;
 
+    /* The poll worker runs with every signal blocked, and a mask survives
+     * exec: start the command with none blocked, so it (and any helper it
+     * leaves running) still dies of SIGTERM, SIGINT or SIGPIPE. */
+    (void) sigprocmask(SIG_SETMASK, mask, NULL);
     (void) setpgid(0, 0);
     if (stdin_fd >= 0 && stdin_fd != STDIN_FILENO
         && dup2(stdin_fd, STDIN_FILENO) < 0)
@@ -689,6 +698,7 @@ static void script_atexit_teardown(void)
         script_stop_group(script_child);
     }
     script_child = 0;
+    script_child_closed = 1;
     pthread_mutex_unlock(&script_child_mu);
 }
 
@@ -714,6 +724,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     int                devnull;
     char              *argv[4];
     unsigned long long deadline;
+    sigset_t           nomask;
 
     *cut         = 0;
     *exit_status = 0;
@@ -736,11 +747,12 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     argv[3]  = NULL;
     devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
+    sigemptyset(&nomask);
 
     /* Held across fork, so the child is recorded before anything (the
      * at-exit teardown) can look for it. The forked child never uses it. */
     pthread_mutex_lock(&script_child_mu);
-    pid = fork();
+    pid = script_child_closed ? -1 : fork();   /* exiting: start nothing */
     if (pid > 0)
     {
         script_child = pid;
@@ -761,7 +773,7 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     }
     if (pid == 0)
     {
-        script_child_exec(devnull, fds[1], fd_limit, "/bin/sh", argv);
+        script_child_exec(devnull, fds[1], fd_limit, "/bin/sh", argv, &nomask);
     }
     if (devnull >= 0)
     {
@@ -933,8 +945,9 @@ static int script_run_respond(const char *verb, int id,
     char *argv[SCRIPT_ARGV_MAX];
     int   n;
     int   fd_limit;
-    int   devnull;
-    pid_t pid;
+    int      devnull;
+    pid_t    pid;
+    sigset_t nomask;
 
     if (id <= 1)
     {
@@ -982,6 +995,7 @@ static int script_run_respond(const char *verb, int id,
     argv[n]  = NULL;
     devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
+    sigemptyset(&nomask);
 
     pid = fork();
     if (pid == 0)
@@ -990,7 +1004,7 @@ static int script_run_respond(const char *verb, int id,
          * launchd (auto-reaped) and we never wait on the actual command. */
         if (fork() == 0)
         {
-            script_child_exec(devnull, -1, fd_limit, NULL, argv);
+            script_child_exec(devnull, -1, fd_limit, NULL, argv, &nomask);
         }
         _exit(0);         /* intermediate child exits immediately */
     }
@@ -1053,6 +1067,7 @@ static void *script_worker_main(void *arg)
         script_job_rc    = rc;
         script_job_cut   = cut;
         script_job_exit  = exit_status;
+        script_job_done_ms = script_mono_ms();
         script_job_state = SCRIPT_JOB_DONE;
         pthread_mutex_unlock(&script_job_mu);
     }
@@ -1220,6 +1235,14 @@ static int script_list(psd_proc_t *out, int max)
     cut         = script_job_cut;
     exit_status = script_job_exit;
     current     = script_job_gen == script_gen;
+    /* A result that waited longer than a poll may take plus a second (the
+     * game was paused, or between levels) describes the past: poll again. */
+    if (state == SCRIPT_JOB_DONE
+        && script_mono_ms() - script_job_done_ms
+           > (unsigned long long) script_timeout_ms + SCRIPT_RESULT_MAX_WAIT_MS)
+    {
+        current = 0;
+    }
     pthread_mutex_unlock(&script_job_mu);
 
     if (state == SCRIPT_JOB_RUNNING)
@@ -1231,7 +1254,7 @@ static int script_list(psd_proc_t *out, int max)
         /* The worker is idle until the next job: script_job_buf is ours. */
         int n = current ? script_consume(rc, cut, exit_status, script_job_buf,
                                          out, max)
-                        : -1;   /* an earlier install's poll: dropped */
+                        : -1;   /* an earlier install's, or stale: dropped */
 
         pthread_mutex_lock(&script_job_mu);
         script_job_state = SCRIPT_JOB_IDLE;
@@ -1254,6 +1277,11 @@ static int script_list(psd_proc_t *out, int max)
 
     script_job_submit(cmd);
     return -1;
+}
+
+void proc_script_discard(void)
+{
+    script_gen++;   /* the result in flight is now an earlier one's: dropped */
 }
 
 void proc_script_prefetch(void)

@@ -51,8 +51,10 @@ script, or at a `summon` with `--root` or `--plugin`.
 - **When it runs.** psDoom polls about once a second, one poll at a time, on a thread of its
   own: a frame never waits for the poll. Until a poll finishes, the monsters stand as the
   last poll left them; its result is applied on the next tic after it ends, and the next poll
-  starts about a second later. A poll still running when psDoom quits is stopped like one that
-  timed out.
+  starts about a second later. A result left waiting longer than the timeout plus a second
+  (the game was paused) is dropped and polled again, and so is one from before a new level.
+  The poll and responder start with no signal blocked. A poll still running when psDoom exits
+  normally is stopped like one that timed out (not on a crash).
 
 ### Fields
 

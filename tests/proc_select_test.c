@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>     /* waitpid (reap our own zombie child) */
+#include <signal.h>       /* sigprocmask (the signal-mask probe) */
 
 
 void iwad_select_tests(int *checks_run, int *checks_failed); /* iwad_select_test.c */
@@ -429,12 +430,172 @@ static void test_script_prefetch(void)
     proc_script_prefetch();                       /* one running: a no-op */
     took = test_mono_ms() - t0;
     CHECK(took < 50);
-    usleep(600000);
+    usleep(1500000);
     n = proc_backend()->list(out, 4);             /* ready: no "not yet" */
     CHECK(n == 1 && out[0].pid == 31);
     proc_script_prefetch();                       /* consumed: starts another */
     CHECK(proc_backend()->list(out, 4) < 0);
     CHECK(psd_test_list_wait(out, 4) == 1);
+}
+
+/* How many of the ordinary signals (TERM, INT, HUP, PIPE, ALRM) this process
+ * has blocked. */
+static int sigmask_blocked_count(void)
+{
+    static const int sigs[] = { SIGTERM, SIGINT, SIGHUP, SIGPIPE, SIGALRM };
+    sigset_t         cur;
+    int              i;
+    int              n = 0;
+
+    if (sigprocmask(SIG_BLOCK, NULL, &cur) != 0)
+    {
+        return -1;
+    }
+    for (i = 0; i < (int) (sizeof(sigs) / sizeof(sigs[0])); i++)
+    {
+        n += sigismember(&cur, sigs[i]) == 1;
+    }
+    return n;
+}
+
+/* The poll and respond commands start with no signal blocked, whichever
+ * thread forked them: a poll's detached helpers must still die of SIGTERM,
+ * and a pipeline writer of SIGPIPE. */
+static void test_script_children_signal_mask_clear(void)
+{
+    char       poll[1200];
+    char       respond[1200];
+    char       result[512];
+    psd_proc_t out[4];
+    int        n;
+
+    if (g_self[0] == '\0' || strpbrk(g_self, " \t'") != NULL)
+    {
+        CHECK(0);
+        return;
+    }
+    snprintf(result, sizeof(result), "%s/psd_mask_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(result);
+    snprintf(poll, sizeof(poll), "'%s' --sigmask-probe", g_self);
+    snprintf(respond, sizeof(respond), "%s --sigmask-probe-file %s", g_self, result);
+    proc_script_install(poll, respond, 2000);
+    n = psd_test_list_wait(out, 4);
+    CHECK(n == 1 && strcmp(out[0].name, "mask0") == 0);
+    if (n == 1 && strcmp(out[0].name, "mask0") != 0)
+    {
+        fprintf(stderr, "  poll child started with %s signals blocked\n", out[0].name);
+    }
+    (void) proc_backend()->kill(2);
+    CHECK(wait_for_contains(result, "\n", 3000));
+    CHECK(file_contains(result, "mask0\n"));
+    unlink(result);
+}
+
+/* A poll that counts its runs: each prints id=<100 + run>. */
+static void counting_poll(char *cmd, size_t cap, const char *counter)
+{
+    unlink(counter);
+    snprintf(cmd, cap,
+             "printf x >> '%s'; printf 'id=%%d\\n' $(( $(wc -c < '%s') + 100 ))",
+             counter, counter);
+}
+
+/* A finished poll result does not keep: one older than the timeout plus a
+ * second (the game was paused, or between levels) is dropped and polled
+ * again, and proc_script_discard drops the one in flight. */
+static void test_script_stale_result_dropped(void)
+{
+    char       counter[512];
+    char       cmd[1400];
+    psd_proc_t out[4];
+    int        n;
+
+    snprintf(counter, sizeof(counter), "%s/psd_count_%d.txt", test_tmpdir(), (int) getpid());
+    counting_poll(cmd, sizeof(cmd), counter);
+    proc_script_install(cmd, NULL, 200);
+    (void) proc_backend()->list(out, 4);          /* run 1 starts */
+    usleep(1700000);                              /* its result goes stale */
+    CHECK(proc_backend()->list(out, 4) < 0);      /* dropped; run 2 starts */
+    n = psd_test_list_wait(out, 4);
+    CHECK(n == 1 && out[0].pid == 102);
+
+    counting_poll(cmd, sizeof(cmd), counter);
+    proc_script_install(cmd, NULL, 2000);
+    (void) proc_backend()->list(out, 4);          /* run 1 starts */
+    proc_script_discard();                        /* a new level */
+    n = psd_test_list_wait(out, 4);
+    CHECK(n == 1 && out[0].pid == 102);
+    unlink(counter);
+}
+
+/* A poll still running when the game exits is stopped with its group: the
+ * background child it started does not outlive the game. The child is a
+ * `sleep 5`, so on a build that leaks it, it exits by itself; this test
+ * never signals anything. */
+static void test_script_exit_stops_running_poll(void)
+{
+    char  pidfile[512];
+    long  child = 0;
+    long  shell = 0;
+    int   alive = 1;
+    int   waited;
+    int   st = 0;
+    pid_t pid;
+    FILE *f;
+
+    if (g_self[0] == '\0')
+    {
+        CHECK(0);
+        return;
+    }
+    snprintf(pidfile, sizeof(pidfile), "%s/psd_exit_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(pidfile);
+    pid = fork();
+    if (pid == 0)
+    {
+        execl(g_self, g_self, "--exit-mid-poll", pidfile, (char *) NULL);
+        _exit(127);
+    }
+    CHECK(pid > 0);
+    if (pid <= 0)
+    {
+        return;
+    }
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
+    {
+    }
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    f = fopen(pidfile, "r");
+    CHECK(f != NULL);
+    if (f != NULL)
+    {
+        CHECK(fscanf(f, "%ld %ld", &child, &shell) == 2);
+        fclose(f);
+    }
+    if (child <= 1)
+    {
+        CHECK(0);
+        unlink(pidfile);
+        return;
+    }
+    for (waited = 0; waited <= 2000; waited += 20)
+    {
+        pid_t g = getpgid((pid_t) child);
+
+        if ((g < 0 && errno == ESRCH)
+            || (g >= 0 && g != (pid_t) shell && g != getpgrp()))
+        {
+            alive = 0;
+            break;
+        }
+        usleep(20000);
+    }
+    CHECK(!alive);
+    if (alive)
+    {
+        fprintf(stderr, "  poll child %ld outlived the game's exit\n", child);
+    }
+    unlink(pidfile);
 }
 
 /* A post or delete never holds the caller either: the responder (here one
@@ -1033,6 +1194,43 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    /* signal-mask probe: as the poll command, one entity whose label counts
+     * the ordinary signals it was started with blocked ("mask0": none). */
+    if (argc >= 2 && strcmp(argv[1], "--sigmask-probe") == 0)
+    {
+        printf("id=2\tlabel=mask%d\n", sigmask_blocked_count());
+        return 0;
+    }
+    if (argc >= 3 && strcmp(argv[1], "--sigmask-probe-file") == 0)
+    {
+        FILE *f = fopen(argv[2], "a");
+
+        if (f != NULL)
+        {
+            fprintf(f, "mask%d\n", sigmask_blocked_count());
+            fclose(f);
+        }
+        return 0;
+    }
+    /* quit-mid-poll mode: start a poll that leaves a background child, wait
+     * until it has written its pids, then exit as the game would. */
+    if (argc >= 3 && strcmp(argv[1], "--exit-mid-poll") == 0)
+    {
+        char       poll[1024];
+        psd_proc_t out[4];
+        int        waited;
+
+        snprintf(poll, sizeof(poll),
+                 "sleep 5 & echo \"$! $$\" > '%s.tmp' && mv '%s.tmp' '%s'; wait",
+                 argv[2], argv[2], argv[2]);
+        proc_script_install(poll, NULL, 10000);
+        (void) proc_backend()->list(out, 4);
+        for (waited = 0; waited < 3000 && access(argv[2], F_OK) != 0; waited += 10)
+        {
+            usleep(10000);
+        }
+        exit(0);
+    }
     if (argc >= 1 && realpath(argv[0], g_self) == NULL)
     {
         g_self[0] = '\0';
@@ -1055,6 +1253,9 @@ int main(int argc, char **argv)
     test_script_poll_result_of_old_install_dropped();
     test_script_respond_does_not_block_caller();
     test_script_prefetch();
+    test_script_children_signal_mask_clear();
+    test_script_stale_result_dropped();
+    test_script_exit_stops_running_poll();
     test_guard_same_process_acts();
     test_guard_reused_pid_refused();
     test_guard_vanished_pid_refused();

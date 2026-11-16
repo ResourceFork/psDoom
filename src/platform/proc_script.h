@@ -84,6 +84,10 @@ int proc_script_active(void);
  * worker. */
 void proc_script_prefetch(void);
 
+/* Drop the poll in flight or waiting to be consumed (a new level or game:
+ * its snapshot may be long out of date); the next list() polls afresh. */
+void proc_script_discard(void);
+
 /* The candidate limit sent with each poll (once dimensions are declared). */
 void proc_script_set_limit(int limit);
 
