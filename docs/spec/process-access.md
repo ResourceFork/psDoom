@@ -14,7 +14,7 @@
    no action. The latest reason is shown on the HUD and logged once per failure streak. A
    poll that times out after complete lines still uses those lines.
 5. psDoom calls `kill()` in one place only: the script backend killing **its own** timed-out
-   child process group. `proc_pidinfo` is called only on `getpid()`, to list psDoom's own
+   child process group, or its own poll still running when psDoom quits. `proc_pidinfo` is called only on `getpid()`, to list psDoom's own
    file descriptors.
 
 `tests/no_native_process_access.cmake` scans `src/` for the obvious calls: `kill(` outside

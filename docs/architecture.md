@@ -307,8 +307,9 @@ classifier, re-classification and fork swarms work for those entities for free.
 
 **Design** (`src/platform/proc_script.{c,h}`, no engine edits):
 
-- `list()` runs `PSDOOM_POLL_CMD` (via the shell, so pipelines work), captures stdout with a
-  timeout so a slow script never freezes the game tick, and parses it; `renice`/`kill` run
+- `list()` hands `PSDOOM_POLL_CMD` (via the shell, so pipelines work) to a worker thread,
+  which captures its stdout with a timeout, and returns -1 ("not yet") until that result is
+  ready; the game thread then parses it, so the game tick never waits for a poll; `renice`/`kill` run
   `PSDOOM_RESPOND_CMD` _directly_ (no shell — entity labels/ids can't be interpreted as syntax),
   double-forked so they neither block nor leak zombies. `psdoom_init` installs it when
   `PSDOOM_POLL_CMD` is set, else the native backend stays.

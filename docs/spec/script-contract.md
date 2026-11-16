@@ -16,6 +16,9 @@ Full text: [script-backend.md](../script-backend.md).
 - Once dimensions are declared, the host appends `limit=<n>` and, if the player chose one,
   `sort=<id>` to the poll command. Only `[a-z][a-z0-9_]{0,15}` ids and digits are appended.
 - The host **keeps the order and filters nothing**: the script is trusted.
+- The host polls about once a second, one poll at a time, off its game thread: a frame never
+  waits for a poll. Until a poll ends, the last result stands; the request words are those
+  in effect when the poll starts.
 
 ## Respond (`post` / `delete`)
 

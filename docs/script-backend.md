@@ -24,7 +24,7 @@ Configuration is entirely via environment variables, read once at startup:
 | --- | --- | --- | --- |
 | `PSDOOM_POLL_CMD` | no | the bundled Summoner | Command whose **stdout** enumerates entities, overriding the app's bundled Summoner (`python3 Contents/Resources/summoner/summon get`). Run via the shell, so pipelines are allowed (`ps -eo ... \| awk ...`). |
 | `PSDOOM_RESPOND_CMD` | no | — (bundled Summoner when `PSDOOM_POLL_CMD` is unset too) | Command invoked to **act** on an entity (`post` / `delete`). With `PSDOOM_POLL_CMD` set and this unset, psDoom is a read-only visualizer: monsters appear and can be shot, but nothing is acted on. |
-| `PSDOOM_POLL_TIMEOUT_MS` | no | `1000` | Max time to wait for `PSDOOM_POLL_CMD`. If it overruns, the child is killed and that poll yields no update (the game never blocks). |
+| `PSDOOM_POLL_TIMEOUT_MS` | no | `1000` | Max time a poll may run. If it overruns, its process group is killed and only the complete lines it wrote are used. The poll runs off the game thread, so the game never waits for it, timeout or not. |
 
 If `PSDOOM_POLL_CMD` is unset, psDoom runs the Summoner bundled in the app
 (`Contents/Resources/summoner`) with a `python3` it finds without a shell
@@ -48,6 +48,11 @@ script, or at a `summon` with `--root` or `--plugin`.
   in-game live-monster cap become monsters. Put the most important entities first.
 - A leading block of `#` lines may declare what the script can sort by
   ([Ordering](#ordering-the-hosts-request)).
+- **When it runs.** psDoom polls about once a second, one poll at a time, on a thread of its
+  own: a frame never waits for the poll. Until a poll finishes, the monsters stand as the
+  last poll left them; its result is applied on the next tic after it ends, and the next poll
+  starts about a second later. A poll still running when psDoom quits is stopped like one that
+  timed out.
 
 ### Fields
 
