@@ -76,6 +76,14 @@ int psd_script_poll_command(const char *base, const char *sort, int limit,
 /* 1 if the script backend is the active backend. */
 int proc_script_active(void);
 
+/* Start the next poll now, on the worker thread, if none is running or
+ * waiting to be consumed; never waits. The request (Sort by, limit) is the
+ * one in effect now. For a host that lists only once a second: call it right
+ * after a list() that returned a result, so the next list() finds a fresh
+ * one ready. A no-op unless the script backend is active and has its
+ * worker. */
+void proc_script_prefetch(void);
+
 /* The candidate limit sent with each poll (once dimensions are declared). */
 void proc_script_set_limit(int limit);
 

@@ -410,6 +410,33 @@ static void test_script_poll_result_of_old_install_dropped(void)
     CHECK(n == 1 && out[0].pid == 12);
 }
 
+/* proc_script_prefetch starts the next poll without waiting, at most one at
+ * a time, so the next list() finds its result ready. */
+static void test_script_prefetch(void)
+{
+    psd_proc_t         out[4];
+    unsigned long long t0;
+    unsigned long long took;
+    int                n;
+
+    proc_backend_set(NULL);
+    proc_script_prefetch();                       /* not the script backend */
+    CHECK(proc_backend()->list(out, 4) == 0);
+
+    proc_script_install("sleep 0.2; printf 'id=31\\n'", NULL, 2000);
+    t0 = test_mono_ms();
+    proc_script_prefetch();
+    proc_script_prefetch();                       /* one running: a no-op */
+    took = test_mono_ms() - t0;
+    CHECK(took < 50);
+    usleep(600000);
+    n = proc_backend()->list(out, 4);             /* ready: no "not yet" */
+    CHECK(n == 1 && out[0].pid == 31);
+    proc_script_prefetch();                       /* consumed: starts another */
+    CHECK(proc_backend()->list(out, 4) < 0);
+    CHECK(psd_test_list_wait(out, 4) == 1);
+}
+
 /* A post or delete never holds the caller either: the responder (here one
  * that sleeps 0.3 s first) runs detached. */
 static void test_script_respond_does_not_block_caller(void)
@@ -1027,6 +1054,7 @@ int main(int argc, char **argv)
     test_script_poll_does_not_block_caller();
     test_script_poll_result_of_old_install_dropped();
     test_script_respond_does_not_block_caller();
+    test_script_prefetch();
     test_guard_same_process_acts();
     test_guard_reused_pid_refused();
     test_guard_vanished_pid_refused();

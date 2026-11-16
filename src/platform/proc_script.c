@@ -1159,6 +1159,45 @@ static int script_consume(int rc, int cut, int exit_status, const char *buf,
     return n;
 }
 
+/* The poll command with the host's request as it stands now. */
+static void script_request_command(char *cmd, size_t cap)
+{
+    /* A request rides on the poll only once the backend has declared
+     * dimensions: a plain script never gets words it did not ask for. */
+    if (script_ndims > 0)
+    {
+        int sortable = 0;
+        int d;
+        for (d = 0; d < script_ndims; d++)
+        {
+            if (script_dims[d].sortable
+                && strcmp(script_dims[d].id, script_req_sort) == 0)
+            {
+                sortable = 1;
+            }
+        }
+        (void) psd_script_poll_command(script_poll_cmd,
+                                       sortable ? script_req_sort : NULL,
+                                       script_req_limit, cmd, cap);
+    }
+    else
+    {
+        snprintf(cmd, cap, "%s", script_poll_cmd);
+    }
+}
+
+/* Hand the poll command to the worker (the job must be idle). */
+static void script_job_submit(const char *cmd)
+{
+    pthread_mutex_lock(&script_job_mu);
+    snprintf(script_job_cmd, sizeof(script_job_cmd), "%s", cmd);
+    script_job_timeout_ms = script_timeout_ms;
+    script_job_gen        = script_gen;
+    script_job_state      = SCRIPT_JOB_RUNNING;
+    pthread_cond_signal(&script_job_cv);
+    pthread_mutex_unlock(&script_job_mu);
+}
+
 /*
  * Never waits for a poll. If the poll this backend started has finished,
  * consume it and return its list (>= 0). Otherwise return -1 ("not yet"):
@@ -1203,29 +1242,7 @@ static int script_list(psd_proc_t *out, int max)
         }
     }
 
-    /* A request rides on the poll only once the backend has declared
-     * dimensions: a plain script never gets words it did not ask for. */
-    if (script_ndims > 0)
-    {
-        int sortable = 0;
-        int d;
-        for (d = 0; d < script_ndims; d++)
-        {
-            if (script_dims[d].sortable
-                && strcmp(script_dims[d].id, script_req_sort) == 0)
-            {
-                sortable = 1;
-            }
-        }
-        (void) psd_script_poll_command(script_poll_cmd,
-                                       sortable ? script_req_sort : NULL,
-                                       script_req_limit, cmd, sizeof(cmd));
-    }
-    else
-    {
-        snprintf(cmd, sizeof(cmd), "%s", script_poll_cmd);
-    }
-
+    script_request_command(cmd, sizeof(cmd));
     script_worker_start();
     if (script_worker != 1)
     {
@@ -1235,14 +1252,36 @@ static int script_list(psd_proc_t *out, int max)
         return script_consume(rc, cut, exit_status, script_job_buf, out, max);
     }
 
-    pthread_mutex_lock(&script_job_mu);
-    memcpy(script_job_cmd, cmd, sizeof(script_job_cmd));
-    script_job_timeout_ms = script_timeout_ms;
-    script_job_gen        = script_gen;
-    script_job_state      = SCRIPT_JOB_RUNNING;
-    pthread_cond_signal(&script_job_cv);
-    pthread_mutex_unlock(&script_job_mu);
+    script_job_submit(cmd);
     return -1;
+}
+
+void proc_script_prefetch(void)
+{
+    char cmd[SCRIPT_CMD_MAX + 64];
+    int  idle;
+
+    if (!proc_script_active())
+    {
+        return;
+    }
+    script_worker_start();
+    if (script_worker != 1)
+    {
+        return;   /* polls run inside list() then: nothing to start early */
+    }
+    pthread_mutex_lock(&script_job_mu);
+    if (script_job_state == SCRIPT_JOB_DONE && script_job_gen != script_gen)
+    {
+        script_job_state = SCRIPT_JOB_IDLE;   /* an earlier install's poll */
+    }
+    idle = script_job_state == SCRIPT_JOB_IDLE;
+    pthread_mutex_unlock(&script_job_mu);
+    if (idle)
+    {
+        script_request_command(cmd, sizeof(cmd));
+        script_job_submit(cmd);
+    }
 }
 
 static unsigned int script_current_uid(void)
