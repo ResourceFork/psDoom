@@ -20,6 +20,7 @@
 #include "proc_backend.h"
 #include "proc_script.h"
 #include "proc_select.h"
+#include "psd_test_wait.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -198,7 +199,7 @@ static int collect_until(psd_proc_t *out, int max, int want, int tries)
     int n = 0;
     while (tries-- > 0)
     {
-        n = psd_select_collect(out, max);
+        n = psd_test_collect_wait(out, max);
         if (n == want)
         {
             break;

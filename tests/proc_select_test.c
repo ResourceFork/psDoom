@@ -14,6 +14,7 @@
  */
 
 #include "proc_select.h"
+#include "psd_test_wait.h"
 #include "proc_backend.h"
 #include "proc_fake.h"
 #include "proc_script.h"
@@ -100,12 +101,12 @@ static void test_collect_and_action_log(void)
     proc_fake_push_snapshot(snap, 4);
     psd_select_init();
 
-    n = psd_select_collect(out, 16);
+    n = psd_test_collect_wait(out, 16);
     CHECK(n == 4);
     CHECK(n == 4 && out[0].pid == 300 && out[1].pid == 301
           && out[2].pid == 302 && out[3].pid == 303);   /* no re-rank */
     proc_fake_push_snapshot(snap, 4);
-    n = psd_select_collect(out, 2);
+    n = psd_test_collect_wait(out, 2);
     CHECK(n == 2 && out[0].pid == 300 && out[1].pid == 301);   /* the head */
 
     /* The action ops the game uses are logged by the fake. */
@@ -134,7 +135,7 @@ static void test_child_count(void)
     proc_fake_install(501);
     proc_fake_push_snapshot(snap, 5);
     psd_select_init();
-    (void) psd_select_collect(out, 16);   /* populates the raw snapshot */
+    (void) psd_test_collect_wait(out, 16);   /* populates the raw snapshot */
 
     CHECK(psd_select_child_count(400) == 3);   /* three children          */
     CHECK(psd_select_child_count(404) == 0);   /* a leaf                  */
@@ -292,7 +293,7 @@ static void test_script_backend_roundtrip(void)
     proc_script_install(poll, respond, 1000);
     psd_select_init();   /* picks up uid via the script backend */
 
-    n = psd_select_collect(out, 16);
+    n = psd_test_collect_wait(out, 16);
     CHECK(n == 3);                       /* all three poll entities survive */
     CHECK(index_of(out, n, 4123) >= 0);
     CHECK(index_of(out, n, 4124) >= 0);
@@ -350,35 +351,6 @@ static const char *test_tmpdir(void)
     return (td != NULL && td[0] != '\0') ? td : "/tmp";
 }
 
-/* The script backend polls off the caller's thread: list() returns -1 while
- * its poll runs. These wait (as the game would, a tic at a time) for the
- * result, up to 5 s. */
-static int list_wait(psd_proc_t *out, int max)
-{
-    int n;
-    int waited;
-
-    for (waited = 0; (n = proc_backend()->list(out, max)) < 0 && waited < 5000;
-         waited += 5)
-    {
-        usleep(5000);
-    }
-    return n;
-}
-
-static int collect_wait(psd_proc_t *out, int max)
-{
-    int n;
-    int waited;
-
-    for (waited = 0; (n = psd_select_collect(out, max)) < 0 && waited < 5000;
-         waited += 5)
-    {
-        usleep(5000);
-    }
-    return n;
-}
-
 /* The poll never holds the caller: a slow poll (sleep 0.2) runs while list()
  * returns at once, saying "not yet" (-1), and the next call after the poll
  * ends gets its list. The game thread calls list() once a tic until then. */
@@ -416,11 +388,11 @@ static void test_script_poll_does_not_block_caller(void)
     /* While a poll runs, the selection layer keeps the last list (child
      * counts included) rather than an empty one. */
     proc_script_install("printf 'id=7\\nid=8\\tparent=7\\n'", NULL, 2000);
-    CHECK(collect_wait(out, 4) == 2);
+    CHECK(psd_test_collect_wait(out, 4) == 2);
     proc_script_install("sleep 0.2; printf 'id=9\\n'", NULL, 2000);
     CHECK(psd_select_collect(out, 4) < 0);
     CHECK(psd_select_child_count(7) == 1);
-    CHECK(collect_wait(out, 4) == 1 && out[0].pid == 9);
+    CHECK(psd_test_collect_wait(out, 4) == 1 && out[0].pid == 9);
     CHECK(psd_select_child_count(7) == 0);
 }
 
@@ -432,9 +404,9 @@ static void test_script_poll_result_of_old_install_dropped(void)
     int        n;
 
     proc_script_install("sleep 0.2; printf 'id=11\\n'", NULL, 2000);
-    (void) proc_backend()->list(out, 4);          /* starts the old poll */
+    (void) proc_backend()->list(out, 4);         /* starts the old poll */
     proc_script_install("printf 'id=12\\n'", NULL, 2000);
-    n = list_wait(out, 4);
+    n = psd_test_list_wait(out, 4);
     CHECK(n == 1 && out[0].pid == 12);
 }
 
@@ -457,7 +429,7 @@ static void test_script_respond_does_not_block_caller(void)
     write_executable(respond, content);
 
     proc_script_install("printf 'id=21\\n'", respond, 2000);
-    CHECK(list_wait(out, 4) == 1);
+    CHECK(psd_test_list_wait(out, 4) == 1);
     t0 = test_mono_ms();
     CHECK(proc_backend()->kill(21) == 1);
     proc_backend()->renice(21, 4);
@@ -540,7 +512,7 @@ static void test_script_respond_refuses_reserved_ids(void)
     write_executable(respond, respond_content);
 
     proc_script_install(poll, respond, 1000);
-    (void) proc_backend()->list(out, 4);
+    (void) psd_test_list_wait(out, 4);
 
     CHECK(proc_backend()->kill(-1) == 0);
     CHECK(proc_backend()->kill(0) == 0);
@@ -586,7 +558,7 @@ static void test_script_poll_timeout_leaves_no_child(void)
 
     proc_script_install(poll, NULL, 300);
     t0 = test_mono_ms();
-    n = proc_backend()->list(out, 4);
+    n = psd_test_list_wait(out, 4);
     elapsed = test_mono_ms() - t0;
     CHECK(n == 0);
     CHECK(elapsed < 2000);   /* the game was not held past the timeout */
@@ -661,7 +633,7 @@ static void test_script_children_inherit_no_fds(void)
     CHECK(file_fd >= 3 && sock_fd >= 3 && high_fd == 200);
 
     proc_script_install(poll, respond, 2000);
-    n = proc_backend()->list(out, 4);
+    n = psd_test_list_wait(out, 4);
     CHECK(n == 1);
     if (n == 1)
     {
@@ -718,7 +690,7 @@ static void test_script_poll_timeout_drops_partial_line(void)
     int        n;
 
     proc_script_install("printf 'id=7\\nid=42'; sleep 2; printf '42\\n'", NULL, 300);
-    n = proc_backend()->list(out, 4);
+    n = psd_test_list_wait(out, 4);
     CHECK(n == 1);
     CHECK(n >= 1 && out[0].pid == 7);
     CHECK(index_of(out, n, 42) < 0);
@@ -747,7 +719,7 @@ static void test_script_children_stdin_is_devnull(void)
 
     proc_script_install("cat >/dev/null; printf 'id=3\\n'", NULL, 1500);
     t0 = test_mono_ms();
-    n = proc_backend()->list(out, 4);
+    n = psd_test_list_wait(out, 4);
     elapsed = test_mono_ms() - t0;
 
     dup2(saved, STDIN_FILENO);
@@ -784,7 +756,7 @@ static void test_script_children_inherit_no_fds_above_limit(void)
 
     snprintf(poll, sizeof(poll), "'%s' --fd-probe", g_self);
     proc_script_install(poll, NULL, 2000);
-    n = proc_backend()->list(out, 4);
+    n = psd_test_list_wait(out, 4);
 
     CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
     close(high_fd);
@@ -841,7 +813,7 @@ static void list_one(const psd_proc_t *p)
     proc_fake_install(501);
     proc_fake_push_snapshot(p, 1);
     psd_select_init();
-    (void) psd_select_collect(out, 4);
+    (void) psd_test_collect_wait(out, 4);
 }
 
 /* The normal path still acts: the pid is still the listed process. */

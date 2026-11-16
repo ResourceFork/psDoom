@@ -29,7 +29,10 @@ extern "C" {
 
 typedef struct
 {
-    /* Fill `out` (capacity `max`) with the live processes; returns the count. */
+    /* Fill `out` (capacity `max`) with the live processes; returns the count.
+     * A backend that lists asynchronously (the script backend) never makes
+     * the caller wait: it returns -1, "no new list yet", and the caller keeps
+     * what it has and calls again later. */
     int          (*list)(psd_proc_t *out, int max);
 
     /* The current (real) user id. */

@@ -16,8 +16,11 @@
 /* Upper bound on one listing (the script contract's per-poll limit). */
 #define PSD_RAW_MAX 4096
 
-static psd_proc_t select_raw[PSD_RAW_MAX];   /* raw snapshot scratch          */
-static int        select_raw_count;          /* size of the last raw snapshot */
+/* Two raw buffers: the next listing goes into the spare one, so a backend
+ * that has no new list yet leaves the last one (and its child counts) whole. */
+static psd_proc_t  select_bufs[2][PSD_RAW_MAX];
+static psd_proc_t *select_raw = select_bufs[0];  /* the last raw snapshot    */
+static int         select_raw_count;             /* its size                 */
 
 void psd_select_init(void)
 {
@@ -26,8 +29,9 @@ void psd_select_init(void)
 
 int psd_select_collect(psd_proc_t *out, int max)
 {
-    int n;
-    int i;
+    psd_proc_t *next;
+    int         n;
+    int         i;
 
     if (out == NULL || max <= 0)
     {
@@ -36,12 +40,18 @@ int psd_select_collect(psd_proc_t *out, int max)
 
     /* Zero the scratch first: a backend fills only the fields it knows, so
      * nothing may carry over from an earlier list or another backend. */
-    memset(select_raw, 0, sizeof(select_raw));
-    n = proc_backend()->list(select_raw, PSD_RAW_MAX);
+    next = (select_raw == select_bufs[0]) ? select_bufs[1] : select_bufs[0];
+    memset(next, 0, sizeof(select_bufs[0]));
+    n = proc_backend()->list(next, PSD_RAW_MAX);
     if (n < 0)
     {
-        n = 0;
+        return -1;          /* no new list yet: keep the last one */
     }
+    if (n > PSD_RAW_MAX)
+    {
+        n = PSD_RAW_MAX;
+    }
+    select_raw       = next;
     select_raw_count = n;   /* remember for psd_select_child_count() */
 
     /* The backend's order is the order to show; only the cut is ours. */

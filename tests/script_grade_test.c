@@ -11,6 +11,7 @@
 #include "proc_backend.h"
 #include "proc_script.h"
 #include "proc_select.h"
+#include "psd_test_wait.h"
 #include "psdoom_grade.h"
 
 #include <errno.h>
@@ -215,7 +216,7 @@ static void test_respond_verbs(void)
     snprintf(poll_cmd, sizeof(poll_cmd), "'%s'", poll);
 
     proc_script_install(poll_cmd, resp, 1000);
-    n = proc_backend()->list(ents, 8);
+    n = psd_test_list_wait(ents, 8);
     GR_CHECK(n == 3);
     GR_CHECK(n == 3 && ents[0].has_grade && fabs(ents[0].grade - 1.0) < 1e-9);
     GR_CHECK(n == 3 && ents[1].has_grade && fabs(ents[1].grade - 0.25) < 1e-9);
@@ -281,12 +282,12 @@ static void test_collect_clears_grade(void)
 
     proc_script_install(poll_cmd, NULL, 1000);
     psd_select_init();
-    n = psd_select_collect(ents, 8);
+    n = psd_test_collect_wait(ents, 8);
     GR_CHECK(n == 1 && ents[0].has_grade);
 
     proc_backend_set(&stub_backend);
     psd_select_init();
-    n = psd_select_collect(ents, 8);
+    n = psd_test_collect_wait(ents, 8);
     GR_CHECK(n == 1 && ents[0].pid == 777);
     GR_CHECK(n == 1 && ents[0].has_grade == 0);
 

@@ -1210,21 +1210,26 @@ void psdoom_sync(void)
     {
         return;
     }
+
+    /* Ask the triage layer for the curated, ranked, truncated collection.
+     * It never waits for Summoner: while the poll runs (on its own thread)
+     * it returns -1, and this tries again next tic, so the next sync is a
+     * second after this poll's result, not after its start. */
+    n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
+    if (n < 0)
+    {
+        return;
+    }
     psd_next_sync = leveltime + PSD_SYNC_INTERVAL;
 
     /* The first active snapshot is a CPU-rate baseline. Do not enumerate
      * processes during the title demo; begin only after PSDINTRO is active. */
     if (psd_first_active_collection)
     {
-        (void) psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
         psd_collect_count++;
         psd_first_active_collection = false;
-        psd_next_sync = leveltime + PSD_SYNC_INTERVAL;
         return;
     }
-
-    /* Ask the triage layer for the curated, ranked, truncated collection. */
-    n = psd_select_collect(psd_selected, PSD_CANDIDATE_CAP);
     psd_selected_n = n;
     PSD_ShowStatus();
     psd_collect_count++;

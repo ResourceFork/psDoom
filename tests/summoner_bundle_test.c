@@ -15,6 +15,7 @@
 #include "proc_backend.h"
 #include "proc_script.h"
 #include "proc_select.h"
+#include "psd_test_wait.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -45,12 +46,12 @@ static void test_default_backend_is_inert(void)
 
     proc_backend_set(NULL);
     BT_CHECK(proc_backend() == &proc_none_backend);
-    BT_CHECK(proc_backend()->list(ents, 4) == 0);
+    BT_CHECK(psd_test_list_wait(ents, 4) == 0);
     BT_CHECK(proc_backend()->lookup((int) getpid(), &ents[0]) == 0);
     BT_CHECK(proc_backend()->kill((int) getpid()) == 0);   /* a no-op */
     proc_backend()->renice((int) getpid(), 4);             /* a no-op */
     psd_select_init();
-    BT_CHECK(psd_select_collect(ents, 4) == 0);
+    BT_CHECK(psd_test_collect_wait(ents, 4) == 0);
     /* The checked actions find nothing to act on. */
     BT_CHECK(psd_proc_kill_checked((int) getpid(), 0, "x") == PSD_ACT_GONE);
     BT_CHECK(psd_proc_renice_checked((int) getpid(), 0, "x", 4)
@@ -208,7 +209,7 @@ static void test_bundled_summoner(void)
     BT_CHECK(proc_backend() == &proc_none_backend);
     BT_CHECK(proc_script_status() != NULL
              && strstr(proc_script_status(), "missing") != NULL);
-    BT_CHECK(psd_select_collect(ents, 4) == 0);
+    BT_CHECK(psd_test_collect_wait(ents, 4) == 0);
     BT_CHECK(proc_script_install_bundled(NULL) == 0);       /* no exe path */
 
     if (!bt_have_python())
@@ -240,7 +241,7 @@ static void test_bundled_summoner(void)
     BT_CHECK(proc_script_active());
     BT_CHECK(proc_script_status() == NULL);
     psd_select_init();
-    n = psd_select_collect(ents, 4);
+    n = psd_test_collect_wait(ents, 4);
     BT_CHECK(n == 1 && ents[0].pid == 77);
     proc_script_set_mode("dryrun");
     BT_CHECK(psd_proc_kill_checked(77, 0, "stub") == PSD_ACT_DONE);
@@ -249,14 +250,14 @@ static void test_bundled_summoner(void)
     /* Broken: the bundled summon is not valid python -> no entities, and
      * the game can only send events (none to send: nothing is listed). */
     BT_CHECK(bt_write(summon, "this is not python (\n"));
-    n = psd_select_collect(ents, 4);
+    n = psd_test_collect_wait(ents, 4);
     BT_CHECK(n == 0);
     BT_CHECK(proc_script_status() != NULL
              && strstr(proc_script_status(), "failed") != NULL);
     /* Summoner reporting an error (exit 0, "# summon error" only). */
     BT_CHECK(bt_write(summon, "print('# summon error: root is writable')\n"));
     BT_CHECK(proc_script_install_bundled(exe) == 1);
-    n = psd_select_collect(ents, 4);
+    n = psd_test_collect_wait(ents, 4);
     BT_CHECK(n == 0);
     BT_CHECK(proc_script_status() != NULL
              && strstr(proc_script_status(), "failed") != NULL);
@@ -265,7 +266,7 @@ static void test_bundled_summoner(void)
     /* Hung: a summon that never answers -> the poll times out, no
      * entities, and the reason is recorded once. */
     BT_CHECK(bt_write(summon, "import time\ntime.sleep(30)\n"));
-    n = psd_select_collect(ents, 4);
+    n = psd_test_collect_wait(ents, 4);
     BT_CHECK(n == 0);
     BT_CHECK(proc_script_status() != NULL
              && strstr(proc_script_status(), "did not answer") != NULL);

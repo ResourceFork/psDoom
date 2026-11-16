@@ -2,10 +2,15 @@
  * psDoom -- external-script process backend (implementation). See proc_script.h
  * and docs/script-backend.md for the wire contract.
  *
- * - Enumerate: run PSDOOM_POLL_CMD through the shell, capture its stdout (with a
- *   timeout so a slow/hung script never freezes the game), and parse the
- *   tab-separated key=value lines into psd_proc_t. An id outside 2..INT_MAX,
- *   or not plain decimal digits, drops the line.
+ * - Enumerate: run PSDOOM_POLL_CMD through the shell on a worker thread, so
+ *   the game thread never waits for it, capture its stdout (with a timeout, so
+ *   a hung script is stopped), and parse the tab-separated key=value lines
+ *   into psd_proc_t on the game thread. list() starts a poll and returns -1
+ *   ("not yet") until that poll's result is ready; the call after it ends
+ *   consumes it. One poll runs at a time. The worker touches only its job
+ *   (command, output buffer, result), handed over under script_job_mu; every
+ *   other piece of state here belongs to the game thread. An id outside
+ *   2..INT_MAX, or not plain decimal digits, drops the line.
  * - Act: run PSDOOM_RESPOND_CMD *directly* (no shell) as
  *   `<verb> <id> [key=value...]` (verb `post` for a wound, `delete` for a
  *   kill), double-forked so it never blocks the game and
@@ -28,6 +33,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <pthread.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -80,6 +86,37 @@ static int              script_req_limit;
 /* The host's effect mode, sent as `mode=` on every response so Summoner
  * decides what runs: "dryrun" (the safe default), "post-only", "delete". */
 static char             script_mode[16] = "dryrun";
+
+/* Bumped by every install, so a poll started under an earlier configuration
+ * is dropped rather than served as this one's. */
+static unsigned int     script_gen;
+
+/* ---- the poll job, shared with the worker thread (under script_job_mu) -- */
+
+enum { SCRIPT_JOB_IDLE, SCRIPT_JOB_RUNNING, SCRIPT_JOB_DONE };
+
+static pthread_mutex_t script_job_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  script_job_cv = PTHREAD_COND_INITIALIZER;
+static int             script_job_state;      /* SCRIPT_JOB_*              */
+static unsigned int    script_job_gen;        /* script_gen it was made for */
+static int             script_job_rc;         /* bytes captured, or -1      */
+static int             script_job_cut;        /* cut off before EOF         */
+static int             script_job_exit;       /* exit status, if it exited  */
+static int             script_job_timeout_ms;
+static char            script_job_cmd[SCRIPT_CMD_MAX + 64];
+/* Written only by whoever runs the job (state RUNNING), read only by the
+ * game thread once it is DONE. */
+static char            script_job_buf[SCRIPT_BUF_CAP];
+/* 0: not started yet; 1: running; -1: could not start (polls then run on
+ * the game thread, as before, rather than not at all). */
+static int             script_worker;
+
+/* The poll child in flight (the leader of its process group), 0 if none.
+ * Set at fork and cleared at reap under script_child_mu, so the worker's
+ * timeout teardown and the at-exit teardown never both act on one child and
+ * never act on a pid after it was reaped. */
+static pthread_mutex_t script_child_mu = PTHREAD_MUTEX_INITIALIZER;
+static pid_t           script_child;
 
 /* --------------------------------------------------------------- pure parse */
 
@@ -629,23 +666,46 @@ static void script_stop_group(pid_t pgid)
     script_reap(pgid);
 }
 
+/* Stop poll child `pid` as a group and reap it, unless it was already
+ * reaped (it exited, or the at-exit teardown stopped it). */
+static void script_stop_child(pid_t pid)
+{
+    pthread_mutex_lock(&script_child_mu);
+    if (script_child == pid)
+    {
+        script_stop_group(pid);
+        script_child = 0;
+    }
+    pthread_mutex_unlock(&script_child_mu);
+}
+
+/* At exit: a poll still running would outlive the game (the worker thread
+ * ends with the process), so stop its group as a timeout would. */
+static void script_atexit_teardown(void)
+{
+    pthread_mutex_lock(&script_child_mu);
+    if (script_child > 1)
+    {
+        script_stop_group(script_child);
+    }
+    script_child = 0;
+    pthread_mutex_unlock(&script_child_mu);
+}
+
 /*
  * Run `cmd` via the shell, in a process group of its own, and capture up to
  * `cap`-1 bytes of its stdout into `buf` (always NUL-terminated). If it
  * overruns `timeout_ms` (still writing, or holding stdout open, or not
  * exiting after EOF), or fills the buffer, the whole group is killed and its
  * leader reaped, so no part of the command outlives the poll. Returns bytes
- * captured (>= 0), or -1 if the child could not be spawned.
+ * captured (>= 0), or -1 if the child could not be spawned. Sets *cut to 1
+ * if the capture was cut off (timeout, full buffer, error), and *exit_status
+ * to the command's exit status when it exited on its own (0 otherwise).
+ * Blocks for up to `timeout_ms`: it runs on the poll worker thread.
  */
-/* 1 if the last capture was cut off (timeout, full buffer, error), and the
- * command's exit status when it exited on its own (0 otherwise). */
-static int script_capture_cut;
-static int script_capture_exit;
-
-static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_ms)
+static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_ms,
+                              int *cut, int *exit_status)
 {
-    script_capture_cut  = 0;
-    script_capture_exit = 0;
     int                fds[2];
     pid_t              pid;
     int                total = 0;
@@ -655,6 +715,8 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     char              *argv[4];
     unsigned long long deadline;
 
+    *cut         = 0;
+    *exit_status = 0;
     if (cmd == NULL || cmd[0] == '\0' || buf == NULL || cap <= 0)
     {
         return -1;
@@ -675,7 +737,18 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     devnull  = script_open_devnull();
     fd_limit = script_fd_limit();
 
+    /* Held across fork, so the child is recorded before anything (the
+     * at-exit teardown) can look for it. The forked child never uses it. */
+    pthread_mutex_lock(&script_child_mu);
     pid = fork();
+    if (pid > 0)
+    {
+        script_child = pid;
+    }
+    if (pid != 0)
+    {
+        pthread_mutex_unlock(&script_child_mu);
+    }
     if (pid < 0)
     {
         close(fds[0]);
@@ -787,16 +860,28 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
     while (!stop)
     {
         int   st = 0;
-        pid_t w = waitpid(pid, &st, WNOHANG);
+        pid_t w;
 
+        pthread_mutex_lock(&script_child_mu);
+        if (script_child != pid)
+        {
+            /* The at-exit teardown already stopped and reaped it. */
+            pthread_mutex_unlock(&script_child_mu);
+            *cut = 1;
+            return total;
+        }
+        w = waitpid(pid, &st, WNOHANG);
         if (w == pid || (w < 0 && errno != EINTR))
         {
+            script_child = 0;
+            pthread_mutex_unlock(&script_child_mu);
             if (w == pid && WIFEXITED(st))
             {
-                script_capture_exit = WEXITSTATUS(st);
+                *exit_status = WEXITSTATUS(st);
             }
             return total;         /* exited and reaped */
         }
+        pthread_mutex_unlock(&script_child_mu);
         if (script_mono_ms() >= deadline)
         {
             stop = 1;
@@ -808,8 +893,8 @@ static int script_run_capture(const char *cmd, char *buf, int cap, int timeout_m
         }
     }
 
-    script_capture_cut = 1;
-    script_stop_group(pid);
+    *cut = 1;
+    script_stop_child(pid);
     return total;
 }
 
@@ -939,40 +1024,85 @@ static const char *script_label_for(int id)
     return NULL;
 }
 
-static int script_list(psd_proc_t *out, int max)
+/* The poll worker: wait for a job, run it, hand the result back. It touches
+ * nothing but the job. */
+static void *script_worker_main(void *arg)
 {
-    static char  buf[SCRIPT_BUF_CAP];
+    (void) arg;
+    for (;;)
+    {
+        char cmd[sizeof(script_job_cmd)];
+        int  timeout_ms;
+        int  rc;
+        int  cut;
+        int  exit_status;
+
+        pthread_mutex_lock(&script_job_mu);
+        while (script_job_state != SCRIPT_JOB_RUNNING)
+        {
+            pthread_cond_wait(&script_job_cv, &script_job_mu);
+        }
+        memcpy(cmd, script_job_cmd, sizeof(cmd));
+        timeout_ms = script_job_timeout_ms;
+        pthread_mutex_unlock(&script_job_mu);
+
+        rc = script_run_capture(cmd, script_job_buf, (int) sizeof(script_job_buf),
+                                timeout_ms, &cut, &exit_status);
+
+        pthread_mutex_lock(&script_job_mu);
+        script_job_rc    = rc;
+        script_job_cut   = cut;
+        script_job_exit  = exit_status;
+        script_job_state = SCRIPT_JOB_DONE;
+        pthread_mutex_unlock(&script_job_mu);
+    }
+    return NULL;
+}
+
+/* Start the worker once. It blocks every signal, so the game's handlers
+ * keep running on the game thread. */
+static void script_worker_start(void)
+{
+    pthread_attr_t attr;
+    pthread_t      thread;
+    sigset_t       all;
+    sigset_t       saved;
+
+    if (script_worker != 0)
+    {
+        return;
+    }
+    script_worker = -1;
+    if (pthread_attr_init(&attr) != 0)
+    {
+        return;
+    }
+    (void) pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    sigfillset(&all);
+    (void) pthread_sigmask(SIG_SETMASK, &all, &saved);
+    if (pthread_create(&thread, &attr, script_worker_main, NULL) == 0)
+    {
+        script_worker = 1;
+        (void) atexit(script_atexit_teardown);
+    }
+    (void) pthread_sigmask(SIG_SETMASK, &saved, NULL);
+    (void) pthread_attr_destroy(&attr);
+    if (script_worker != 1)
+    {
+        fprintf(stderr, "psDoom: no poll thread; polling on the game thread\n");
+    }
+}
+
+/* Turn a finished poll (its output in buf, its capture result) into the
+ * entity list, the status and the dimensions. Game thread only. */
+static int script_consume(int rc, int cut, int exit_status, const char *buf,
+                          psd_proc_t *out, int max)
+{
     unsigned int uid = (unsigned int) getuid();
     int          n;
     int          i;
 
-    char         cmd[SCRIPT_CMD_MAX + 64];
-
-    /* A request rides on the poll only once the backend has declared
-     * dimensions: a plain script never gets words it did not ask for. */
-    if (script_ndims > 0)
-    {
-        int sortable = 0;
-        int d;
-        for (d = 0; d < script_ndims; d++)
-        {
-            if (script_dims[d].sortable
-                && strcmp(script_dims[d].id, script_req_sort) == 0)
-            {
-                sortable = 1;
-            }
-        }
-        (void) psd_script_poll_command(script_poll_cmd,
-                                       sortable ? script_req_sort : NULL,
-                                       script_req_limit, cmd, sizeof(cmd));
-    }
-    else
-    {
-        snprintf(cmd, sizeof(cmd), "%s", script_poll_cmd);
-    }
-
-    if (script_run_capture(cmd, buf, sizeof(buf), script_timeout_ms) < 0
-        || (script_capture_cut && strchr(buf, '\n') == NULL))
+    if (rc < 0 || (cut && strchr(buf, '\n') == NULL))
     {
         /* No process monsters until a poll works again; say why once. */
         snprintf(script_status, sizeof(script_status),
@@ -991,7 +1121,7 @@ static int script_list(psd_proc_t *out, int max)
     /* A poll that lists nothing because it failed -- it exited non-zero, or
      * Summoner reported an error -- is a failure to report, not an empty
      * list. */
-    if (n == 0 && (script_capture_exit != 0
+    if (n == 0 && (exit_status != 0
                    || strncmp(buf, "# summon error", 14) == 0))
     {
         snprintf(script_status, sizeof(script_status),
@@ -999,7 +1129,7 @@ static int script_list(psd_proc_t *out, int max)
         if (!script_poll_failing)
         {
             fprintf(stderr, "psDoom: %s (exit %d; %.200s)\n", script_status,
-                    script_capture_exit, buf);
+                    exit_status, buf);
         }
         script_poll_failing = 1;
         script_last_n = 0;
@@ -1027,6 +1157,92 @@ static int script_list(psd_proc_t *out, int max)
         }
     }
     return n;
+}
+
+/*
+ * Never waits for a poll. If the poll this backend started has finished,
+ * consume it and return its list (>= 0). Otherwise return -1 ("not yet"):
+ * either a poll is still running, or none was, and this call started one,
+ * with the request (Sort by, limit) as it stands now. The caller keeps what
+ * it has and calls again on a later tic.
+ */
+static int script_list(psd_proc_t *out, int max)
+{
+    char cmd[SCRIPT_CMD_MAX + 64];
+    int  state;
+    int  rc;
+    int  cut;
+    int  exit_status;
+    int  current;
+
+    pthread_mutex_lock(&script_job_mu);
+    state       = script_job_state;
+    rc          = script_job_rc;
+    cut         = script_job_cut;
+    exit_status = script_job_exit;
+    current     = script_job_gen == script_gen;
+    pthread_mutex_unlock(&script_job_mu);
+
+    if (state == SCRIPT_JOB_RUNNING)
+    {
+        return -1;
+    }
+    if (state == SCRIPT_JOB_DONE)
+    {
+        /* The worker is idle until the next job: script_job_buf is ours. */
+        int n = current ? script_consume(rc, cut, exit_status, script_job_buf,
+                                         out, max)
+                        : -1;   /* an earlier install's poll: dropped */
+
+        pthread_mutex_lock(&script_job_mu);
+        script_job_state = SCRIPT_JOB_IDLE;
+        pthread_mutex_unlock(&script_job_mu);
+        if (n >= 0)
+        {
+            return n;
+        }
+    }
+
+    /* A request rides on the poll only once the backend has declared
+     * dimensions: a plain script never gets words it did not ask for. */
+    if (script_ndims > 0)
+    {
+        int sortable = 0;
+        int d;
+        for (d = 0; d < script_ndims; d++)
+        {
+            if (script_dims[d].sortable
+                && strcmp(script_dims[d].id, script_req_sort) == 0)
+            {
+                sortable = 1;
+            }
+        }
+        (void) psd_script_poll_command(script_poll_cmd,
+                                       sortable ? script_req_sort : NULL,
+                                       script_req_limit, cmd, sizeof(cmd));
+    }
+    else
+    {
+        snprintf(cmd, sizeof(cmd), "%s", script_poll_cmd);
+    }
+
+    script_worker_start();
+    if (script_worker != 1)
+    {
+        /* No thread could be made: poll here, blocking, as before. */
+        rc = script_run_capture(cmd, script_job_buf, (int) sizeof(script_job_buf),
+                                script_timeout_ms, &cut, &exit_status);
+        return script_consume(rc, cut, exit_status, script_job_buf, out, max);
+    }
+
+    pthread_mutex_lock(&script_job_mu);
+    memcpy(script_job_cmd, cmd, sizeof(script_job_cmd));
+    script_job_timeout_ms = script_timeout_ms;
+    script_job_gen        = script_gen;
+    script_job_state      = SCRIPT_JOB_RUNNING;
+    pthread_cond_signal(&script_job_cv);
+    pthread_mutex_unlock(&script_job_mu);
+    return -1;
 }
 
 static unsigned int script_current_uid(void)
@@ -1100,6 +1316,7 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
     script_req_sort[0] = '\0';
     script_req_limit  = 0;
     snprintf(script_mode, sizeof(script_mode), "dryrun");
+    script_gen++;   /* a poll still running is the old configuration's */
 
     proc_backend_set(&script_backend);
 }

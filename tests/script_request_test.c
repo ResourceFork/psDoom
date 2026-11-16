@@ -11,6 +11,7 @@
 #include "proc_backend.h"
 #include "proc_script.h"
 #include "proc_select.h"
+#include "psd_test_wait.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -163,8 +164,8 @@ static void test_backend_request_roundtrip(void)
     snprintf(cmd, sizeof(cmd), "'%s'", plain);
     proc_script_install(cmd, NULL, 1000);
     proc_script_set_limit(64);
-    (void) proc_backend()->list(ents, 8);
-    (void) proc_backend()->list(ents, 8);
+    (void) psd_test_list_wait(ents, 8);
+    (void) psd_test_list_wait(ents, 8);
     RQ_CHECK(rq_last_line(args, last, sizeof(last)) && strcmp(last, "[]") == 0);
     RQ_CHECK(proc_script_sort_count() == 0);
     RQ_CHECK(proc_script_sort_label() == NULL);
@@ -186,12 +187,12 @@ static void test_backend_request_roundtrip(void)
     proc_script_install(cmd, NULL, 1000);
     proc_script_set_limit(64);
     psd_select_init();
-    (void) psd_select_collect(ents, 8);
+    (void) psd_test_collect_wait(ents, 8);
     RQ_CHECK(rq_last_line(args, last, sizeof(last)) && strcmp(last, "[]") == 0);
     RQ_CHECK(proc_script_sort_count() == 2);
     RQ_CHECK(proc_script_sort_label() != NULL
              && strcmp(proc_script_sort_label(), "Memory") == 0);
-    n = psd_select_collect(ents, 8);
+    n = psd_test_collect_wait(ents, 8);
     RQ_CHECK(rq_last_line(args, last, sizeof(last))
              && strcmp(last, "[limit=64]") == 0);
     RQ_CHECK(n == 2 && ents[0].pid == 21 && ents[1].pid == 22);  /* no re-sort */
@@ -199,7 +200,7 @@ static void test_backend_request_roundtrip(void)
              && ents[1].group[0] == '\0');
     proc_script_cycle_sort(1);                       /* Memory -> CPU */
     RQ_CHECK(strcmp(proc_script_sort_label(), "CPU") == 0);
-    (void) psd_select_collect(ents, 8);
+    (void) psd_test_collect_wait(ents, 8);
     RQ_CHECK(rq_last_line(args, last, sizeof(last))
              && strcmp(last, "[sort=cpu limit=64]") == 0);
     proc_script_cycle_sort(1);                       /* CPU -> Memory (skips App) */
@@ -217,7 +218,7 @@ static void test_backend_request_roundtrip(void)
     snprintf(cmd, sizeof(cmd), "'%s'", plain);
     proc_script_install(cmd, NULL, 1000);
     psd_select_init();
-    n = psd_select_collect(ents, 8);
+    n = psd_test_collect_wait(ents, 8);
     RQ_CHECK(n == 3 && ents[0].pid == (int) getpid() && ents[1].pid == 31
              && ents[2].pid == 32);
 
@@ -252,7 +253,7 @@ static void test_mode_on_respond(void)
     RQ_CHECK(rq_write_exec(resp, body));
     snprintf(cmd, sizeof(cmd), "'%s'", poll);
     proc_script_install(cmd, resp, 1000);
-    (void) proc_backend()->list(ents, 4);
+    (void) psd_test_list_wait(ents, 4);
 
     static const struct { const char *set; int ok; const char *want; } m[] = {
         { NULL,        0, "delete 41 label=x mode=dryrun" },

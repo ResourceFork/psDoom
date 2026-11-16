@@ -30,7 +30,9 @@ void psd_select_init(void);
 /*
  * List the active backend's entities and write the first `max` of them into
  * `out`, in the backend's order. Returns the count written. Nothing is
- * filtered or re-ranked here.
+ * filtered or re-ranked here. Returns -1, writing nothing and keeping the
+ * last listing (and its child counts), while the backend has no new list
+ * yet (the script backend's poll is still running): call again later.
  */
 int psd_select_collect(psd_proc_t *out, int max);
 
