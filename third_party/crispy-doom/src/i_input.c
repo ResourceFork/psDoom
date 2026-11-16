@@ -78,7 +78,10 @@ static const char shiftxform[] =
 
 // If true, I_StartTextInput() has been called, and we are populating
 // the data3 field of ev_keydown events.
-static boolean text_input_enabled = true;
+// [psdoom] Starts false: no text field is open at start-up, and every
+// consumer of data3 (save name, chat, numeric entry) calls I_StartTextInput
+// first.
+static boolean text_input_enabled = false;
 
 // Bit mask of mouse button state.
 static unsigned int mouse_button_state = 0;
@@ -295,25 +298,36 @@ void I_HandleKeyboardEvent(SDL_Event *sdlevent)
     }
 }
 
-void I_StartTextInput(int x1, int y1, int x2, int y2)
+// [psdoom] SDL text input is active only while a text field is open and
+// typed text comes from SDL_TEXTINPUT (vanilla_keyboard_mapping off). SDL
+// turns it on when video starts, and while it is on macOS sends key presses
+// through its input method, so holding a vowel opens the accent popup
+// instead of repeating the key.
+void I_SyncTextInput(void)
 {
-    text_input_enabled = true;
+    boolean want = text_input_enabled && !vanilla_keyboard_mapping;
 
-    if (!vanilla_keyboard_mapping)
+    if (want && !SDL_IsTextInputActive())
     {
         // SDL2-TODO: SDL_SetTextInputRect(...);
         SDL_StartTextInput();
     }
+    else if (!want && SDL_IsTextInputActive())
+    {
+        SDL_StopTextInput();
+    }
+}
+
+void I_StartTextInput(int x1, int y1, int x2, int y2)
+{
+    text_input_enabled = true;
+    I_SyncTextInput();
 }
 
 void I_StopTextInput(void)
 {
     text_input_enabled = false;
-
-    if (!vanilla_keyboard_mapping)
-    {
-        SDL_StopTextInput();
-    }
+    I_SyncTextInput();
 }
 
 static void UpdateMouseButtonState(unsigned int button, boolean on)

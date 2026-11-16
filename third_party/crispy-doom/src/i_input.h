@@ -53,6 +53,11 @@ void I_StartTextInput(int x1, int y1, int x2, int y2);
 // (if one is used).
 void I_StopTextInput(void);
 
+// [psdoom] I_SyncTextInput sets SDL text input to match the open text field
+// (off when none is). Called once the window exists, since SDL starts with
+// text input on.
+void I_SyncTextInput(void);
+
 void I_HandleKeyboardEvent(SDL_Event *sdlevent);
 void I_HandleMouseEvent(SDL_Event *sdlevent);
 

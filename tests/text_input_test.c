@@ -92,7 +92,7 @@ static void check_modes(int vanilla)
     vanilla_keyboard_mapping = vanilla;
 
     /* Start-up, as SetVideoMode leaves it once the window exists: in play. */
-    /* RED-FIRST: no start-up hook exists before the fix. */
+    I_SyncTextInput();
     CHECK(!SDL_IsTextInputActive());
     CHECK(type_a() == 0);
 

@@ -1772,6 +1772,10 @@ static void SetVideoMode(void)
     // Initially create the upscaled texture for rendering to screen
 
     CreateUpscaledTexture(true);
+
+    // [psdoom] SDL starts with text input on; turn it off until a text field
+    // opens, so macOS does not show the press-and-hold accent popup in play.
+    I_SyncTextInput();
 }
 
 // [crispy] re-calculate SCREENWIDTH, SCREENHEIGHT, NONWIDEWIDTH and WIDESCREENDELTA
