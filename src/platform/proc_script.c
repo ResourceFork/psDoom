@@ -87,6 +87,10 @@ static char             script_applied[PSD_SCRIPT_ID_MAX + 1];
 static char             script_req_sort[PSD_SCRIPT_ID_MAX + 1];
 static int              script_req_limit;
 
+/* The last poll's `# effect` words: what a wound and a kill do. */
+static char             script_effect_post[PSD_SCRIPT_EFFECT_MAX];
+static char             script_effect_del[PSD_SCRIPT_EFFECT_MAX];
+
 /* The host's effect mode, sent as `mode=` on every response so Summoner
  * decides what runs: "dryrun" (the safe default), "post-only", "delete". */
 static char             script_mode[16] = "dryrun";
@@ -414,6 +418,61 @@ int psd_script_parse_header(const char *buf, psd_script_dim_t *dims, int max,
         line = (nl != NULL) ? nl + 1 : NULL;
     }
     return n;
+}
+
+void psd_script_parse_effects(const char *buf, char *post, char *del,
+                              size_t cap)
+{
+    const char *line = buf;
+
+    if (post == NULL || del == NULL || cap == 0)
+    {
+        return;
+    }
+    post[0] = '\0';
+    del[0]  = '\0';
+    while (line != NULL && *line == '#')
+    {
+        const char *nl  = strchr(line, '\n');
+        size_t      len = (nl != NULL) ? (size_t) (nl - line) : strlen(line);
+        char        l[SCRIPT_LINE_MAX];
+        char        verb[16];
+
+        if (len < sizeof(l))
+        {
+            memcpy(l, line, len);
+            l[len] = '\0';
+            if (strncmp(l, "# effect ", 9) == 0
+                && script_header_word(l + 9, "verb", 0, verb, sizeof(verb)))
+            {
+                char *dst = strcmp(verb, "post") == 0   ? post
+                          : strcmp(verb, "delete") == 0 ? del
+                                                        : NULL;
+                size_t i;
+
+                if (dst != NULL
+                    && script_header_word(l + 9, "text", 1, dst, cap))
+                {
+                    for (i = 0; dst[i] != '\0'; i++)
+                    {
+                        if ((unsigned char) dst[i] < 0x20
+                            || (unsigned char) dst[i] > 0x7e)
+                        {
+                            dst[i] = ' ';
+                        }
+                    }
+                }
+            }
+        }
+        line = (nl != NULL) ? nl + 1 : NULL;
+    }
+}
+
+const char *proc_script_effect(int kill)
+{
+    const char *s = kill ? script_effect_del : script_effect_post;
+
+    return s[0] != '\0' ? s : NULL;
 }
 
 int psd_script_poll_command(const char *base, const char *sort, int limit,
@@ -1209,6 +1268,8 @@ static int script_consume(int rc, int cut, int exit_status, const char *buf,
     script_ndims = psd_script_parse_header(buf, script_dims,
                                            PSD_SCRIPT_DIMS_MAX, script_applied,
                                            sizeof(script_applied));
+    psd_script_parse_effects(buf, script_effect_post, script_effect_del,
+                             sizeof(script_effect_post));
 
     /* Stamp the current uid so script entities pass the (uid) triage filter,
      * and cache the snapshot for label lookup during a response. */
@@ -1430,6 +1491,8 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
     script_last_n     = 0;
     script_ndims      = 0;
     script_applied[0] = '\0';
+    script_effect_post[0] = '\0';
+    script_effect_del[0]  = '\0';
     script_req_sort[0] = '\0';
     script_req_limit  = 0;
     snprintf(script_mode, sizeof(script_mode), "dryrun");

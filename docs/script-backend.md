@@ -133,9 +133,9 @@ $PSDOOM_RESPOND_CMD <verb> <id> [key=value ...]
 | `$2` `id` | The entity `id` from the poll output. Always present. |
 | `$3…` `key=value` | Extensible, order-independent extras. Currently: `amount=<int>` (injury magnitude; present for `post`, absent for `delete`), `label=<string>` (the entity's label, when known) and `mode=<dryrun\|post-only\|delete>` (always present). Ignore keys you don't recognize. |
 
-**`mode`** is the game's effect setting, sent with every event: `dryrun` (psDoom *Simulate*:
-act on nothing), `post-only` (*Renice*: `post` may act, `delete` must not) or `delete` (*Live*:
-both may act). psDoom always reports the event and leaves the decision to the responder, so
+**`mode`** is the game's effect setting, sent with every event: `dryrun` (psDoom **Off**:
+act on nothing), `post-only` (**Wounds only**: `post` may act, `delete` must not) or `delete`
+(**Wounds and kills**: both may act). These protocol words never appear in the game's menus. psDoom always reports the event and leaves the decision to the responder, so
 **a responder must honour `mode`**; treat a missing or unknown mode as `dryrun`. The
 reference responders in `scripts/` and `examples/` do.
 
@@ -212,6 +212,11 @@ before the first entity, on every poll:
   `dir` (a numeric dimension's default direction), `roles` (`sort`, `group`), `unit`, and
   `label` (the rest of the line; shown in the game's menu).
 - `# sort id=… dir=…`: the sort the output is actually in.
+- `# effect verb=post|delete text=…`: optional, what a wound (`post`) and a kill (`delete`)
+  do, in plain words (`text` is the rest of the line, at most 40 bytes; psDoom draws it as
+  printable ASCII). psDoom shows them on the effect setting's help line, for example
+  "Wound: lowers its priority" and "Kill: quits the process". A script that sends none gets
+  a plain "acts on it".
 
 Once a poll has declared dimensions, psDoom appends the request to `PSDOOM_POLL_CMD` on each
 following poll: `limit=64` (its candidate cap) and, after the player picks one under

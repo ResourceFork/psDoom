@@ -19,12 +19,17 @@ Where things live:
 - **Root:** `--root`, else `$SUMMONER_ROOT`, else `~/.config/summoner`. The root,
   `plugins/`, configs and state must be yours and not group- or world-writable.
 - **Plugin:** `--config`, else `--plugin`, else `<root>/current`, else `ps`, which is built
-  in, dry run, with remove off.
+  in and follows the host `mode` with no config file. A `<root>/plugins/ps.json` is laid
+  over it and can only restrict it: `dry_run` only on, `allow_remove` only off, the rate
+  limit only tighter; it cannot change the command, name or state directory. A plugin that
+  is not built in is dry run, with remove off, unless its config says otherwise.
 - **Ids:** one map per root, never reused, failing closed if lost.
 
 ## Plugins
 
-- A plugin is an executable answering `describe` (verbs, dimensions, `default_sort`),
+- A plugin is an executable answering `describe` (verbs, dimensions, `default_sort`, and
+  optionally `nudge.effect` / `remove.effect`: plain words for what a wound and a kill do,
+  which `get` passes on as `# effect` header lines),
   `list [sort= group= limit=]` (JSON Lines), `nudge <key> amount=N`, `remove <key>` and
   optionally `restore`. It is run as an argv, never through a shell, with a timeout.
 - **The plugin is trusted and curates.** It sorts, groups, trims, grades and excludes.
@@ -35,13 +40,16 @@ Where things live:
 ## Safety
 
 - The effective action is the stricter of the host `mode` and the plugin's `dry_run` /
-  `allow_remove`.
+  `allow_remove`. For the built-in `ps` with no config, that is the host `mode` alone.
 - Other guards: a rate limit, a label check, acting on listed ids only, and an audit line
   for every call, including skipped ones.
-- The `ps` plugin leaves out:
+- The `ps` plugin acts by default, so its exclusions are what keep the game off what must
+  never be touched. It leaves out:
   - psDoom's protected names and session plumbing;
   - processes whose effective or real uid is not yours;
   - itself and its chain;
   - the host chain (`SUMMONER_HOST_PIDS`).
 - Items carry their `pid`, and every `get` drops its own calling chain at serve time,
   serving no pid item if that chain cannot be read.
+- At action time the `ps` plugin rechecks the pid (still listed, same process, not
+  excluded) before it renices or signals it.

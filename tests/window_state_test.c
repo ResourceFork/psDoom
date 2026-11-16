@@ -14,6 +14,7 @@ int checks_run;
 int checks_failed;
 
 void test_text_input_follows_text_fields(void);
+void test_effect_setting_words(void);   /* effect_text_test.c */
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
@@ -292,6 +293,7 @@ int main(void)
     test_grab_disabled();
     test_release_warp();
     test_text_input_follows_text_fields();
+    test_effect_setting_words();
 
     printf("%d checks, %d failed\n", checks_run, checks_failed);
     return checks_failed == 0 ? 0 : 1;

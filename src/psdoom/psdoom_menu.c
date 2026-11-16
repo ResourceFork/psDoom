@@ -9,9 +9,11 @@
 
 #include "psdoom_menu.h"
 #include "psdoom_options.h"
+#include "psdoom_effect.h"  /* Off / Wounds only / Wounds and kills, and help */
 #include "proc_script.h"   /* "Sort by" from the script backend */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "doomtype.h"
 #include "m_menu.h"     /* menu_t, menuitem_t, M_SetupNextMenu, M_WriteText */
@@ -36,13 +38,6 @@ enum
     psd_row_count
 };
 
-static const char *const psd_killpolicy_names[PSD_KILL_NUM] =
-{
-    "none (dry run)",
-    "post only (renice)",
-    "post + delete (KILL)",
-};
-
 static const char *const psd_labelrange_names[PSD_LABELRANGE_NUM] =
 {
     "near",
@@ -61,6 +56,25 @@ static void M_DrawPsDoom(void);
 
 /* The engine's Options menu; we return to it on "back". */
 extern menu_t OptionsDef;
+/* The engine's menu cursor row and text width (m_menu.c). */
+extern short itemOn;
+int M_StringWidth(const char *string);
+
+/* One help line under the rows, centred, cut to fit the 320-wide screen. */
+static void PSD_HelpLine(int y, const char *text)
+{
+    char buf[PSD_EFFECT_HELP_MAX + 8];
+    size_t n;
+    int w;
+
+    snprintf(buf, sizeof(buf), "%s%s", crstr[CR_GRAY], text);
+    n = strlen(buf);
+    while ((w = M_StringWidth(buf)) > 312 && n > strlen(crstr[CR_GRAY]))
+    {
+        buf[--n] = '\0';
+    }
+    M_WriteText((320 - w) / 2, y, buf);
+}
 
 static menuitem_t PsDoomMenu[] =
 {
@@ -113,7 +127,7 @@ static void M_DrawPsDoom(void)
                                                       crstr[CR_GREEN];
         char buf[80];
         snprintf(buf, sizeof(buf), "%sEffect via Summoner: %s%s",
-                 crstr[CR_NONE], vc, psd_killpolicy_names[psdoom_kill_policy]);
+                 crstr[CR_NONE], vc, psdoom_effect_name(psdoom_kill_policy));
         M_WriteText(PSD_MENU_X, PSD_MENU_Y + psd_row_killpolicy * PSD_MENU_LH, buf);
     }
 
@@ -141,6 +155,25 @@ static void M_DrawPsDoom(void)
             psdoom_show_pid ? "on" : "off", psdoom_show_labels, psdoom_show_pid);
     PSD_Row(psd_row_labelrange, "Label draw distance",
             psd_labelrange_names[psdoom_label_range], psdoom_show_labels, 1);
+
+    /* On the effect row, say what a wound and a kill do, in the plugin's
+     * own words where it gives them. */
+    if (itemOn == psd_row_killpolicy)
+    {
+        char l1[PSD_EFFECT_HELP_MAX];
+        char l2[PSD_EFFECT_HELP_MAX];
+        int  y = PSD_MENU_Y + psd_row_count * PSD_MENU_LH + 8;
+
+        psdoom_effect_help(psdoom_kill_policy,
+                           proc_script_active() ? proc_script_effect(0) : NULL,
+                           proc_script_active() ? proc_script_effect(1) : NULL,
+                           l1, l2, sizeof(l1));
+        PSD_HelpLine(y, l1);
+        if (l2[0] != '\0')
+        {
+            PSD_HelpLine(y + 10, l2);
+        }
+    }
 
     dp_translation = NULL;
 }

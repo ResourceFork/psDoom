@@ -297,6 +297,44 @@ static void test_mode_on_respond(void)
     (void) rmdir(dir);
 }
 
+/* `# effect` header lines: what a wound and a kill do, in the plugin's own
+ * plain words. */
+static void test_parse_effects(void)
+{
+    char post[PSD_SCRIPT_EFFECT_MAX];
+    char del[PSD_SCRIPT_EFFECT_MAX];
+
+    psd_script_parse_effects(
+        "# dim id=relevance kind=numeric dir=desc roles=sort unit=score "
+        "label=Relevance\n"
+        "# effect verb=post text=lowers its priority\n"
+        "# effect verb=delete text=quits the process\r\n"
+        "# effect verb=other text=ignored\n"
+        "id=5\tlabel=x\n"
+        "# effect verb=post text=after the header: ignored\n",
+        post, del, sizeof(post));
+    RQ_CHECK(strcmp(post, "lowers its priority") == 0);
+    RQ_CHECK(strcmp(del, "quits the process") == 0);
+
+    /* None given; a control byte is drawn as a space; too long is cut. */
+    psd_script_parse_effects("id=5\tlabel=x\n", post, del, sizeof(post));
+    RQ_CHECK(post[0] == '\0' && del[0] == '\0');
+    psd_script_parse_effects("# effect verb=post text=a\tb\x7f" "c\n",
+                             post, del, sizeof(post));
+    RQ_CHECK(strcmp(post, "a b c") == 0);
+    psd_script_parse_effects(
+        "# effect verb=delete text=0123456789012345678901234567890123456789XYZ\n",
+        post, del, sizeof(post));
+    RQ_CHECK(strlen(del) == PSD_SCRIPT_EFFECT_MAX - 1);
+    RQ_CHECK(del[PSD_SCRIPT_EFFECT_MAX - 2] == '9');
+
+    /* Before any poll the backend has said nothing. */
+    proc_script_install("true", "true", 1000);
+    RQ_CHECK(proc_script_effect(0) == NULL);
+    RQ_CHECK(proc_script_effect(1) == NULL);
+    proc_backend_set(NULL);
+}
+
 void script_request_tests(int *checks_run, int *checks_failed)
 {
     rq_run = checks_run;
@@ -306,4 +344,5 @@ void script_request_tests(int *checks_run, int *checks_failed)
     test_poll_command();
     test_backend_request_roundtrip();
     test_mode_on_respond();
+    test_parse_effects();
 }

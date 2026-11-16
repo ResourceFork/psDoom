@@ -307,13 +307,20 @@ def ps(args):
 
 
 def resolve(key):
-    """key -> pid if that pid still has the recorded start time, else None."""
+    """key -> pid if that pid is still the process that was listed and
+    would still be listed now, else None. The process is re-read at action
+    time: it must have the recorded start time (no pid reuse) and pass the
+    same exclusions as `list` (protected names, effective and real uid,
+    this plugin and its parent chain, the host chain), because a process
+    can exec another program, or change uid, under the same pid and start."""
     pid_s, sep, start = key.partition("@")
     if not sep or not pid_s.isdigit() or int(pid_s) <= 1:
         return None
     pid = int(pid_s)
-    now = "-".join(ps(["-o", "lstart=", "-p", str(pid)]).split())
-    return pid if now and now == start else None
+    rows = parse_ps(ps(["-o", PS_FIELDS, "-p", str(pid)]), os.getpid(),
+                    host_pids())
+    ok = [r for r in rows if r["pid"] == pid and r["start"] == start]
+    return pid if len(ok) == 1 else None
 
 
 def result(ok, message="", undo=None):

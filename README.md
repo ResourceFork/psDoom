@@ -106,21 +106,17 @@ Summoner which monster was hit and how far it may go.
 Open **Options** > **psDoom Options** to adjust how psDoom represents and acts
 on processes. Settings are saved with Doom's configuration.
 
-- **Effect via Summoner:** what psDoom allows. **none (dry run)** acts on
-  nothing; **post only (renice)**, the default, lets a wound lower a process's
-  scheduling priority; **post + delete (KILL)** also lets defeating a monster
-  send `SIGTERM`. Summoner's own per-plugin setting is the second limit, and
-  the stricter of the two wins. The built-in `ps` plugin is **dry run, remove
-  off** until you allow it, in `~/.config/summoner/plugins/ps.json`:
-
-  ```json
-  {"dry_run": false, "plugin": {"name": "ps",
-   "command": ["${PYTHON}", "${SUMMONER_DIR}/plugins/processes.py"],
-   "allow_remove": false}}
-  ```
-
-  (`"allow_remove": true` as well for live killing). Every hit, acted on or
-  not, is logged in `~/.config/summoner/state/ps/audit.jsonl`.
+- **Effect via Summoner:** what a hit does to the real process. **Off** does
+  nothing; **Wounds only**, the default, lets a wound lower the process's
+  priority (renice) and a kill do nothing; **Wounds and kills** also lets
+  defeating a monster quit the process (`SIGTERM`). The help line under the
+  setting says what a wound and a kill do, in the plugin's own words. The
+  built-in `ps` plugin follows this setting: there is nothing to configure.
+  Every hit, acted on or not, is logged in
+  `~/.config/summoner/state/ps/audit.jsonl`. (An optional
+  `~/.config/summoner/plugins/ps.json` can only restrict it further, for
+  example `{"dry_run": true}` or `{"plugin": {"allow_remove": false}}`; see
+  [docs/summoner.md](docs/summoner.md).)
 - **Exclusions:** the `ps` plugin leaves out session-critical processes,
   session plumbing (login, sudo, ssh, tmux, terminal apps, login shells),
   processes not fully yours, psDoom itself and the shell or launcher chain

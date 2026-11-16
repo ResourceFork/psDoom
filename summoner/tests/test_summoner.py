@@ -1721,6 +1721,33 @@ class ProcessesPluginTests(Base):
                 self.assertEqual(P.main(["remove", "k"]), 0)
             self.assertEqual(fired, [(55, P.signal.SIGTERM)])
 
+    def test_resolve_rechecks_the_exclusions_at_action_time(self):
+        # ps is replaced in-process: resolve reads only the fake row.
+        from unittest import mock
+        me = os.getuid()
+        row = ("  4242   1 %d %d  100   0.0 ??       Thu Nov 12 09:01:02 2026 "
+               "%s\n")
+        key = "4242@Thu-Nov-12-09:01:02-2026"
+        cases = [
+            (row % (me, me, "/Applications/Editor.app/Contents/MacOS/Editor"),
+             {}, 4242),
+            (row % (me, me, "/usr/bin/login"), {}, None),       # protected
+            (row % (me, me, "/System/Library/CoreServices/Dock.app/"
+                    "Contents/MacOS/Dock"), {}, None),
+            (row % (0, me, "/usr/bin/Editor"), {}, None),       # euid
+            (row % (me, 0, "/usr/bin/Editor"), {}, None),       # ruid
+            ((row % (me, me, "/usr/bin/Editor")).replace("09:01:02",
+                                                         "09:01:03"),
+             {}, None),                                          # reused
+            (row % (me, me, "/usr/bin/Editor"),
+             {"SUMMONER_HOST_PIDS": "4242"}, None),               # host
+            ("", {}, None),                                       # gone
+        ]
+        for text, env, want in cases:
+            with mock.patch.object(P, "ps", return_value=text), \
+                    mock.patch.dict(P.os.environ, env):
+                self.assertEqual(P.resolve(key), want, (text, env))
+
     def test_malformed_key_never_resolves(self):
         for key in ("notapid@x", "1@x", "0@x", "12", "@", ""):
             self.assertIsNone(P.resolve(key))

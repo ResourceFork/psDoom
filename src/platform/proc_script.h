@@ -67,6 +67,21 @@ int psd_script_id_ok(const char *id);
 int psd_script_parse_header(const char *buf, psd_script_dim_t *dims, int max,
                             char *applied, size_t applied_cap);
 
+/* What a wound or a kill does, in a plugin's own plain words (Summoner's
+ * `# effect verb=post|delete text=...` header lines; ps: "lowers its
+ * priority" / "quits the process"). At most 40 bytes, printable ASCII. */
+#define PSD_SCRIPT_EFFECT_MAX 41
+
+/* Pure: read the `# effect` lines of a poll output's leading `#` block into
+ * post (what a wound does) and del (what a kill does); each is "" when the
+ * backend says nothing. Anything but printable ASCII becomes a space. */
+void psd_script_parse_effects(const char *buf, char *post, char *del,
+                              size_t cap);
+
+/* The last poll's words for what a wound (kill == 0) or a kill (kill != 0)
+ * does; NULL when the backend gave none. */
+const char *proc_script_effect(int kill);
+
 /* Pure: the poll command with the request appended: ` sort=<id>` (only a
  * well-formed id) and ` limit=<n>` (1..4096). Returns 0, and the bare base
  * command, if it would not fit in cap. */

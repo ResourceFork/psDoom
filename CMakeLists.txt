@@ -47,6 +47,7 @@ target_sources(doom PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_options.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_menu.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_effect.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_backend.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/proc_script.c")
 target_compile_definitions(doom PRIVATE PSD_BUILD_ID=\"${PSD_BUILD_ID}\")
@@ -377,6 +378,11 @@ add_test(NAME psdoom_reference_scripts
             "${CMAKE_CURRENT_SOURCE_DIR}"
             "${CMAKE_CURRENT_BINARY_DIR}/reference-scripts-test")
 
+# The player never sees the protocol's words (dry run, post, delete, renice):
+# the effect setting is Off / Wounds only / Wounds and kills.
+add_test(NAME psdoom_no_effect_jargon
+    COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/no_effect_jargon.cmake")
 # Game code must act on processes only through the pid-reuse-checked wrappers.
 add_test(NAME psdoom_no_raw_backend_actions
     COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -386,8 +392,11 @@ if(NOT DEFINED EMSCRIPTEN)
     add_executable(psdoom_window_state_tests EXCLUDE_FROM_ALL
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/window_state_test.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_input_test.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/effect_text_test.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_effect.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src/i_input.c")
     target_include_directories(psdoom_window_state_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src"
         "${CMAKE_CURRENT_BINARY_DIR}/third_party/crispy-doom")
     target_link_libraries(psdoom_window_state_tests PRIVATE CrispyDoom::SDL2)

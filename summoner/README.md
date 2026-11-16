@@ -3,8 +3,9 @@
 `summon` is a poll command and a responder for the ps-apps' script contract (psDoom's
 `docs/script-backend.md`). It hands each call to a small *plugin* (`describe`, `list`,
 `nudge`, `remove`, plus optional `restore` for undo) and adds stable ids, a 0..1 grade, ladder
-scaling, 31-byte labels, background caching, and a safety layer: dry run by default, remove off
-by default, a rate limit, an audit log and undo. Design and plugin contract: psDoom's
+scaling, 31-byte labels, background caching, and a safety layer: the host's mode, per-plugin
+dry run and remove opt-in (the built-in `ps` follows the mode with no config), a rate limit,
+an audit log and undo. Design and plugin contract: psDoom's
 `docs/summoner.md`.
 
 | Path | What |
@@ -40,8 +41,11 @@ refresh | describe | undo <action-id>
   `current`, `plugins/<name>.json`, `ids.json` (one id map for all plugins) and
   `state/<name>/` (cache, `audit.jsonl`).
 - **Plugin**: `--config FILE`, else `--plugin NAME`, else the current one, else `ps`. `ps` is
-  built in: dry run, remove off. Any other name needs `<root>/plugins/<name>.json`, with no
-  `state_dir` in it (named plugins always keep state under `<root>/state/`).
+  built in and does what the host's `mode=` allows, with no config file. An optional
+  `<root>/plugins/ps.json` can only restrict it (`dry_run` on, `allow_remove` off, a tighter
+  `rate_limit`). Any other name needs `<root>/plugins/<name>.json`, with no `state_dir` in it
+  (named plugins always keep state under `<root>/state/`), and is dry run with remove off until
+  that config says otherwise.
 - Any other word exits 0 and does nothing (it is audited as `ignored-verb`).
 - **The plugin curates and is trusted.** Summoner keeps its order and the game filters
   nothing, so the plugin leaves out what must never be touched. `ps` drops psDoom's
@@ -57,7 +61,7 @@ export PATH="$PWD/summoner:$PATH"                 # this shell only
 The symlink is followed back here, so the plugins are found next to the real file. Nothing is
 installed for you.
 
-## No-kill run against psDoom (dry run, your processes)
+## Run against psDoom (your processes)
 
 ```sh
 cd ~/Source/psDoom-plugin-harness
@@ -69,8 +73,9 @@ export PSDOOM_RESPOND_CMD="summon"
 build/psDoom.app/Contents/MacOS/psDoom
 ```
 
-Every shot is then written to `~/.config/summoner/state/ps/audit.jsonl` as `dry-run`, and
-nothing is signalled. Start psDoom from that shell: Finder and `open` give it a minimal PATH.
+Every shot is then written to `~/.config/summoner/state/ps/audit.jsonl`. What runs is the
+game's effect setting: **Off** touches nothing (audited `dry-run`), **Wounds only** renices,
+**Wounds and kills** also quits. Start psDoom from that shell: Finder and `open` give it a minimal PATH.
 Paths, a `--root` included, must not contain spaces (the respond command is split on whitespace).
 
 ## The script contract in brief (what the apps read)
@@ -91,6 +96,9 @@ The full contract is psDoom's `docs/script-backend.md`; this is the part Summone
   exit code ignored): `<cmd> <verb> <id> [key=value...]`: `post` (with `amount=N`) for a
   wound, `delete` for a kill; optional `label=`; always `mode=dryrun|post-only|delete`,
   which the responder must honour. Unknown verbs and keys must be no-ops.
+- **Effect words**: `# effect verb=post|delete text=…` header lines, from the plugin's
+  `nudge.effect` / `remove.effect`, say what a wound and a kill do; the games show them on
+  the effect setting's help line.
 
 ## One contract for the apps
 

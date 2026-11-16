@@ -22,9 +22,10 @@ python3 -I summoner/tests/run_tests.py         # Summoner alone, no CMake
 
 ## Safety rules for any run
 
-- Never signal or renice a real process in a test. The `ps` plugin may only be used
-  read-only (`describe`, `list`, `get`) or in dry run. Real actions are tested through the
-  CSV plugin on a CSV the test created.
+- Never signal or renice a real process in a test. The built-in `ps` plugin acts by
+  default (it follows the host mode), so it may only be used read-only (`describe`,
+  `list`, `get`), with `mode=dryrun`, or with its command swapped for a fake in the test's
+  own process. Real actions are tested through the CSV plugin on a CSV the test created.
 - Every Summoner run sets an explicit scratch root (`--root <dir under build/>`) and a
   scratch `HOME`. Never use the real `~/.config/summoner`, and never trust an inherited
   `SUMMONER_ROOT`.

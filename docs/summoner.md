@@ -102,8 +102,8 @@ only calls verbs that `describe` lists.
  "verbs": ["list", "nudge", "remove", "restore"],
  "size":   {"meaning": "priority", "scale": "relative"},
  "load":   {"meaning": "none", "scale": "relative"},
- "nudge":  {"meaning": "lower priority by amount"},
- "remove": {"meaning": "delete the row", "undoable": true},
+ "nudge":  {"meaning": "lower priority by amount", "effect": "lowers its rank"},
+ "remove": {"meaning": "delete the row", "undoable": true, "effect": "deletes its row"},
  "dimensions": [
    {"id": "priority", "label": "priority", "kind": "numeric", "dir": "desc", "roles": ["sort"]},
    {"id": "team", "label": "Team", "kind": "category", "roles": ["group"]}],
@@ -119,6 +119,12 @@ asks for none, or for one the plugin does not offer. Summoner validates all of i
 `size.scale` and `load.scale` pick how Summoner puts the numbers on the games' ladders
 ([below](#normalisation)): `native` (already bytes / percent), `linear` (with `min`, `max`),
 or `relative` (the default). The `meaning` strings are for people (`describe` prints them).
+
+`nudge.effect` and `remove.effect` are optional plain words, at most 40 bytes, for what a
+wound and a kill do to the thing behind the monster (the `ps` plugin: "lowers its priority",
+"quits the process"). `get` passes them on as `# effect verb=post|delete text=…` header
+lines, and the games show them on the effect setting's help line. Only a verb the plugin
+lists counts; anything that is not a string is left out.
 
 ### `list` — one JSON object per line
 
@@ -267,9 +273,9 @@ This tool can delete things. The defaults assume a mistake.
 
 | Guard | Default | Effect |
 | --- | --- | --- |
-| Host `mode` | `dryrun` | Sent by the game with every event: `dryrun` runs nothing, `post-only` runs `post` and refuses `delete`, `delete` allows both. Missing or unknown = `dryrun`. Audited with `mode` and `reason: host mode`. |
-| `dry_run` | `true` | A per-plugin restriction on top of the host's mode: no plugin action runs. Audited `dry-run`, `reason: plugin config`. |
-| `plugin.allow_remove` | `false` | Also on top of the mode: `delete` is audited as `blocked`; only `post` (nudge) runs. The effective action is the **stricter** of the host's mode and these two. |
+| Host `mode` | `dryrun` | Sent by the game with every event (its effect setting: Off = `dryrun`, Wounds only = `post-only`, Wounds and kills = `delete`): `dryrun` runs nothing, `post-only` runs `post` and refuses `delete`, `delete` allows both. Missing or unknown = `dryrun`. Audited with `mode` and `reason: host mode`. |
+| `dry_run` | `true`; built-in `ps`: `false` | A per-plugin restriction on top of the host's mode: no plugin action runs. Audited `dry-run`, `reason: plugin config`. |
+| `plugin.allow_remove` | `false`; built-in `ps`: `true` | Also on top of the mode: `delete` is audited as `blocked`; only `post` (nudge) runs. The effective action is the **stricter** of the host's mode and these two, so the built-in `ps` with no config does exactly what the mode allows. |
 | `rate_limit` | 10 actions / 60 s | Executed actions over the limit are audited as `rate-limited` and skipped. |
 | Listed-only | always | `post` / `delete` act only on an id in the current cache, and pass the plugin the key it listed. Unknown ids are `unknown-id` no-ops. |
 | Unique ids | always | Named plugins share one id map per root, so after `use` switches plugin, the old ids are no longer listed and psDoom's checked actions send nothing for them. |
@@ -345,8 +351,13 @@ It is `--root DIR`, else `$SUMMONER_ROOT`, else `~/.config/summoner`. `--root` b
 variable. **Which plugin**: `--config FILE` (a config file anywhere; it must name its own
 `state_dir`), else `--plugin NAME` for this one call, else the `current` file, else `ps`.
 `--plugin` and `--config` together are refused, and an unknown name fails with the list of
-names it knows. `ps` (your own processes) is built in, dry run, remove off; a
-`<root>/plugins/ps.json` replaces it.
+names it knows. `ps` (your own processes) is built in and follows the host's mode: no
+config file is needed. A `<root>/plugins/ps.json` is laid over the built-in and can **only
+restrict** it: `"dry_run": true` stops every action, `"plugin": {"allow_remove": false}`
+stops kills, and a `rate_limit` can only be tighter. It cannot change the command (give
+another plugin its own name), the name or the state directory; other keys (`max_items`,
+`cache_ttl_s`, …) apply as usual. A plugin that is not built in is dry run with remove off
+until its config says otherwise.
 
 **A plugin config** keeps each plugin's own settings:
 
@@ -380,7 +391,7 @@ export PSDOOM_POLL_CMD="summon get"
 export PSDOOM_RESPOND_CMD="summon"          # psDoom appends post|delete <id> ...
 ```
 
-### No-kill run against psDoom (dry run, your processes)
+### Run against psDoom (your processes)
 
 ```sh
 cd ~/Source/psDoom-plugin-harness
@@ -393,8 +404,10 @@ export PSDOOM_RESPOND_CMD="summon"
 build/psDoom.app/Contents/MacOS/psDoom  # run from this shell so it inherits PATH and env
 ```
 
-Every shot is then audited in `~/.config/summoner/state/ps/audit.jsonl` as `dry-run`, and
-nothing is signalled: the built-in `ps` is dry run with remove off.
+Every shot is then audited in `~/.config/summoner/state/ps/audit.jsonl`. What runs is the
+game's effect setting: with **Off** each shot is audited as `dry-run` and nothing is touched;
+**Wounds only** renices; **Wounds and kills** also quits. For a run that can never act
+whatever the setting, add `{"dry_run": true}` as `~/.config/summoner/plugins/ps.json`.
 
 ## Writing a plugin
 
