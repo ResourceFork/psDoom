@@ -350,6 +350,129 @@ static const char *test_tmpdir(void)
     return (td != NULL && td[0] != '\0') ? td : "/tmp";
 }
 
+/* The script backend polls off the caller's thread: list() returns -1 while
+ * its poll runs. These wait (as the game would, a tic at a time) for the
+ * result, up to 5 s. */
+static int list_wait(psd_proc_t *out, int max)
+{
+    int n;
+    int waited;
+
+    for (waited = 0; (n = proc_backend()->list(out, max)) < 0 && waited < 5000;
+         waited += 5)
+    {
+        usleep(5000);
+    }
+    return n;
+}
+
+static int collect_wait(psd_proc_t *out, int max)
+{
+    int n;
+    int waited;
+
+    for (waited = 0; (n = psd_select_collect(out, max)) < 0 && waited < 5000;
+         waited += 5)
+    {
+        usleep(5000);
+    }
+    return n;
+}
+
+/* The poll never holds the caller: a slow poll (sleep 0.2) runs while list()
+ * returns at once, saying "not yet" (-1), and the next call after the poll
+ * ends gets its list. The game thread calls list() once a tic until then. */
+static void test_script_poll_does_not_block_caller(void)
+{
+    psd_proc_t         out[4];
+    unsigned long long t0;
+    unsigned long long worst = 0;
+    int                n;
+    int                calls = 0;
+
+    proc_script_install("sleep 0.2; printf 'id=5\\tlabel=slow\\n'", NULL, 2000);
+    do
+    {
+        unsigned long long took;
+
+        t0   = test_mono_ms();
+        n    = proc_backend()->list(out, 4);
+        took = test_mono_ms() - t0;
+        worst = took > worst ? took : worst;
+        calls++;
+        if (n < 0)
+        {
+            usleep(5000);
+        }
+    } while (n < 0 && calls < 1000);
+    CHECK(worst < 50);       /* no call held the caller for the poll's 200 ms */
+    if (worst >= 50)
+    {
+        fprintf(stderr, "  list() held the caller %llu ms\n", worst);
+    }
+    CHECK(calls > 1);        /* the first call only started the poll */
+    CHECK(n == 1 && out[0].pid == 5 && strcmp(out[0].name, "slow") == 0);
+
+    /* While a poll runs, the selection layer keeps the last list (child
+     * counts included) rather than an empty one. */
+    proc_script_install("printf 'id=7\\nid=8\\tparent=7\\n'", NULL, 2000);
+    CHECK(collect_wait(out, 4) == 2);
+    proc_script_install("sleep 0.2; printf 'id=9\\n'", NULL, 2000);
+    CHECK(psd_select_collect(out, 4) < 0);
+    CHECK(psd_select_child_count(7) == 1);
+    CHECK(collect_wait(out, 4) == 1 && out[0].pid == 9);
+    CHECK(psd_select_child_count(7) == 0);
+}
+
+/* A poll still running when the backend is reinstalled belongs to the old
+ * configuration: its result is dropped, never served as the new one's. */
+static void test_script_poll_result_of_old_install_dropped(void)
+{
+    psd_proc_t out[4];
+    int        n;
+
+    proc_script_install("sleep 0.2; printf 'id=11\\n'", NULL, 2000);
+    (void) proc_backend()->list(out, 4);          /* starts the old poll */
+    proc_script_install("printf 'id=12\\n'", NULL, 2000);
+    n = list_wait(out, 4);
+    CHECK(n == 1 && out[0].pid == 12);
+}
+
+/* A post or delete never holds the caller either: the responder (here one
+ * that sleeps 0.3 s first) runs detached. */
+static void test_script_respond_does_not_block_caller(void)
+{
+    char               respond[512];
+    char               result[512];
+    char               content[700];
+    psd_proc_t         out[4];
+    unsigned long long t0;
+    unsigned long long took;
+
+    snprintf(respond, sizeof(respond), "%s/psd_sresp_%d.sh", test_tmpdir(), (int) getpid());
+    snprintf(result,  sizeof(result),  "%s/psd_sres_%d.txt", test_tmpdir(), (int) getpid());
+    unlink(result);
+    snprintf(content, sizeof(content),
+             "#!/bin/sh\nsleep 0.3\necho \"$*\" >> '%s'\n", result);
+    write_executable(respond, content);
+
+    proc_script_install("printf 'id=21\\n'", respond, 2000);
+    CHECK(list_wait(out, 4) == 1);
+    t0 = test_mono_ms();
+    CHECK(proc_backend()->kill(21) == 1);
+    proc_backend()->renice(21, 4);
+    took = test_mono_ms() - t0;
+    CHECK(took < 50);
+    if (took >= 50)
+    {
+        fprintf(stderr, "  respond held the caller %llu ms\n", took);
+    }
+    CHECK(wait_for_contains(result, "delete 21", 3000));
+    CHECK(wait_for_contains(result, "post 21 amount=4", 3000));
+    unlink(respond);
+    unlink(result);
+}
+
 /* An id outside 2..INT_MAX, or anything but plain decimal digits, drops the
  * line: it must never become an entity whose id wraps (4294967295 -> -1 would
  * turn a responder's `kill "$id"` for a `delete` into `kill -1`). */
@@ -929,6 +1052,9 @@ int main(int argc, char **argv)
     test_script_poll_timeout_drops_partial_line();
     test_script_children_stdin_is_devnull();
     test_script_children_inherit_no_fds_above_limit();
+    test_script_poll_does_not_block_caller();
+    test_script_poll_result_of_old_install_dropped();
+    test_script_respond_does_not_block_caller();
     test_guard_same_process_acts();
     test_guard_reused_pid_refused();
     test_guard_vanished_pid_refused();
