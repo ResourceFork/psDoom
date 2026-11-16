@@ -67,12 +67,47 @@ endif()
 # bundle can be code-signed). It locates an IWAD and exec()s the engine binary
 # that sits beside it in Contents/MacOS.
 #
+#
+# The app icon is generated at build time from Crispy Doom's GPL icon art
+# (third_party/crispy-doom/data/doom.png, 128x128; see data/README there), the
+# way Crispy's own pkg/osx/GNUmakefile builds app.icns: sips scales it into an
+# .iconset and iconutil packs that into an .icns. Both ship with macOS. Sizes
+# stop at the source's 128 px; the system scales up from there.
+#
+find_program(PSD_SIPS sips REQUIRED)
+find_program(PSD_ICONUTIL iconutil REQUIRED)
+set(_PSD_ICON_SRC     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/data/doom.png")
+set(_PSD_ICONSET      "${CMAKE_CURRENT_BINARY_DIR}/psDoom.iconset")
+set(_PSD_ICNS         "${CMAKE_CURRENT_BINARY_DIR}/psDoom.icns")
+set(_psd_icon_cmds)
+foreach(_psd_icon IN ITEMS "16x16:16" "16x16@2x:32" "32x32:32" "32x32@2x:64" "128x128:128")
+    string(REPLACE ":" ";" _psd_icon "${_psd_icon}")
+    list(GET _psd_icon 0 _psd_icon_name)
+    list(GET _psd_icon 1 _psd_icon_px)
+    list(APPEND _psd_icon_cmds COMMAND "${PSD_SIPS}" -z ${_psd_icon_px} ${_psd_icon_px}
+        "${_PSD_ICON_SRC}" --out "${_PSD_ICONSET}/icon_${_psd_icon_name}.png")
+endforeach()
+add_custom_command(
+    OUTPUT "${_PSD_ICNS}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_PSD_ICONSET}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_PSD_ICONSET}"
+    ${_psd_icon_cmds}
+    COMMAND "${PSD_ICONUTIL}" -c icns "${_PSD_ICONSET}" -o "${_PSD_ICNS}"
+    DEPENDS "${_PSD_ICON_SRC}"
+    COMMENT "Generating psDoom.icns from Crispy Doom's doom.png"
+    VERBATIM
+)
+set_source_files_properties("${_PSD_ICNS}" PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources)
+
 add_executable(psDoom MACOSX_BUNDLE
     src/app/macos/launcher_main.c
-    src/app/macos/iwad_select.c)
+    src/app/macos/iwad_select.c
+    "${_PSD_ICNS}")
 
 set_target_properties(psDoom PROPERTIES
     OUTPUT_NAME "psDoom"
+    MACOSX_BUNDLE_ICON_FILE "psDoom.icns"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos/Info.plist.in"
     MACOSX_BUNDLE_BUNDLE_NAME "psDoom"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.resourcefork.psdoom"
@@ -230,6 +265,8 @@ add_custom_command(TARGET psDoom POST_BUILD
 # Freedoom files an earlier build left in the bundle are removed too.
 add_custom_command(TARGET psDoom POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f "${_PSD_RES_DIR}/DOOM1.WAD"
+    # An untracked doom.icns of unknown origin that an older build left behind.
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${_PSD_RES_DIR}/doom.icns"
     VERBATIM
 )
 if(NOT PSDOOM_BUNDLE_FREEDOOM)

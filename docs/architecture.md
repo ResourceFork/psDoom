@@ -441,7 +441,9 @@ ctest --test-dir build --output-on-failure
   - Bundle the Homebrew dylibs (SDL2 / SDL2_mixer / libsamplerate / libpng / FluidSynth) into
     `Contents/Frameworks` and rewrite install names (`install_name_tool` / `dylibbundler`).
   - Developer ID signing + notarization so Gatekeeper allows it after download.
-  - An app icon (`.icns`) — none is set yet.
+  - App icon: done. The build generates `Contents/Resources/psDoom.icns` from Crispy Doom's
+    GPL `data/doom.png` (128×128) with `sips` and `iconutil`, and sets `CFBundleIconFile`.
+    Higher-resolution art would be needed for sharp Retina/Dock sizes above 128 px.
 
 ## Safety model
 

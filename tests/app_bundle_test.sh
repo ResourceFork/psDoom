@@ -25,6 +25,13 @@ check "csv plugin is bundled"            '[[ -f "$res/plugins/csv_rows.py" ]]'
 check "tests are not bundled"            '[[ ! -e "$res/tests" ]]'
 check "engine sits in MacOS"             '[[ -x "$app/Contents/MacOS/crispy-doom" ]]'
 
+# The app icon: Info.plist names it and the named .icns is in Resources.
+icon=$(plutil -extract CFBundleIconFile raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
+icns="$app/Contents/Resources/$icon"
+check "Info.plist sets CFBundleIconFile"   '[[ "$icon" == psDoom.icns ]]'
+check "the named .icns is in Resources"    '[[ -s "$icns" && "$(head -c 4 "$icns")" == icns ]]'
+check "the old doom.icns is not left behind" '[[ ! -e "$app/Contents/Resources/doom.icns" ]]'
+
 py=""
 for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 \
          /Library/Developer/CommandLineTools/usr/bin/python3 \
