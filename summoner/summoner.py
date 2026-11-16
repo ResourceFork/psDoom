@@ -11,7 +11,8 @@ executable that can list items, nudge one, and remove one. psDoom runs:
 and Summoner adds what every plugin would otherwise rewrite: stable
 integer ids, size/load scaling onto the games' ladders, 31-byte labels,
 background caching under the 1-second poll timeout, and a safety layer
-(dry run by default, per-plugin remove opt-in, rate limit, audit log, undo).
+(the host's mode, per-plugin dry run and remove opt-in, rate limit, audit
+log, undo).
 
 Design: psDoom docs/summoner.md. Python 3.10+ standard library only.
 Self-contained: nothing here imports or reads from outside summoner/.
@@ -31,7 +32,8 @@ Self-contained: nothing here imports or reads from outside summoner/.
 
 The root holds `current` and `plugins/<name>.json`; it is --root, else
 $SUMMONER_ROOT, else ~/.config/summoner. A plugin's state defaults to
-<root>/state/<name>. `ps` (your processes) is built in, dry run.
+<root>/state/<name>. `ps` (your processes) is built in and follows the
+host's mode; a <root>/plugins/ps.json can only restrict it further.
 """
 
 import errno
@@ -67,13 +69,21 @@ VERB_MAP = {"post": "nudge", "delete": "remove"}
 PLUGIN_NAME_RE = None   # compiled below, after `import re`
 ROOT_ENV = "SUMMONER_ROOT"
 DEFAULT_PLUGIN = "ps"
-# Built-in plugin configs, used when <root>/plugins/<name>.json is absent.
+# Built-in plugin configs. A built-in follows the host's mode with no config
+# file: its action is exactly what the game's effect setting sends (dryrun
+# acts on nothing, post-only only nudges, delete also removes). A
+# <root>/plugins/<name>.json for a built-in name is laid over it and can only
+# restrict it (see restrict_builtin).
 BUILTINS = {
-    "ps": {"plugin": {"name": "ps",
+    "ps": {"dry_run": False,
+           "plugin": {"name": "ps",
                       "command": [sys.executable,
-                                  "${SUMMONER_DIR}/plugins/processes.py"]}},
+                                  "${SUMMONER_DIR}/plugins/processes.py"],
+                      "allow_remove": True}},
 }
 
+# Defaults for a plugin that is not built in: dry run, remove off, until its
+# config says otherwise.
 DEFAULTS = {
     "dry_run": True,
     "cache_ttl_s": 2.0,
@@ -111,6 +121,14 @@ def load_config(path, default_state=None, self_args=None):
     if not path:
         raise SummonerError("--config is required")
     path = os.path.abspath(path)
+    return config_from_dict(read_config_file(path), path, default_state,
+                            self_args or ["--config", path])
+
+
+def read_config_file(path):
+    """A config file's JSON, opened without following a symlink and
+    refused unless it is a regular file of this user's that nobody else can
+    write."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as e:
@@ -129,11 +147,76 @@ def load_config(path, default_state=None, self_args=None):
             raise SummonerError("config is writable by group or others: %s"
                                % path)
         try:
-            raw = json.load(f)
+            return json.load(f)
         except ValueError:
             raise SummonerError("config is not valid JSON: %s" % path)
-    return config_from_dict(raw, path, default_state,
-                            self_args or ["--config", path])
+
+
+def restrict_builtin(name, raw, path):
+    """A built-in's config with the user's <root>/plugins/<name>.json laid
+    over it. The file may only make it stricter: dry_run can only turn on,
+    allow_remove only off, the rate limit only tighten. It cannot change the
+    command (name another plugin for that) or the state directory."""
+    if not isinstance(raw, dict):
+        raise SummonerError("config must be a JSON object")
+    base = json.loads(json.dumps(BUILTINS[name]))
+    bplug = base["plugin"]
+    uplug = raw.get("plugin") or {}
+    if not isinstance(uplug, dict):
+        raise SummonerError("config: plugin must be an object")
+    if "command" in uplug:
+        want = [a.replace("${SUMMONER_DIR}", SUMMONER_DIR)
+                .replace("${PYTHON}", sys.executable) for a in bplug["command"]]
+        cmd = uplug["command"]
+        got = [a.replace("${SUMMONER_DIR}", SUMMONER_DIR)
+               .replace("${PYTHON}", sys.executable)
+               for a in cmd] if isinstance(cmd, list) and \
+            all(isinstance(a, str) for a in cmd) else None
+        if got != want:
+            raise SummonerError("%s: %r is built in, and its config can only "
+                               "restrict it; it cannot change the command "
+                               "(give your plugin another name)"
+                               % (path, name))
+    if uplug.get("name", name) != name:
+        raise SummonerError("%s: plugin.name must be %r" % (path, name))
+    if "state_dir" in raw:
+        raise SummonerError("%s: a named plugin's state is always under "
+                           "the root; remove state_dir from it" % path)
+    merged = dict(base)
+    for k, v in raw.items():
+        if k not in ("plugin", "dry_run", "rate_limit"):
+            merged[k] = v
+    dry = raw.get("dry_run", base.get("dry_run", DEFAULTS["dry_run"]))
+    if not isinstance(dry, bool):
+        raise SummonerError("config: dry_run must be true or false")
+    merged["dry_run"] = dry or base.get("dry_run", DEFAULTS["dry_run"])
+    plug = dict(bplug)
+    for k, v in uplug.items():
+        if k not in ("command", "name", "allow_remove"):
+            plug[k] = v
+    allow = uplug.get("allow_remove", bplug.get("allow_remove", False))
+    if not isinstance(allow, bool):
+        raise SummonerError("config: plugin.allow_remove must be true or "
+                           "false")
+    plug["allow_remove"] = allow and bplug.get("allow_remove", False)
+    merged["plugin"] = plug
+    brl = dict(DEFAULTS["rate_limit"])
+    brl.update(base.get("rate_limit") or {})
+    url = raw.get("rate_limit") or {}
+    if not isinstance(url, dict):
+        raise SummonerError("config: rate_limit must be an object")
+    rl = dict(brl)
+    a, p = url.get("actions"), url.get("per_s")
+    if a is not None:
+        if not _is_num(a) or a < 0:
+            raise SummonerError("config: rate_limit.actions must be >= 0")
+        rl["actions"] = min(a, brl["actions"])
+    if p is not None:
+        if not _is_num(p) or p <= 0:
+            raise SummonerError("config: rate_limit.per_s must be > 0")
+        rl["per_s"] = max(p, brl["per_s"])
+    merged["rate_limit"] = rl
+    return merged
 
 
 def config_from_dict(raw, path, default_state, self_args):
@@ -402,12 +485,36 @@ def validate_describe(d):
         if scale == "linear" and not _is_num(spec.get("max")):
             raise SummonerError("describe: %s.scale linear needs max" % k)
     d["dimensions"] = validate_dimensions(d.get("dimensions"))
+    d["effects"] = validate_effects(d)
     ds = d.get("default_sort")
     sortable = {x["id"] for x in d["dimensions"] if "sort" in x["roles"]}
     if ds is not None and ds not in sortable:
         raise SummonerError("describe: default_sort %r is not a sort "
                             "dimension" % (ds,))
     return d
+
+
+EFFECT_MAX = 40          # bytes of a plain effect description
+# Plugin verb -> the word the game sends for it.
+EFFECT_VERBS = (("nudge", "post"), ("remove", "delete"))
+
+
+def validate_effects(d):
+    """The plain descriptions a plugin gives of what its nudge and remove
+    do (`nudge.effect`, `remove.effect`, e.g. "lowers its priority"), keyed
+    by the game's word. Only verbs the plugin lists count; anything that is
+    not a string, or sanitizes to nothing, is left out rather than failing
+    describe."""
+    verbs = d.get("verbs") or []
+    out = {}
+    for pverb, word in EFFECT_VERBS:
+        spec = d.get(pverb)
+        if pverb in verbs and isinstance(spec, dict) and \
+                isinstance(spec.get("effect"), str):
+            text = sanitize_label(spec["effect"], EFFECT_MAX)
+            if text:
+                out[word] = text
+    return out
 
 
 DIM_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,15}\Z")
@@ -940,6 +1047,7 @@ def render(items, cache=None):
 
     Header (each a `#` comment, so any reader may skip it):
       # dim id=<id> kind=<numeric|category> dir=<asc|desc> roles=<r,..> unit=<u> label=<text>
+      # effect verb=<post|delete> text=<text> what a wound / kill does
       # sort id=<id> dir=<asc|desc>        the applied primary sort, if any
       # group id=<id>                      the applied grouping, if any
       # summon: <note>                     a request word that was ignored
@@ -953,6 +1061,12 @@ def render(items, cache=None):
                          "label=%s" % (d["id"], d["kind"], d["dir"],
                                        ",".join(d["roles"]), d["unit"],
                                        d["label"]))
+        effects = (cache.get("describe") or {}).get("effects") or {}
+        for word in ("post", "delete"):
+            if effects.get(word):
+                lines.append("# effect verb=%s text=%s"
+                             % (word, sanitize_label(effects[word],
+                                                     EFFECT_MAX)))
         applied = cache.get("applied") or {}
         if applied.get("sort"):
             lines.append("# sort id=%s dir=%s" % tuple(applied["sort"][0]))
@@ -1285,7 +1399,11 @@ def load_named(root, name):
     default_state = os.path.join(root, "state", name)
     self_args = ["--root", root, "--plugin", name]
     cfg = None
-    if os.path.lexists(path):
+    if os.path.lexists(path) and name in BUILTINS:
+        raw = restrict_builtin(name, read_config_file(os.path.abspath(path)),
+                               path)
+        cfg = config_from_dict(raw, path, default_state, self_args)
+    elif os.path.lexists(path):
         cfg = load_config(path, default_state, self_args)
         if cfg.get("state_dir") != os.path.normpath(default_state):
             # Every named plugin keeps its state under <root>/state/, so the

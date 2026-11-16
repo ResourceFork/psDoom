@@ -5,7 +5,8 @@ Rules these tests keep:
 - the processes plugin is only ever exercised read-only (`describe`, `list`)
   or through Summoner in dry-run, so no real process is signalled or
   reniced; the real-action path is tested through the CSV plugin on CSV
-  files these tests create;
+  files these tests create, and the built-in `ps` config's actions through
+  a fake plugin swapped in for its command, in this process;
 - any refresher Summoner detaches is waited for, and only killed by the
   pid it recorded after checking that pid still runs this test's config.
 """
@@ -1287,8 +1288,8 @@ class CliTests(Base):
         self.assertEqual(res.returncode, 0)
         self.assertIn("* ps", res.stdout)
         cfg = H.load_named(self.hroot, "ps")
-        self.assertTrue(cfg["dry_run"])                   # built-in is safe
-        self.assertFalse(cfg["plugin"]["allow_remove"])
+        self.assertFalse(cfg["dry_run"])          # the host's mode governs
+        self.assertTrue(cfg["plugin"]["allow_remove"])
         self.assertEqual(cfg["state_dir"],
                          os.path.join(self.hroot, "state", "ps"))
         self.assertEqual(cfg["plugin"]["command"][-1], PROC_PLUGIN)
@@ -1755,6 +1756,158 @@ class ProcessesPluginTests(Base):
         self.assertEqual(set(outcomes), {"dry-run"})
         self.assertEqual(len(outcomes), 2 * min(3, len(rows)))
         self.assertEqual(self.calls(), [])
+
+
+class BuiltinPsTests(Base):
+    """The built-in ps follows the host's mode with no config file, and a
+    <root>/plugins/ps.json can only restrict it. The real processes plugin
+    never acts here: its command is swapped for a fake, in this process,
+    before any post or delete."""
+
+    def setUp(self):
+        super().setUp()
+        self.hroot = os.path.join(self.root, "hroot")
+        os.makedirs(os.path.join(self.hroot, "plugins"))
+
+    def ps_with_fake(self, items, over=None):
+        if over is not None:
+            path = os.path.join(self.hroot, "plugins", "ps.json")
+            with open(path, "w") as f:
+                json.dump(over, f)
+        cfg = H.load_named(self.hroot, "ps")
+        self.assertEqual(cfg["plugin"]["command"][-1], PROC_PLUGIN)
+        cfg["plugin"]["command"] = self.fake(items)   # never the real one
+        self.state = cfg["state_dir"]
+        H.ensure_state_dir(cfg)
+        H.refresh(cfg)
+        cache = H.read_cache(cfg)
+        return cfg, {it["key"]: it for it in cache["items"]}
+
+    def act(self, cfg, item, mode):
+        lab = "label=%s" % item["label"]
+        for verb in ("post", "delete"):
+            args = [verb, str(item["id"]), lab]
+            if mode is not None:
+                args.append("mode=" + mode)
+            H._respond(cfg, args)
+
+    def acted(self):
+        return [c[0] for c in self.calls() if c and c[0] in ("nudge",
+                                                            "remove")]
+
+    def test_no_config_the_mode_governs(self):
+        cfg, items = self.ps_with_fake([{"key": "a", "name": "A"}])
+        a = items["a"]
+        self.act(cfg, a, None)            # missing mode: dryrun
+        self.act(cfg, a, "dryrun")
+        self.assertEqual(self.acted(), [])
+        self.act(cfg, a, "post-only")
+        self.assertEqual(self.acted(), ["nudge"])
+        self.act(cfg, a, "delete")
+        self.assertEqual(self.acted(), ["nudge", "nudge", "remove"])
+        outcomes = [(e["verb"], e["outcome"], e.get("reason"))
+                    for e in self.audit()]
+        self.assertEqual(outcomes, [
+            ("post", "dry-run", "host mode"),
+            ("delete", "dry-run", "host mode"),
+            ("post", "dry-run", "host mode"),
+            ("delete", "dry-run", "host mode"),
+            ("post", "ok", None),
+            ("delete", "blocked", "host mode"),
+            ("post", "ok", None),
+            ("delete", "ok", None)])
+
+    def test_a_config_can_only_restrict(self):
+        def load(over):
+            path = os.path.join(self.hroot, "plugins", "ps.json")
+            with open(path, "w") as f:
+                json.dump(over, f)
+            return H.load_named(self.hroot, "ps")
+        # Asking for what is already allowed changes nothing.
+        cfg = load({"dry_run": False, "plugin": {"allow_remove": True}})
+        self.assertFalse(cfg["dry_run"])
+        self.assertTrue(cfg["plugin"]["allow_remove"])
+        # Each restriction holds.
+        self.assertTrue(load({"dry_run": True})["dry_run"])
+        cfg = load({"plugin": {"allow_remove": False}})
+        self.assertFalse(cfg["plugin"]["allow_remove"])
+        self.assertFalse(cfg["dry_run"])
+        # The rate limit only tightens.
+        rl = load({"rate_limit": {"actions": 1000, "per_s": 1}})["rate_limit"]
+        self.assertEqual(rl, H.DEFAULTS["rate_limit"])
+        rl = load({"rate_limit": {"actions": 2, "per_s": 600}})["rate_limit"]
+        self.assertEqual(rl, {"actions": 2, "per_s": 600})
+        # Other keys pass through.
+        self.assertEqual(load({"max_items": 5})["max_items"], 5)
+        # The command cannot be changed, nor the name or the state dir.
+        for bad in ({"plugin": {"command": [PY, CSV_PLUGIN]}},
+                    {"plugin": {"name": "other"}},
+                    {"state_dir": os.path.join(self.root, "s")},
+                    {"dry_run": "no"},
+                    {"plugin": {"allow_remove": 1}},
+                    {"rate_limit": {"actions": -1}}):
+            with self.assertRaises(H.SummonerError, msg=bad):
+                load(bad)
+        # The config the README once told people to write still loads, as
+        # the restriction it always was (remove off).
+        cfg = load({"dry_run": False, "plugin": {
+            "name": "ps",
+            "command": ["${PYTHON}", "${SUMMONER_DIR}/plugins/processes.py"],
+            "allow_remove": False}})
+        self.assertFalse(cfg["dry_run"])
+        self.assertFalse(cfg["plugin"]["allow_remove"])
+        self.assertEqual(cfg["plugin"]["command"][-1], PROC_PLUGIN)
+
+    def test_a_restricting_config_holds_at_action_time(self):
+        cfg, items = self.ps_with_fake([{"key": "a", "name": "A"}],
+                                       over={"plugin": {"allow_remove": False}})
+        self.act(cfg, items["a"], "delete")
+        self.assertEqual(self.acted(), ["nudge"])
+        self.assertEqual([(e["outcome"], e.get("reason"))
+                          for e in self.audit()][-1],
+                         ("blocked", "plugin config"))
+        cfg, items = self.ps_with_fake([{"key": "a", "name": "A"}],
+                                       over={"dry_run": True})
+        self.act(cfg, items["a"], "delete")
+        self.assertEqual(self.acted(), ["nudge"])        # no new call
+
+    def test_other_plugins_stay_dry_run_by_default(self):
+        cfg = H.config_from_dict({"plugin": {"name": "x", "command": ["x"]}},
+                                 "x.json", self.state, [])
+        self.assertTrue(cfg["dry_run"])
+        self.assertFalse(cfg["plugin"]["allow_remove"])
+
+
+class EffectTests(unittest.TestCase):
+    """A plugin's plain words for what a wound and a kill do."""
+
+    def test_processes_plugin_declares_them(self):
+        d = H.validate_describe(P.describe())
+        self.assertEqual(d["effects"], {"post": "lowers its priority",
+                                        "delete": "quits the process"})
+
+    def test_only_listed_verbs_and_strings_count(self):
+        d = H.validate_describe({
+            "verbs": ["list", "nudge"],
+            "nudge": {"effect": "  slows\tit\ndown  "},
+            "remove": {"effect": "quits it"}})
+        self.assertEqual(d["effects"], {"post": "slows it down"})
+        d = H.validate_describe({"verbs": ["list", "nudge", "remove"],
+                                 "nudge": {"effect": 3},
+                                 "remove": "quits"})
+        self.assertEqual(d["effects"], {})
+        d = H.validate_describe({"verbs": ["list", "remove"],
+                                 "remove": {"effect": "x" * 100}})
+        self.assertEqual(len(d["effects"]["delete"]), H.EFFECT_MAX)
+
+    def test_the_poll_carries_them_as_header_lines(self):
+        desc = H.validate_describe(P.describe())
+        out = H.render([], {"describe": desc})
+        lines = [ln for ln in out.split("\n") if ln.startswith("# effect")]
+        self.assertEqual(lines, [
+            "# effect verb=post text=lowers its priority",
+            "# effect verb=delete text=quits the process"])
+        self.assertEqual(parse_v1(out), [])
 
 
 if __name__ == "__main__":

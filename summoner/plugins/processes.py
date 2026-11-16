@@ -117,8 +117,10 @@ def describe():
                  "scale": "native"},
         "load": {"meaning": "CPU use, 100 = one core", "unit": "percent",
                  "scale": "native"},
-        "nudge": {"meaning": "raise the nice value by amount"},
-        "remove": {"meaning": "send SIGTERM", "undoable": False},
+        "nudge": {"meaning": "raise the nice value by amount",
+                  "effect": "lowers its priority"},
+        "remove": {"meaning": "send SIGTERM", "undoable": False,
+                   "effect": "quits the process"},
         "dimensions": DIMENSIONS,
         "default_sort": "relevance",
     }

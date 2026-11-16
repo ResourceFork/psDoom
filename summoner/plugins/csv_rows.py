@@ -173,8 +173,10 @@ def describe(a, sh=None):
                  "scale": "relative"},
         "load": {"meaning": a.load_column or "none", "scale": "relative"},
         "nudge": {"meaning": ("lower %s by amount" % a.priority_column)
-                  if a.priority_column else "move the row down amount rows"},
-        "remove": {"meaning": "delete the row", "undoable": True},
+                  if a.priority_column else "move the row down amount rows",
+                  "effect": "lowers its rank"},
+        "remove": {"meaning": "delete the row", "undoable": True,
+                   "effect": "deletes its row"},
     }
     if sh is not None:
         dims = dimensions(a, sh)
