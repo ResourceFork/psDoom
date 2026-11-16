@@ -63,19 +63,18 @@ if(NOT APPLE)
 endif()
 
 #
-# The .app's main executable is a tiny compiled launcher (a real Mach-O, so the
-# bundle can be code-signed). It locates an IWAD and exec()s the engine binary
-# that sits beside it in Contents/MacOS.
-#
-#
-# The app icon is generated at build time from Crispy Doom's GPL icon art
-# (third_party/crispy-doom/data/doom.png, 128x128; see data/README there), the
-# way Crispy's own pkg/osx/GNUmakefile builds app.icns: sips scales it into an
+# The app icon is generated at build time from the Crispy Doom icon
+# (third_party/crispy-doom/data/doom.png, 128x128, contributed by Philip K. per
+# crispy-doom/README.md; GPL-2.0-or-later as part of Crispy Doom), the way
+# Crispy's own pkg/osx/GNUmakefile builds app.icns: sips scales it into an
 # .iconset and iconutil packs that into an .icns. Both ship with macOS. Sizes
 # stop at the source's 128 px; the system scales up from there.
 #
-find_program(PSD_SIPS sips REQUIRED)
-find_program(PSD_ICONUTIL iconutil REQUIRED)
+find_program(PSD_SIPS sips)
+find_program(PSD_ICONUTIL iconutil)
+if(NOT PSD_SIPS OR NOT PSD_ICONUTIL)
+    message(FATAL_ERROR "psDoom: sips and iconutil (part of macOS) are needed to build the app icon.")
+endif()
 set(_PSD_ICON_SRC     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/data/doom.png")
 set(_PSD_ICONSET      "${CMAKE_CURRENT_BINARY_DIR}/psDoom.iconset")
 set(_PSD_ICNS         "${CMAKE_CURRENT_BINARY_DIR}/psDoom.icns")
@@ -99,6 +98,12 @@ add_custom_command(
 )
 set_source_files_properties("${_PSD_ICNS}" PROPERTIES
     MACOSX_PACKAGE_LOCATION Resources)
+
+#
+# The .app's main executable is a tiny compiled launcher (a real Mach-O, so the
+# bundle can be code-signed). It locates an IWAD and exec()s the engine binary
+# that sits beside it in Contents/MacOS.
+#
 
 add_executable(psDoom MACOSX_BUNDLE
     src/app/macos/launcher_main.c
@@ -256,6 +261,10 @@ add_custom_command(TARGET psDoom POST_BUILD
         "$<TARGET_FILE:crispy-doom>" "${_PSD_MACOS_DIR}/crispy-doom"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${_PSD_ARENA_WAD}" "${_PSD_RES_DIR}/psdoom-arena.wad"
+    # The GPL text for the bundled Crispy Doom engine and its icon.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/COPYING.md"
+        "${_PSD_RES_DIR}/Crispy-Doom-COPYING.md"
     VERBATIM
 )
 

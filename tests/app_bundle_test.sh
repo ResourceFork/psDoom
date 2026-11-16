@@ -26,11 +26,11 @@ check "tests are not bundled"            '[[ ! -e "$res/tests" ]]'
 check "engine sits in MacOS"             '[[ -x "$app/Contents/MacOS/crispy-doom" ]]'
 
 # The app icon: Info.plist names it and the named .icns is in Resources.
-icon=$(plutil -extract CFBundleIconFile raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
+icon=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist" 2>/dev/null || true)
 icns="$app/Contents/Resources/$icon"
 check "Info.plist sets CFBundleIconFile"   '[[ "$icon" == psDoom.icns ]]'
 check "the named .icns is in Resources"    '[[ -n "$icon" && -s "$icns" && "$(head -c 4 "$icns")" == icns ]]'
-check "the old doom.icns is not left behind" '[[ ! -e "$app/Contents/Resources/doom.icns" ]]'
+check "Crispy Doom's GPL text is bundled"  '[[ -s "$app/Contents/Resources/Crispy-Doom-COPYING.md" ]]'
 
 py=""
 for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 \

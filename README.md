@@ -164,7 +164,10 @@ psDoom is released under the [MIT License](LICENSE). It continues the original
 psDooM concept by Dennis Chao; the SourceForge psDooM project was maintained by
 David Koppenhofer and based on XDoom by Udo Munk. This macOS revival builds on
 [Crispy Doom](https://github.com/fabiangreffrath/crispy-doom), which is licensed
-under GPL-2.0-or-later.
+under GPL-2.0-or-later; its licence text ships inside the app as
+`psDoom.app/Contents/Resources/Crispy-Doom-COPYING.md`. The app icon is the
+Crispy Doom icon, contributed to Crispy Doom by Philip K., and is likewise
+GPL-2.0-or-later, not covered by psDoom's MIT licence.
 
 The bundled game data is [Freedoom](https://freedoom.github.io/) 0.13.0,
 Copyright (c) 2001-2024 Contributors to the Freedoom project, used under the
