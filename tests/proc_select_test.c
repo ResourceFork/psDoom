@@ -531,40 +531,29 @@ static void test_script_stale_result_dropped(void)
 /* A poll still running when the game exits is stopped with its group: the
  * background child it started does not outlive the game. The child is a
  * `sleep 5`, so on a build that leaks it, it exits by itself; this test
- * never signals anything. */
+ * never signals anything. The "game" is this binary in --exit-mid-poll
+ * mode, run as a poll command (so the test itself execs nothing). */
 static void test_script_exit_stops_running_poll(void)
 {
-    char  pidfile[512];
-    long  child = 0;
-    long  shell = 0;
-    int   alive = 1;
-    int   waited;
-    int   st = 0;
-    pid_t pid;
-    FILE *f;
+    char       pidfile[512];
+    char       poll[1200];
+    psd_proc_t out[4];
+    long       child = 0;
+    long       shell = 0;
+    int        alive = 1;
+    int        waited;
+    FILE      *f;
 
-    if (g_self[0] == '\0')
+    if (g_self[0] == '\0' || strpbrk(g_self, " \t'") != NULL)
     {
         CHECK(0);
         return;
     }
     snprintf(pidfile, sizeof(pidfile), "%s/psd_exit_%d.txt", test_tmpdir(), (int) getpid());
     unlink(pidfile);
-    pid = fork();
-    if (pid == 0)
-    {
-        execl(g_self, g_self, "--exit-mid-poll", pidfile, (char *) NULL);
-        _exit(127);
-    }
-    CHECK(pid > 0);
-    if (pid <= 0)
-    {
-        return;
-    }
-    while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
-    {
-    }
-    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    snprintf(poll, sizeof(poll), "'%s' --exit-mid-poll '%s'", g_self, pidfile);
+    proc_script_install(poll, NULL, 5000);
+    CHECK(psd_test_list_wait(out, 4) == 0);   /* it exited 0, listing nothing */
     f = fopen(pidfile, "r");
     CHECK(f != NULL);
     if (f != NULL)
