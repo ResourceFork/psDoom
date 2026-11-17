@@ -103,6 +103,12 @@ void proc_script_prefetch(void);
  * its snapshot may be long out of date); the next list() polls afresh. */
 void proc_script_discard(void);
 
+/* A new level: tell the responder to forget the kills of the last one
+ * (`<respond> forget mode=<mode>`, no id), so those entities list again.
+ * Detached, like every response; a no-op unless the script backend is the
+ * active one. */
+void proc_script_forget_kills(void);
+
 /* The candidate limit sent with each poll (once dimensions are declared). */
 void proc_script_set_limit(int limit);
 

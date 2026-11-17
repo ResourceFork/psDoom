@@ -1218,6 +1218,23 @@ class CliTests(Base):
                              ["P01"])
         self._reap_refresher(self.configs[-1])
 
+    def test_forget_at_a_new_level_brings_killed_items_back(self):
+        # The game sends `forget` when a level starts: the kills of the last
+        # level are dropped, and the next poll lists those items again.
+        self.named("dim", self._ranked(4), spec=self._kill_spec())
+        self.r("use", "dim")
+        rows = self.wait_rows(words=("limit=1",))
+        self.r("delete", rows[0]["id"], "label=P00", "mode=post-only")
+        self.assertEqual(self._wait_labels(("limit=1",), ["P01"]), ["P01"])
+        self._reap_refresher(self.configs[-1])
+        res = self.r("forget", "mode=dryrun")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout, "")
+        self.assertEqual(self._wait_labels(("limit=1",), ["P00"]), ["P00"])
+        self.assertEqual(self.audit()[-1]["outcome"], "forgot")
+        self.assertEqual(self.audit()[-1]["count"], 1)
+        self._reap_refresher(self.configs[-1])
+
     def test_kill_after_the_item_left_the_cache_is_remembered(self):
         # A refresh can move an item out of the cached top N between the
         # game's poll and its kill: the kill still counts, so the item never

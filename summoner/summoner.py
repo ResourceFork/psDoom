@@ -24,6 +24,7 @@ Self-contained: nothing here imports or reads from outside summoner/.
                                for that request (see `describe` for the IDs)
     post <id> [k=v...]         nudge: lower its priority
     delete <id> [k=v...]       remove it
+    forget [k=v...]            a new level: list the game's kills again
     use <name>                 set and persist the current plugin
     plugins                    list known plugins, marking the current one
     refresh [request words]    run the plugin's list now
@@ -1318,6 +1319,19 @@ def parse_extras(extras):
 ID_RE = re.compile(r"[0-9]{1,10}\Z")
 
 
+def cmd_forget(cfg):
+    """The game started a level: forget its kills, so those items list
+    again, and mark the cache dirty so the next poll refreshes."""
+    ensure_state_dir(cfg)
+    with Locked(state_path(cfg, "state.lock")):
+        count = len(read_killed(cfg))
+        write_killed(cfg, {})
+        with open(state_path(cfg, "dirty"), "w"):
+            pass
+    audit(cfg, {"verb": "forget", "outcome": "forgot", "count": count})
+    return 0
+
+
 def cmd_respond(cfg, argv):
     """Never raises; psDoom does not read the exit code, the audit log is the
     record of what happened."""
@@ -1655,6 +1669,14 @@ def main(argv):
             return cmd_poll(select_config(opts), rest)
         except Exception as e:   # never break the game's poll
             return poll_error(e)
+    if cmd == "forget":
+        # A new level: the game's kills of the last one are forgotten. Like
+        # post/delete it never fails loudly.
+        try:
+            return cmd_forget(select_config(opts))
+        except Exception as e:
+            sys.stderr.write("summon: %s\n" % e)
+            return 0
     if cmd in VERB_MAP:
         # post/delete never fail loudly: the game does not read the exit
         # code; the audit log is the record.

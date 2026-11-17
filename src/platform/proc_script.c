@@ -1077,7 +1077,10 @@ static int script_run_respond(const char *verb, int id,
     char     exe[PATH_MAX];
     char   **envp = environ;   /* taken before fork */
 
-    if (id <= 1)
+    /* `forget` alone names no entity; every other verb needs a real id. */
+    int  no_id = strcmp(verb, "forget") == 0;
+
+    if (id <= 1 && !no_id)
     {
         return 0;   /* 0, 1 and negatives are reserved: never a target */
     }
@@ -1107,7 +1110,10 @@ static int script_run_respond(const char *verb, int id,
     }
     snprintf(idbuf, sizeof(idbuf), "%d", id);
     argv[n++] = (char *) verb;
-    argv[n++] = idbuf;
+    if (!no_id)
+    {
+        argv[n++] = idbuf;
+    }
     if (have_amount)
     {
         snprintf(amountbuf, sizeof(amountbuf), "amount=%d", amount);
@@ -1457,6 +1463,14 @@ static int script_list(psd_proc_t *out, int max)
 
     script_job_submit(cmd);
     return -1;
+}
+
+void proc_script_forget_kills(void)
+{
+    if (proc_script_active())
+    {
+        (void) script_run_respond("forget", 0, 0, 0, NULL);
+    }
 }
 
 void proc_script_discard(void)

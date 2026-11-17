@@ -219,8 +219,10 @@ names (the id is the item), and marks the cache dirty: the next `get` waits up t
 `first_poll_wait_ms` for a list made after the kill, so at `limit=1` it lists the next item,
 not the killed one and not nothing.
 
-Kills last across game levels and sessions, for every game that uses the same root and
-plugin. To bring killed items back, delete `<state_dir>/killed.json` while no game runs.
+Kills last one level. When a level starts (a new game, the next map, a loaded save, a
+launch), the game sends `summon forget mode=<mode>`, and Summoner clears `killed.json` and
+marks the cache dirty, so the last level's killed items list again. Deleting
+`<state_dir>/killed.json` while no game runs does the same by hand.
 
 ### Order: the plugin curates
 

@@ -968,6 +968,8 @@ static void PSD_ResetLevelState(void)
 {
     /* A poll result from before this level (or game) is out of date. */
     proc_script_discard();
+    /* Kills last one level: tell Summoner to list last level's kills again. */
+    proc_script_forget_kills();
     psd_killed_count = 0;
     psd_grade_count  = 0;
     psd_fork_count   = 0;

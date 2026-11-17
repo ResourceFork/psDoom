@@ -370,6 +370,44 @@ static void test_script_backend_roundtrip(void)
     unlink(result);
 }
 
+/* A new level tells the responder to forget the last level's kills: the
+ * verb `forget` with no id, and the mode. Nothing else is sent. */
+static void test_script_forget_kills(void)
+{
+    const char *td = getenv("TMPDIR");
+    char poll[512];
+    char respond[512];
+    char result[512];
+    char body[700];
+
+    if (td == NULL || td[0] == '\0')
+    {
+        td = "/tmp";
+    }
+    snprintf(poll,    sizeof(poll),    "%s/psd_fpoll_%d.sh",   td, (int) getpid());
+    snprintf(respond, sizeof(respond), "%s/psd_fresp_%d.sh",   td, (int) getpid());
+    snprintf(result,  sizeof(result),  "%s/psd_fresult_%d.txt", td, (int) getpid());
+    unlink(result);
+    write_executable(poll, "#!/bin/sh\nprintf 'id=7\\n'\n");
+    snprintf(body, sizeof(body), "#!/bin/sh\necho \"$@\" >> '%s'\n", result);
+    write_executable(respond, body);
+
+    proc_script_install(poll, respond, 1000);
+    proc_script_forget_kills();
+    CHECK(wait_for_contains(result, "forget mode=dryrun", 3000));
+    usleep(200000);
+    CHECK(file_count(result, "forget") == 1);
+
+    proc_backend_set(&proc_none_backend);
+    proc_script_forget_kills();          /* not the script backend: nothing */
+    usleep(200000);
+    CHECK(file_count(result, "forget") == 1);
+
+    unlink(poll);
+    unlink(respond);
+    unlink(result);
+}
+
 /* ---- script backend hardening -------------------------------------------- */
 
 static char g_self[1024];   /* absolute path of this binary (the fd probe) */
@@ -1376,6 +1414,7 @@ int main(int argc, char **argv)
     test_script_parse();
     test_script_parse_truncates();
     test_script_backend_roundtrip();
+    test_script_forget_kills();
     test_script_parse_rejects_bad_ids();
     test_script_respond_refuses_reserved_ids();
     test_script_poll_timeout_leaves_no_child();

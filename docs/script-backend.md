@@ -131,8 +131,10 @@ $PSDOOM_RESPOND_CMD <verb> <id> [key=value ...]
 | argument | meaning |
 | --- | --- |
 | `$1` `verb` | The action, lowercase: `post` when the monster was wounded (lower the entity's priority, move it down, renice it), `delete` when it was killed (remove or stop it). More verbs may be added later — **treat an unknown verb as a no-op and exit 0.** |
-| `$2` `id` | The entity `id` from the poll output. Always present. |
+| `$2` `id` | The entity `id` from the poll output. Present for `post` and `delete`. |
 | `$3…` `key=value` | Extensible, order-independent extras. Currently: `amount=<int>` (injury magnitude; present for `post`, absent for `delete`), `label=<string>` (the entity's label, when known) and `mode=<dryrun\|post-only\|delete>` (always present). Ignore keys you don't recognize. |
+
+**`forget`** (no `id`, just `mode=`) is sent when a level starts: forget the kills of the last level, so a script that drops the ids it was sent `delete` for lists them again. Summoner does this; a script that keeps no such list can ignore it.
 
 **`mode`** is the game's effect setting, sent with every event: `dryrun` (psDoom **No effect**:
 act on nothing), `post-only` (**Wounds only**: `post` may act, `delete` must not) or `delete`

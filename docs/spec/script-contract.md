@@ -43,6 +43,9 @@ Full text: [script-backend.md](../script-backend.md).
 
 - psDoom execs the responder, never through a shell, detached, and ignores its exit code.
 - argv: `<cmd> post|delete <id> [amount=<n>] [label=<text>] mode=<dryrun|post-only|delete>`.
+- When a level starts, the host sends `<cmd> forget mode=<mode>` (no id): the responder
+  forgets the kills of the last level, so those entities list again. A responder that does
+  not know it ignores it, as it does any unknown verb.
 - The mode follows psDoom's "Fighting monsters effects" setting: No effect → `dryrun`, Wounds only → `post-only`,
   Wounds and kills → `delete`. It is sent with every event. The protocol's words
   (`dryrun`, `post`, `delete`) and the name Summoner never appear in player-facing
