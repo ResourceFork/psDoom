@@ -214,7 +214,10 @@ place. The poll never fails because of a request. The checked words reach the pl
 `list sort=cpu:desc,mem:desc group=app limit=64`. The output starts with `# dim` lines for
 every dimension and `# sort` / `# group` lines for what was applied; items carry `group=`.
 **The cache is keyed by the request**, so a new request refreshes at once (waiting up to
-`first_poll_wait_ms`) instead of serving an answer to the old question.
+`first_poll_wait_ms`) instead of serving an answer to the old question. One case is answered
+at once: a lower `limit` with the same sort and group is the head of the entry made for more
+items, so `get limit=3` after `get limit=10` lists exactly the first 3 of those 10 while the
+refresh runs. `get` never lists more than its `limit`, whichever entry answers.
 
 ### Normalisation
 

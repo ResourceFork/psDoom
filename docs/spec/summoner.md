@@ -35,6 +35,9 @@ Where things live:
 - What the plugin owns, and what Summoner's core must not do, is in
   [separation of concerns](separation-of-concerns.md). `max_items` keeps the head of the
   plugin's list.
+- `get` lists at most `limit` items, the head of the plugin's order. The cache is keyed by
+  the request: a changed request refreshes, but a lower `limit` with the same sort and group
+  is answered at once by the head of the entry made for more.
 - Summoner validates the request against the dimensions. An unknown id is dropped with a
   `# summon:` note and replaced by the default sort; the poll never fails.
 

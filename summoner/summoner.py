@@ -1088,6 +1088,21 @@ def render(items, cache=None):
     return "".join(line + "\n" for line in lines)
 
 
+def answers_by_cut(cache, req):
+    """True if the cached entry, made for another request, still answers
+    `req` by keeping its head: the same sort and group, and a limit no
+    larger than the one the entry was made for (or none)."""
+    try:
+        old = json.loads(cache.get("request") or "")
+    except ValueError:
+        return False
+    if not isinstance(old, dict) or not req["limit"]:
+        return False
+    if old.get("sort") != req["sort"] or old.get("group") != req["group"]:
+        return False
+    return old.get("limit") is None or req["limit"] <= old["limit"]
+
+
 def cmd_poll(cfg, words=()):
     ensure_state_dir(cfg)
     # host_pids is Summoner's own word between get and its refresher.
@@ -1104,6 +1119,9 @@ def cmd_poll(cfg, words=()):
     # A different request makes the cache stale at once: the order and the
     # grades it holds answer another question.
     changed = cache is not None and cache.get("request") != key
+    # A lower limit with the same sort and group is answered by the head of
+    # the entry made for more items, at once; the refresh still runs.
+    by_cut = changed and answers_by_cut(cache, req)
     stale = (cache is None or dirty or changed or
              now - cache.get("fetched_at", 0) >= cfg["cache_ttl_s"])
     try:
@@ -1128,7 +1146,8 @@ def cmd_poll(cfg, words=()):
         spawn_refresher(cfg, list(words) +
                         ["host_pids=" + ",".join(str(p) for p in chain or [])])
         spawned = True
-    if (cache is None or changed) and (spawned or refresher_running(cfg)):
+    if (cache is None or changed) and not by_cut and \
+            (spawned or refresher_running(cfg)):
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
         while time.monotonic() < deadline:
             fresh = read_cache(cfg)
@@ -1137,6 +1156,9 @@ def cmd_poll(cfg, words=()):
                 break
             time.sleep(0.02)
     items = cache["items"] if cache else []
+    if req["limit"]:
+        # Never more than asked for, whichever entry answers.
+        items = items[:req["limit"]]
     if chain is None:
         # The calling chain could not be read: fail closed, serving nothing
         # that stands for a local process.

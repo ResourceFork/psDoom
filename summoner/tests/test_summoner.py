@@ -1055,6 +1055,60 @@ class CliTests(Base):
         lists = [c for c in self.calls() if c and c[0] == "list"]
         self.assertLessEqual(len(lists), n + 1)
 
+    def _ranked(self, n=12):
+        return [{"key": "k%02d" % i, "name": "P%02d" % i, "size": 100 - i}
+                for i in range(n)]
+
+    def test_lower_limit_returns_top_of_previous_list(self):
+        # The game sends its monster count as limit=: lowering it from 10 to
+        # 3 must list exactly the first 3 of the 10, in the same order.
+        self.named("dim", self._ranked(), spec=self.dims_spec())
+        self.r("use", "dim")
+        ten = self.wait_rows(words=("limit=10",))
+        self.assertEqual(len(ten), 10)
+        three = self.get(words=("limit=3",))
+        self.assertEqual([r["label"] for r in three],
+                         [r["label"] for r in ten[:3]])
+        self.assertEqual([r["id"] for r in three],
+                         [r["id"] for r in ten[:3]])
+        self._reap_refresher(self.configs[-1])
+
+    def test_lower_limit_is_never_served_whole_from_the_old_entry(self):
+        # The cache is keyed by the request. A lowered limit whose refresh
+        # is slow must still list only the top 3 at once: the old entry
+        # (made for limit=10, same sort) is cut, never served whole.
+        self.named("dim", self._ranked(), spec=self.dims_spec())
+        self.r("use", "dim")
+        ten = self.wait_rows(words=("limit=10",))
+        self._reap_refresher(self.configs[-1])
+        spec = self.dims_spec()
+        spec["list_sleep"] = 3
+        self.named("dim", self._ranked(), spec=spec)   # the next list is slow
+        started = time.monotonic()
+        three = self.get(words=("limit=3",))
+        elapsed = time.monotonic() - started
+        self.assertEqual([r["label"] for r in three],
+                         [r["label"] for r in ten[:3]])
+        # Answered from the old entry, so it does not wait for the refresh.
+        self.assertLess(elapsed, 0.6)
+        self._reap_refresher(self.configs[-1])
+
+    def test_raised_limit_is_not_answered_from_a_smaller_entry(self):
+        # A raised limit cannot be answered from an entry made for fewer
+        # items: the refresh runs and its longer list is served.
+        self.named("dim", self._ranked(), spec=self.dims_spec())
+        self.r("use", "dim")
+        self.wait_rows(words=("limit=3",))
+        self._reap_refresher(self.configs[-1])
+        deadline = time.monotonic() + 10
+        rows = []
+        while len(rows) != 10 and time.monotonic() < deadline:
+            rows = self.get(words=("limit=10",))
+            time.sleep(0.05)
+        self.assertEqual([r["label"] for r in rows],
+                         ["P%02d" % i for i in range(10)])
+        self._reap_refresher(self.configs[-1])
+
     def test_get_carries_grade(self):
         self.named("fake", [{"key": "a", "name": "Top", "size": 9},
                             {"key": "b", "name": "Mid", "size": 5},
