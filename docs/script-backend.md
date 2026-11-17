@@ -32,7 +32,7 @@ If `PSDOOM_POLL_CMD` is unset, psDoom runs the Summoner bundled in the app
 `/usr/bin/python3` install shim). psDoom has **no native process backend**: if
 Summoner is missing, no `python3` is found, or a poll fails, there
 are no process monsters, psDoom says why once (log and HUD), and nothing is
-acted on. A poll that only times out keeps the last list, up to 5 in a row. The variables are for development: pointing psDoom at another
+acted on. A poll that only times out keeps the last list, for up to 5 in a row. The variables are for development: pointing psDoom at another
 script, or at a `summon` with `--root` or `--plugin`.
 
 ## Poll output — what the game reads

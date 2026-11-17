@@ -62,7 +62,7 @@ ID_MAX = 2147483647
 KEY_MAX = 1024            # longest plugin key Summoner accepts
 OUTPUT_CAP = 8 * 1024 * 1024  # max bytes read from one plugin call
 ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
-KILLED_FORGET_S = 3600    # a killed id not listed this long is forgotten
+KILLED_MAX = 4096         # killed ids remembered; the oldest kills go first
 
 # The words the game (and you) send map to plugin verbs.
 VERB_MAP = {"post": "nudge", "delete": "remove"}
@@ -972,16 +972,17 @@ def _link_parents(items):
 # ----------------------------------------------------------------- killed --
 
 def read_killed(cfg):
-    """The ids the game has killed: {id: last time the plugin listed it}.
-    Kept per state dir in killed.json. Ids are never reused, so a killed id
-    stands for that one item for good."""
+    """The ids the game has killed: {id: when}. Kept per state dir in
+    killed.json. Ids are never reused, so a killed id stands for that one
+    item for good, listed or not; only the oldest kills beyond KILLED_MAX
+    are forgotten."""
     k = read_json(state_path(cfg, "killed.json"), {})
     ids = k.get("ids") if isinstance(k, dict) else None
     out = {}
     if isinstance(ids, dict):
-        for key, seen in ids.items():
-            if key.isdigit() and _is_num(seen):
-                out[int(key)] = float(seen)
+        for key, when in ids.items():
+            if isinstance(key, str) and ID_RE.match(key) and _is_num(when):
+                out[int(key)] = float(when)
     return out
 
 
@@ -991,10 +992,31 @@ def write_killed(cfg, killed):
 
 
 def remember_kill(cfg, ident, now):
-    """Record that the game killed `ident`. Call under state.lock."""
+    """Record that the game killed `ident`, and mark the cache dirty so the
+    next poll refreshes and the list fills again. Call under state.lock."""
     killed = read_killed(cfg)
     killed[int(ident)] = now
+    if len(killed) > KILLED_MAX:
+        keep = sorted(killed, key=lambda i: killed[i])[-KILLED_MAX:]
+        killed = {i: killed[i] for i in keep}
     write_killed(cfg, killed)
+    with open(state_path(cfg, "dirty"), "w"):
+        pass
+
+
+def id_issued(cfg, ident):
+    """True if this plugin's id map ever handed out `ident`: a kill the game
+    reports for an item that has since left the cache is still a kill."""
+    root = cfg.get("root")
+    path = os.path.join(root, "ids.json") if root \
+        else state_path(cfg, "ids.json")
+    ns = (cfg["plugin_id"] + "/") if root else ""
+    m = read_json(path, None)
+    keys = m.get("keys") if isinstance(m, dict) else None
+    if not isinstance(keys, dict):
+        return False
+    return any(isinstance(rec, dict) and rec.get("id") == ident and
+               k.startswith(ns) for k, rec in keys.items())
 
 
 # ------------------------------------------------------------------ cache --
@@ -1024,8 +1046,14 @@ def refresh(cfg, words=()):
         killed = read_killed(cfg)
         if applied["limit"] and killed:
             # Killed items the plugin still lists are dropped below, so ask
-            # for one more per remembered kill and the head still fills.
-            more = min(LIMIT_MAX, applied["limit"] + len(killed))
+            # for one more per kill it listed last time, and per kill made
+            # since on an item the cache served. Exited kills cost nothing.
+            old = read_cache(cfg) or {}
+            extra = old.get("killed_listed", 0)
+            extra = extra if isinstance(extra, int) and extra >= 0 else 0
+            extra += sum(1 for it in old.get("items", [])
+                         if it.get("id") in killed)
+            more = min(LIMIT_MAX, applied["limit"] + extra)
             pwords = [("limit=%d" % more) if w.startswith("limit=") else w
                       for w in pwords]
         # A plugin that declares no dimensions gets the plain `list`.
@@ -1040,18 +1068,10 @@ def refresh(cfg, words=()):
         now = round(time.time(), 3)
         with Locked(state_path(cfg, "state.lock")):
             assign_ids(cfg, items, now)
-            # The game killed these: never list them again. A killed id the
-            # plugin no longer lists for KILLED_FORGET_S is forgotten (its
-            # item is gone; ids are never reused).
+            # The game killed these: never list them again.
             killed = read_killed(cfg)
-            if killed:
-                for it in items:
-                    if it["id"] in killed:
-                        killed[it["id"]] = now
-                killed = {i: t for i, t in killed.items()
-                          if now - t < KILLED_FORGET_S}
-                write_killed(cfg, killed)
-                items = [it for it in items if it["id"] not in killed]
+            listed = sum(1 for it in items if it["id"] in killed)
+            items = [it for it in items if it["id"] not in killed]
             if applied["limit"]:
                 items = items[:applied["limit"]]
             write_json_atomic(state_path(cfg, "cache.json"), {
@@ -1063,6 +1083,7 @@ def refresh(cfg, words=()):
                 "notes": notes,
                 "items": items,
                 "skipped": skipped,
+                "killed_listed": listed,
             })
             try:
                 os.unlink(failed_mark)
@@ -1318,6 +1339,14 @@ def _respond(cfg, argv):
                 item = it
                 break
     if item is None:
+        if pverb == "remove" and ID_RE.match(ident) and \
+                id_issued(cfg, int(ident)):
+            # Killed in the game after a refresh moved it out of the cache:
+            # remember the kill so it never comes back. Nothing is acted on.
+            with Locked(state_path(cfg, "state.lock")):
+                remember_kill(cfg, int(ident), time.time())
+            audit(cfg, dict(entry, outcome="unknown-id", remembered=True))
+            return 0
         audit(cfg, dict(entry, outcome="unknown-id"))
         return 0
     entry.update(action=pverb, key=item["key"], name=item["name"])

@@ -172,12 +172,14 @@ static void test_child_count_reported(void)
     n = psd_script_parse("id=7\tchildren=12\tlabel=a\n"
                          "id=8\tchildren=-3\n"
                          "id=9\tchildren=x\n"
-                         "id=10\n", out, 16);
-    CHECK(n == 4);
-    CHECK(n == 4 && out[0].has_children == 1 && out[0].children == 12);
-    CHECK(n == 4 && out[1].has_children == 0);
-    CHECK(n == 4 && out[2].has_children == 0);
-    CHECK(n == 4 && out[3].has_children == 0);
+                         "id=10\n"
+                         "id=11\tchildren=5\tchildren=x\n", out, 16);
+    CHECK(n == 5);
+    CHECK(n == 5 && out[4].has_children == 1 && out[4].children == 5);
+    CHECK(n == 5 && out[0].has_children == 1 && out[0].children == 12);
+    CHECK(n == 5 && out[1].has_children == 0);
+    CHECK(n == 5 && out[2].has_children == 0);
+    CHECK(n == 5 && out[3].has_children == 0);
 }
 
 /* ---- script backend: contract parser + a real subprocess round-trip ------ */
@@ -985,6 +987,37 @@ static void test_script_poll_timeout_keeps_last_list(void)
     unlink(flag);
 }
 
+/* A poll cut off after only its header lines (`# dim`) has no entity yet:
+ * slow, not empty, so the last list stands. */
+static void test_script_poll_cut_after_header_keeps_last_list(void)
+{
+    char       flag[512];
+    char       poll[1200];
+    psd_proc_t out[4];
+    int        n;
+    int        i;
+    int        zero = 0;
+
+    snprintf(flag, sizeof(flag), "%s/psd_header_%d", test_tmpdir(), (int) getpid());
+    unlink(flag);
+    snprintf(poll, sizeof(poll),
+             "if [ -e '%s' ]; then printf '# dim id=mem kind=numeric\\n'; "
+             "sleep 5; else : > '%s'; printf 'id=7\\n'; fi", flag, flag);
+    proc_script_install(poll, NULL, 300);
+    n = psd_test_list_wait(out, 4);
+    CHECK(n == 1);
+    for (i = 0; i < 160; i++)          /* about 800 ms: two timeouts */
+    {
+        if (proc_backend()->list(out, 4) == 0)
+        {
+            zero = 1;
+        }
+        usleep(5000);
+    }
+    CHECK(!zero);
+    unlink(flag);
+}
+
 /* The commands run in a background process group, so they get /dev/null as
  * stdin rather than the game's (a terminal read would stop them with
  * SIGTTIN). Here the game's stdin is a pipe nobody writes: `cat` would block
@@ -1350,6 +1383,7 @@ int main(int argc, char **argv)
     test_script_parse_drops_overlong_line();
     test_script_poll_timeout_drops_partial_line();
     test_script_poll_timeout_keeps_last_list();
+    test_script_poll_cut_after_header_keeps_last_list();
     test_script_children_stdin_is_devnull();
     test_script_children_inherit_no_fds_above_limit();
     test_script_poll_does_not_block_caller();

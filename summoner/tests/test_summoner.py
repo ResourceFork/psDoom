@@ -60,7 +60,12 @@ elif verb == "list":
     time.sleep(spec.get("list_sleep", 0))
     if spec.get("list_fail"):
         sys.exit(3)
-    for it in spec["items"]:
+    its = spec["items"]
+    if spec.get("obey_limit"):
+        for w in sys.argv[3:]:
+            if w.startswith("limit="):
+                its = its[:int(w[6:])]
+    for it in its:
         print(json.dumps(it))
 elif verb in ("nudge", "remove"):
     print(json.dumps({"ok": True, "undo": None}))
@@ -1138,11 +1143,20 @@ class CliTests(Base):
             time.sleep(0.05)
         return labels
 
+    def _kill_spec(self, **over):
+        spec = self.dims_spec()
+        spec["describe"] = dict(spec["describe"],
+                                verbs=["list", "nudge", "remove"])
+        spec["obey_limit"] = True
+        spec.update(over)
+        return spec
+
     def test_killed_id_is_dropped_from_every_get(self):
         # The game killed P01's monster with no effect on the process: it is
         # still listed by the plugin, but Summoner remembers the kill and
-        # never sends that id again, and the top 5 still fills.
-        self.named("dim", self._ranked(), spec=self.dims_spec())
+        # never sends that id again, and the top 5 still fills from a plugin
+        # that lists only what it is asked for.
+        self.named("dim", self._ranked(), spec=self._kill_spec())
         self.r("use", "dim")
         rows = self.wait_rows(words=("limit=5",))
         self.assertEqual([r["label"] for r in rows],
@@ -1165,17 +1179,80 @@ class CliTests(Base):
     def test_kill_is_remembered_in_every_mode_and_a_wound_is_not(self):
         # Every delete the game sends for a listed item is a kill in the
         # game, whatever Summoner then lets the plugin do; a post is not.
-        self.named("dim", self._ranked(), spec=self.dims_spec())
+        self.named("dim", self._ranked(), spec=self._kill_spec(),
+                   dry_run=False)                 # remove stays off
         self.r("use", "dim")
         rows = {r["label"]: r["id"] for r in self.wait_rows(words=("limit=6",))}
         self.r("delete", rows["P00"], "mode=dryrun")
-        self.r("delete", rows["P01"], "mode=post-only")   # blocked
-        self.r("delete", rows["P02"], "mode=delete")      # plugin dry run
+        self.r("delete", rows["P01"], "mode=post-only")
+        self.r("delete", rows["P02"], "mode=delete")
         self.r("post", rows["P03"], "amount=4", "mode=post-only")
         self.r("delete", rows["P04"], "label=Not P04", "mode=dryrun")
-        self.r("delete", "999999", "mode=dryrun")         # not listed
+        self.r("delete", "999999", "mode=dryrun")         # never issued
+        self.assertEqual(
+            [(e["verb"], e["mode"], e["outcome"], e.get("reason"))
+             for e in self.audit()],
+            [("delete", "dryrun", "dry-run", "host mode"),
+             ("delete", "post-only", "blocked", "host mode"),
+             ("delete", "delete", "blocked", "plugin config"),
+             ("post", "post-only", "ok", None),
+             ("delete", "dryrun", "label-mismatch", None),
+             ("delete", "dryrun", "unknown-id", None)])
         want = ["P03", "P04", "P05", "P06", "P07", "P08"]
         self.assertEqual(self._wait_labels(("limit=6",), want), want)
+        self._reap_refresher(self.configs[-1])
+
+    def test_limit_one_kill_still_alive_lists_the_next(self):
+        # Monster count 1: the one monster is killed under Wounds only, so
+        # its process keeps running and the plugin still ranks it first.
+        # The next poll lists the next item: not A again, and not nothing.
+        self.named("dim", self._ranked(4), spec=self._kill_spec())
+        self.r("use", "dim")
+        rows = self.wait_rows(words=("limit=1",))
+        self.assertEqual([r["label"] for r in rows], ["P00"])
+        self.r("delete", rows[0]["id"], "label=P00", "mode=post-only")
+        self.assertEqual(self._wait_labels(("limit=1",), ["P01"]), ["P01"])
+        self.assertEqual(self._wait_labels(("limit=1",), ["P01"]), ["P01"])
+        self._reap_refresher(self.configs[-1])
+
+    def test_kill_after_the_item_left_the_cache_is_remembered(self):
+        # A refresh can move an item out of the cached top N between the
+        # game's poll and its kill: the kill still counts, so the item never
+        # comes back when it ranks in again.
+        items = self._ranked(8)
+        self.named("dim", items, spec=self._kill_spec())
+        self.r("use", "dim")
+        rows = {r["label"]: r["id"] for r in self.wait_rows(words=("limit=3",))}
+        self._reap_refresher(self.configs[-1])
+        late = rows["P02"]
+        self.named("dim", items[3:] + items[:3], spec=self._kill_spec())
+        self._wait_labels(("limit=3",), ["P03", "P04", "P05"])
+        self._reap_refresher(self.configs[-1])
+        self.r("delete", late, "mode=dryrun")
+        self.assertEqual(self.audit()[-1]["outcome"], "unknown-id")
+        self.named("dim", items, spec=self._kill_spec())
+        want = ["P00", "P01", "P03"]
+        self.assertEqual(self._wait_labels(("limit=3",), want), want)
+        self._reap_refresher(self.configs[-1])
+
+    def test_killed_item_ranked_low_for_long_is_still_never_listed(self):
+        # A killed item the plugin stops listing (it fell below the limit)
+        # is not forgotten for that: when it climbs back it is still gone.
+        items = self._ranked(8)
+        self.named("dim", items, spec=self._kill_spec())
+        self.r("use", "dim")
+        rows = {r["label"]: r["id"] for r in self.wait_rows(words=("limit=3",))}
+        self.r("delete", rows["P00"], "mode=dryrun")
+        self._wait_labels(("limit=3",), ["P01", "P02", "P03"])
+        self._reap_refresher(self.configs[-1])
+        self.named("dim", items[1:] + items[:1], spec=self._kill_spec())
+        for _ in range(3):
+            self.r("refresh", "limit=3")
+        self.named("dim", items, spec=self._kill_spec())
+        want = ["P01", "P02", "P03"]
+        self.assertEqual(self._wait_labels(("limit=3",), want), want)
+        killed = json.load(open(os.path.join(self.state, "killed.json")))
+        self.assertIn(str(rows["P00"]), killed["ids"])
         self._reap_refresher(self.configs[-1])
 
     def test_raised_limit_is_not_answered_from_a_smaller_entry(self):

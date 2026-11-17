@@ -146,7 +146,7 @@ kill when `allow_remove` is off.
 | `size` | number ≥ 0 | no | The poll's `weight` (bytes, or scaled). If no item has a size, the position decides (first = biggest). |
 | `load` | number ≥ 0 | no | The poll's `load`. |
 | `parent` | string | no | Key of a parent item (fork-bomb grouping). Unknown parents become `0`. |
-| `children` | integer ≥ 0 | no | The item's direct child count, counted by the plugin over everything it saw, before any trim. `get` passes it on as `children=N`, so the game sees a fork burst however few items the limit lists. The built-in `ps` counts each process's children among the processes it lists. Anything but a JSON integer ≥ 0 is left out. |
+| `children` | integer ≥ 0 | no | The item's direct child count, counted by the plugin among the items it considered, before its trim (the built-in `ps` counts only processes that pass its exclusions). `get` passes it on as `children=N`, so the game sees a fork burst however few items the limit lists. The built-in `ps` counts each process's children among the processes it lists. Anything but a JSON integer ≥ 0 is left out. |
 | `background` | bool | no | `true` sets the poll's `flags` bit 0. |
 
 Unknown fields are ignored, so a plugin can carry extra data for its own use.
@@ -204,15 +204,18 @@ new key, a new id and a new monster, and the plugin re-checks the start time bef
 
 ### Killed ids
 
-Every `delete` the game sends for a listed item is a kill in the game, whatever the mode
-then lets the plugin do (a dry run, a blocked or rate-limited kill, a failed one). Summoner
-remembers that id in the plugin's state (`killed.json`) and never lists it again, so the
-game never respawns a monster for it, even when the item itself is still there (a process
-killed under No effect or Wounds only keeps running). A refresh asks the plugin for
-`limit` plus one per remembered kill and drops the killed ones before cutting to `limit`,
-so the top N still fills. A killed id the plugin has not listed for `KILLED_FORGET_S`
-(an hour) is forgotten; ids are never reused, so it cannot come back as another item. A
-wound (`post`) is never remembered.
+Every `delete` the game sends for an id Summoner issued is a kill in the game, whatever the
+mode then lets the plugin do (a dry run, a blocked or rate-limited kill, a failed one), and
+even when a refresh has already moved the item out of the cached list. Summoner remembers
+that id in the plugin's state (`killed.json`) and never lists it again, so the game never
+respawns a monster for it, even when the item itself is still there (a process killed under
+No effect or Wounds only keeps running). A refresh asks the plugin for `limit` plus one per
+killed item it still listed last time (plus kills made since), drops the killed ones and
+then cuts to `limit`, so the top N still fills; a kill whose item has gone costs nothing.
+A kill is never forgotten for not being listed: ids are never reused, and a process ranked
+below the limit is still alive. Only the oldest kills beyond `KILLED_MAX` (4096) are
+dropped. A wound (`post`) is never remembered, and a kill marks the cache dirty so the next
+poll refills the list.
 
 ### Order: the plugin curates
 

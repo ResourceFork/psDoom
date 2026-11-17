@@ -11,7 +11,7 @@
 4. If Summoner is missing or no `python3` is found, the backend is `proc_none_backend`.
    A poll that times out before its first line is slow, not empty: the last good list
    stands (no monster is read as exited) and the next poll starts. Only when no poll has
-   answered yet, or after 5 such timeouts in a row, does it list nothing. A poll that
+   answered yet, or on the 6th such timeout in a row, does it list nothing. A poll that
    cannot be run, or lists nothing because it exited non-zero or printed only
    `# summon error`, lists nothing at once. Then there are no process monsters and no
    action. The latest reason is shown on the HUD and logged once per failure streak. A

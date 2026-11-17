@@ -56,6 +56,7 @@ extern char **environ;
 #define SCRIPT_SNAPSHOT_MAX 4096  /* cached entities for label lookup            */
 #define SCRIPT_RESULT_MAX_WAIT_MS 1000 /* a result kept longer (plus the timeout) is dropped */
 #define SCRIPT_TIMEOUT_GRACE  5   /* timeouts in a row that keep the last list    */
+#define SCRIPT_BLOCKING_RETRY_MS 1000 /* no-thread polls: wait after a slow one */
 
 /* ------------------------------------------------------------------- state */
 
@@ -78,6 +79,9 @@ static int  script_timeout_ms = 1000;
  * good list yet, does it list nothing. */
 static int  script_have_list;   /* a poll answered since install       */
 static int  script_timeouts;    /* timeouts in a row with no answer     */
+/* With no poll thread, a slow poll blocks the caller: wait this long before
+ * the next one rather than blocking on every tic. */
+static unsigned long long script_block_next_ms;
 
 /* The last poll's entities, kept so a response can attach the entity's label
  * (the vtable's renice/kill receive only an id). */
@@ -298,14 +302,11 @@ static int script_parse_line(const char *line, psd_proc_t *p)
              * else is ignored. */
             int c;
 
+            /* The last valid count wins, as for grade. */
             if (script_parse_int(val, 0, &c))
             {
                 p->children     = c;
                 p->has_children = 1;
-            }
-            else
-            {
-                p->has_children = 0;
             }
         }
         else if (strcmp(key, "grade") == 0)
@@ -1241,26 +1242,46 @@ static void script_worker_start(void)
 
 /* Turn a finished poll (its output in buf, its capture result) into the
  * entity list, the status and the dimensions. Game thread only. */
+/* True if `buf` holds a complete line that is not a comment: an entity
+ * line, whether or not it parses. Header lines (`# dim`, `# effect`) and a
+ * cut-off last line do not count. Writes nothing. */
+static int script_has_entity_line(const char *buf)
+{
+    const char *line = buf;
+    const char *nl;
+
+    while ((nl = strchr(line, '\n')) != NULL)
+    {
+        if (nl > line && line[0] != '#')
+        {
+            return 1;
+        }
+        line = nl + 1;
+    }
+    return 0;
+}
+
 static int script_consume(int rc, int cut, int exit_status, const char *buf,
                           psd_proc_t *out, int max)
 {
     unsigned int uid = (unsigned int) getuid();
     int          n;
     int          i;
+    int          unanswered = rc >= 0 && cut && !script_has_entity_line(buf);
 
-    if (rc >= 0 && cut && strchr(buf, '\n') == NULL && script_have_list
-        && ++script_timeouts < SCRIPT_TIMEOUT_GRACE)
+    if (unanswered && script_have_list
+        && script_timeouts < SCRIPT_TIMEOUT_GRACE)
     {
         /* Slow, not gone: keep the last list (and its labels) and poll
          * again. Every process monster stays; none is read as exited. */
-        if (script_timeouts == 1)
+        if (script_timeouts++ == 0)
         {
             fprintf(stderr, "psDoom: the process list was slow; keeping the "
                     "last one (poll: %s)\n", script_poll_cmd);
         }
         return -1;
     }
-    if (rc < 0 || (cut && strchr(buf, '\n') == NULL))
+    if (rc < 0 || unanswered)
     {
         /* No process monsters until a poll works again; say why once. */
         snprintf(script_status, sizeof(script_status),
@@ -1416,10 +1437,22 @@ static int script_list(psd_proc_t *out, int max)
     script_worker_start();
     if (script_worker != 1)
     {
-        /* No thread could be made: poll here, blocking, as before. */
+        /* No thread could be made: poll here, blocking, as before. After a
+         * slow poll the last list stands for a second before the next. */
+        int n;
+
+        if (script_mono_ms() < script_block_next_ms)
+        {
+            return -1;
+        }
         rc = script_run_capture(cmd, script_job_buf, (int) sizeof(script_job_buf),
                                 script_timeout_ms, &cut, &exit_status);
-        return script_consume(rc, cut, exit_status, script_job_buf, out, max);
+        n = script_consume(rc, cut, exit_status, script_job_buf, out, max);
+        if (n < 0)
+        {
+            script_block_next_ms = script_mono_ms() + SCRIPT_BLOCKING_RETRY_MS;
+        }
+        return n;
     }
 
     script_job_submit(cmd);
@@ -1526,6 +1559,7 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
     script_timeout_ms = (timeout_ms > 0) ? timeout_ms : 1000;
     script_have_list  = 0;
     script_timeouts   = 0;
+    script_block_next_ms = 0;
     script_last_n     = 0;
     script_ndims      = 0;
     script_applied[0] = '\0';

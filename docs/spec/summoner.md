@@ -24,10 +24,10 @@ Where things live:
   limit only tighter; it cannot change the command, name or state directory. A plugin that
   is not built in is dry run, with remove off, unless its config says otherwise.
 - **Ids:** one map per root, never reused, failing closed if lost.
-- **Killed ids:** every `delete` for a listed item (any mode, any outcome) is remembered in
-  the plugin's state (`killed.json`). `get` never lists that id again, and a refresh asks
-  the plugin for `limit` plus one per remembered kill, then drops them before the cut. A
-  killed id the plugin has not listed for an hour is forgotten (its item is gone).
+- **Killed ids:** every `delete` for an id Summoner issued (any mode, any outcome, listed
+  now or not) is remembered in the plugin's state (`killed.json`). `get` never lists that
+  id again, and a refresh asks the plugin for `limit` plus one per killed item it still
+  lists, then drops them before the cut. Kills are kept until 4096 newer ones push them out.
 
 ## Plugins
 
@@ -36,7 +36,7 @@ Where things live:
   which `get` passes on as `# effect` header lines),
   `list [sort= group= limit=]` (JSON Lines), `nudge <key> amount=N`, `remove <key>` and
   optionally `restore`. It is run as an argv, never through a shell, with a timeout.
-- An item may carry `children`, its direct child count over everything the plugin saw; `get`
+- An item may carry `children`, its direct child count among the items the plugin considered (before its trim); `get`
   passes it on as `children=N`. The built-in `ps` sends it.
 - What the plugin owns, and what Summoner's core must not do, is in
   [separation of concerns](separation-of-concerns.md). `max_items` keeps the head of the
