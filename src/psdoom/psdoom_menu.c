@@ -137,7 +137,7 @@ static void M_DrawPsDoom(void)
         M_WriteText(PSD_MENU_X + 16, y + 8, buf);
     }
 
-    /* Max live monsters: a left/right slider clamped to 5..35. */
+    /* Max live monsters: a left/right slider clamped to 1..35. */
     {
         char numbuf[16];
         snprintf(numbuf, sizeof(numbuf), "%d", psdoom_monster_cap);

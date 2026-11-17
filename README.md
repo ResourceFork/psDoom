@@ -124,7 +124,7 @@ on processes. Settings are saved with Doom's configuration.
   that started it. These safeguards reduce risk; they do not replace careful
   use of live-kill mode.
 - **Arena readability:** psDoom displays up to 10 live process monsters by
-  default. Adjust the cap from 5 to 35 in the options menu. The most relevant
+  default. Adjust the cap from 1 to 35 in the options menu. The most relevant
   processes are shown first, in Summoner's order.
 - **Sort by:** Summoner's `ps` plugin offers **Relevance** (the default),
   **Memory**, **CPU** and **Age**; psDoom asks for your choice on the next

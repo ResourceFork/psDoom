@@ -132,21 +132,39 @@ static void test_poll_limit_is_the_monster_cap(void)
     pl_poll(args, last, sizeof(last));
     PL_CHECK(strcmp(last, "[limit=5]") == 0);
 
-    /* So does raising it, and the slider's floor holds. */
-    psdoom_opt_adjust_monstercap(0);
+    /* Down to the slider's floor, 1, which holds; a single monster is
+     * asked for as limit=1. */
+    for (i = 0; i < 10; i++)
+    {
+        psdoom_opt_adjust_monstercap(0);
+    }
+    PL_CHECK(PSD_MONSTER_CAP_MIN == 1);
     PL_CHECK(psdoom_monster_cap == PSD_MONSTER_CAP_MIN);
+    pl_poll(args, last, sizeof(last));
+    PL_CHECK(strcmp(last, "[limit=1]") == 0);
+
+    /* So does raising it. */
     for (i = 0; i < 7; i++)
     {
         psdoom_opt_adjust_monstercap(1);
     }
     pl_poll(args, last, sizeof(last));
-    PL_CHECK(strcmp(last, "[limit=12]") == 0);
+    PL_CHECK(strcmp(last, "[limit=8]") == 0);
 
-    /* A config value out of range is clamped before it is sent. */
+    /* A config value out of range is clamped before it is sent: above 35
+     * to 35, and 0 or a negative to 1. */
     psdoom_monster_cap = 99;
     psdoom_options_parse_args();
     pl_poll(args, last, sizeof(last));
     PL_CHECK(strcmp(last, "[limit=35]") == 0);
+    psdoom_monster_cap = 0;
+    psdoom_options_parse_args();
+    pl_poll(args, last, sizeof(last));
+    PL_CHECK(strcmp(last, "[limit=1]") == 0);
+    psdoom_monster_cap = -3;
+    psdoom_options_parse_args();
+    pl_poll(args, last, sizeof(last));
+    PL_CHECK(strcmp(last, "[limit=1]") == 0);
 
     psdoom_monster_cap = 10;   /* the shipped default, for later tests */
     proc_backend_set(NULL);

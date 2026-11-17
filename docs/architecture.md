@@ -191,7 +191,7 @@ Vendored Crispy 7.1, `third_party/crispy-doom/src/doom/`:
   (See [design notes](#4-external-script-backend).)
 - **In-game options menu.** A dedicated psDoom page (reached from Options) with kill policy
   (live / renice-only / simulate), target-all-users, show-labels, label-distance, classify-by, and
-  a max-live-monsters slider (5..35). All menu data/drawing/toggles live in `src/psdoom/`; settings
+  a max-live-monsters slider (1..35). All menu data/drawing/toggles live in `src/psdoom/`; settings
   persist in the config file and can be overridden with `-psdoom-safe` / `-psdoom-simulate` /
   `-psdoom-live` / `-psdoom-allusers` / `-psdoom-nolabels` / `-psdoom-cpu`. Default policy is
   **renice-only** (safe); real killing is opt-in (the menu shows live mode in red).
