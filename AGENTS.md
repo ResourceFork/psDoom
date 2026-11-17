@@ -1,5 +1,22 @@
 # Agent guide: psDoom
 
+## Where a change belongs
+
+Apply this before writing any code, in psDoom and psQuake alike.
+
+1. **Name the owning layer first, by the spec** ([docs/spec/](docs/spec/README.md)):
+   - The game is only a host. It requests `get` with sort, group and limit, shows what
+     comes back, and reports wound and kill events with its mode.
+   - Summoner's core validates, passes requests through, enforces the mode and audits.
+   - The plugin curates, sorts, trims, grades and guards.
+2. **Fix it there, and test it at that layer's boundary.** For anything about what `get`
+   returns, use Summoner's own suite (`summoner/tests/`). Never add game-side logic that
+   duplicates what the contract already gives, and no workaround harness in another layer.
+3. **Worked example: the monster count.** The game sends its count as `limit`, Summoner
+   and the plugin return the top N, and the game's existing retire-missing path prunes
+   the rest. The test belongs in Summoner: `get limit=10`, then `get limit=3`.
+4. **If the owning layer is unclear, stop and ask before building.**
+
 ## Read first
 
 - [docs/spec/](docs/spec/README.md) holds the normative specs: the script contract,
