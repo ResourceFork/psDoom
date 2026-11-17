@@ -59,8 +59,20 @@ static void test_help(void)
     EF_CHECK(strcmp(b, "Kill: acts on it") == 0);
 }
 
+static void test_at_launch(void)
+{
+    EF_CHECK(psdoom_effect_at_launch(PSD_KILL_SIMULATE) == PSD_KILL_SIMULATE);
+    EF_CHECK(psdoom_effect_at_launch(PSD_KILL_RENICE) == PSD_KILL_RENICE);
+    /* A saved "Wounds and kills" (or the old "post + delete") never kills
+     * on the next launch. */
+    EF_CHECK(psdoom_effect_at_launch(PSD_KILL_LIVE) == PSD_KILL_RENICE);
+    EF_CHECK(psdoom_effect_at_launch(-1) == PSD_KILL_RENICE);
+    EF_CHECK(psdoom_effect_at_launch(PSD_KILL_NUM) == PSD_KILL_RENICE);
+}
+
 void test_effect_setting_words(void)
 {
     test_names();
     test_help();
+    test_at_launch();
 }

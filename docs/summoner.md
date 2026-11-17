@@ -103,7 +103,7 @@ only calls verbs that `describe` lists.
  "size":   {"meaning": "priority", "scale": "relative"},
  "load":   {"meaning": "none", "scale": "relative"},
  "nudge":  {"meaning": "lower priority by amount", "effect": "lowers its rank"},
- "remove": {"meaning": "delete the row", "undoable": true, "effect": "deletes its row"},
+ "remove": {"meaning": "delete the row", "undoable": true, "effect": "removes its row"},
  "dimensions": [
    {"id": "priority", "label": "priority", "kind": "numeric", "dir": "desc", "roles": ["sort"]},
    {"id": "team", "label": "Team", "kind": "category", "roles": ["group"]}],
@@ -124,7 +124,9 @@ or `relative` (the default). The `meaning` strings are for people (`describe` pr
 wound and a kill do to the thing behind the monster (the `ps` plugin: "lowers its priority",
 "quits the process"). `get` passes them on as `# effect verb=post|delete text=…` header
 lines, and the games show them on the effect setting's help line. Only a verb the plugin
-lists counts; anything that is not a string is left out.
+lists counts; anything that is not a string is left out. `get` sends only the words that
+can come true under the plugin's config: none when it is dry run, no kill words when
+`allow_remove` is off.
 
 ### `list` — one JSON object per line
 
@@ -501,7 +503,7 @@ implemented, and each needs the project owner's go before any change to
    integer id), echoed back on respond, so Summoner would not need its id map to act.
 2. **`kind=` poll field.** A coarse category (`process`, `row`, `agent`) a game could theme by.
 3. **A result channel.** Have the game read a one-line status from the responder (or a
-   status file), so the HUD can show "dry run", "blocked" or "rate limited" instead of a
+   status file), so the HUD can show "nothing happened", "blocked" or "rate limited" instead of a
    monster that silently comes back.
 4. **Done: the plugin's order.** The game now keeps the plugin's order directly
    instead of only `flags` bit 0.

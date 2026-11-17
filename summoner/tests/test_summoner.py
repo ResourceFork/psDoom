@@ -1898,6 +1898,22 @@ class BuiltinPsTests(Base):
         self.act(cfg, items["a"], "delete")
         self.assertEqual(self.acted(), ["nudge"])        # no new call
 
+    def test_an_old_ps_json_naming_the_default_state_still_loads(self):
+        path = os.path.join(self.hroot, "plugins", "ps.json")
+        with open(path, "w") as f:
+            json.dump({"state_dir": os.path.join(self.hroot, "state", "ps"),
+                       "plugin": {"allow_remove": False}}, f)
+        cfg = H.load_named(self.hroot, "ps")
+        self.assertFalse(cfg["plugin"]["allow_remove"])
+        with open(path, "w") as f:
+            json.dump({"state_dir": os.path.join(self.root, "elsewhere")}, f)
+        with self.assertRaises(H.SummonerError):
+            H.load_named(self.hroot, "ps")
+
+    def test_the_games_are_protected_names(self):
+        for name in ("psDoom", "crispy-doom", "psQuake", "quakespasm"):
+            self.assertIn(name, P.DENY)
+
     def test_other_plugins_stay_dry_run_by_default(self):
         cfg = H.config_from_dict({"plugin": {"name": "x", "command": ["x"]}},
                                  "x.json", self.state, [])
@@ -1926,6 +1942,21 @@ class EffectTests(unittest.TestCase):
         d = H.validate_describe({"verbs": ["list", "remove"],
                                  "remove": {"effect": "x" * 100}})
         self.assertEqual(len(d["effects"]["delete"]), H.EFFECT_MAX)
+
+    def test_words_only_for_what_the_config_lets_run(self):
+        desc = H.validate_describe(P.describe())
+        cache = {"describe": desc}
+        def lines(cfg):
+            out = H.render([], H.effects_for(cfg, cache))
+            return [ln for ln in out.split("\n") if ln.startswith("# effect")]
+        both = {"dry_run": False, "plugin": {"allow_remove": True}}
+        self.assertEqual(len(lines(both)), 2)
+        self.assertEqual(lines({"dry_run": False,
+                                "plugin": {"allow_remove": False}}),
+                         ["# effect verb=post text=lowers its priority"])
+        self.assertEqual(lines({"dry_run": True,
+                                "plugin": {"allow_remove": True}}), [])
+        self.assertEqual(desc["effects"]["delete"], "quits the process")
 
     def test_the_poll_carries_them_as_header_lines(self):
         desc = H.validate_describe(P.describe())

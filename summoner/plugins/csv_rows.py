@@ -176,7 +176,7 @@ def describe(a, sh=None):
                   if a.priority_column else "move the row down amount rows",
                   "effect": "lowers its rank"},
         "remove": {"meaning": "delete the row", "undoable": True,
-                   "effect": "deletes its row"},
+                   "effect": "removes its row"},
     }
     if sh is not None:
         dims = dimensions(a, sh)

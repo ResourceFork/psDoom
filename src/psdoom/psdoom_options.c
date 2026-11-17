@@ -3,6 +3,7 @@
  */
 
 #include "psdoom_options.h"
+#include "psdoom_effect.h"   /* psdoom_effect_at_launch */
 #include "proc_script.h"   /* the script backend's sort dimensions */
 
 #include "m_argv.h"   /* M_ParmExists */
@@ -23,6 +24,11 @@ int psdoom_label_range = PSD_LABELS_NORMAL;
 
 void psdoom_options_parse_args(void)
 {
+    /* Runs after the config is loaded. Kills are chosen per session: a
+     * saved "Wounds and kills" starts this launch at Wounds only, because
+     * the built-in ps plugin acts on the setting with no config of its
+     * own, and a kill quits a real process. */
+    psdoom_kill_policy = psdoom_effect_at_launch(psdoom_kill_policy);
     if (M_ParmExists("-psdoom-safe"))
     {
         psdoom_kill_policy = PSD_KILL_RENICE;    /* wound only, never kill     */

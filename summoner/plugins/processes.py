@@ -64,6 +64,7 @@ import time
 # launch them. The launcher chain itself comes from SUMMONER_HOST_PIDS.
 DENY = {"loginwindow", "WindowServer", "Dock", "Finder", "SystemUIServer",
         "launchd", "kernel_task", "psDoom", "psdoom", "crispy-doom",
+        "psQuake", "psquake", "quakespasm",
         "Terminal", "iTerm2",
         # session plumbing a terminal runs: ending it ends a tab or session
         "login", "sudo", "su", "sshd", "sshd-session", "ssh-agent", "tmux",
@@ -311,8 +312,10 @@ def resolve(key):
     would still be listed now, else None. The process is re-read at action
     time: it must have the recorded start time (no pid reuse) and pass the
     same exclusions as `list` (protected names, effective and real uid,
-    this plugin and its parent chain, the host chain), because a process
-    can exec another program, or change uid, under the same pid and start."""
+    this plugin and its parent chain, and the host chain Summoner passed,
+    which on a respond is Summoner's own: the game is covered by name),
+    because a process can exec another program, or change uid, under the
+    same pid and start."""
     pid_s, sep, start = key.partition("@")
     if not sep or not pid_s.isdigit() or int(pid_s) <= 1:
         return None

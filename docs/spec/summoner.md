@@ -51,5 +51,8 @@ Where things live:
   - the host chain (`SUMMONER_HOST_PIDS`).
 - Items carry their `pid`, and every `get` drops its own calling chain at serve time,
   serving no pid item if that chain cannot be read.
-- At action time the `ps` plugin rechecks the pid (still listed, same process, not
-  excluded) before it renices or signals it.
+- At action time the `ps` plugin rechecks the pid (same process, and still passing the
+  listing's exclusions: protected names, which include the games, effective and real uid,
+  and its own calling chain) before it renices or signals it. The game's launcher chain
+  is dropped at serve time; a respond does not carry it, so at action time the games are
+  protected by name.

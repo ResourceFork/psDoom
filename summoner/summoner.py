@@ -152,7 +152,7 @@ def read_config_file(path):
             raise SummonerError("config is not valid JSON: %s" % path)
 
 
-def restrict_builtin(name, raw, path):
+def restrict_builtin(name, raw, path, default_state=None):
     """A built-in's config with the user's <root>/plugins/<name>.json laid
     over it. The file may only make it stricter: dry_run can only turn on,
     allow_remove only off, the rate limit only tighten. It cannot change the
@@ -179,12 +179,15 @@ def restrict_builtin(name, raw, path):
                                % (path, name))
     if uplug.get("name", name) != name:
         raise SummonerError("%s: plugin.name must be %r" % (path, name))
-    if "state_dir" in raw:
+    if "state_dir" in raw and not (
+            isinstance(raw["state_dir"], str) and default_state and
+            os.path.normpath(raw["state_dir"]) ==
+            os.path.normpath(default_state)):
         raise SummonerError("%s: a named plugin's state is always under "
                            "the root; remove state_dir from it" % path)
     merged = dict(base)
     for k, v in raw.items():
-        if k not in ("plugin", "dry_run", "rate_limit"):
+        if k not in ("plugin", "dry_run", "rate_limit", "state_dir"):
             merged[k] = v
     dry = raw.get("dry_run", base.get("dry_run", DEFAULTS["dry_run"]))
     if not isinstance(dry, bool):
@@ -1141,8 +1144,25 @@ def cmd_poll(cfg, words=()):
     else:
         mine = set(chain)
         items = [it for it in items if it.get("pid") not in mine]
-    sys.stdout.write(render(items, cache))
+    sys.stdout.write(render(items, effects_for(cfg, cache)))
     return 0
+
+
+def effects_for(cfg, cache):
+    """The cache with its describe's effect words cut to what this config
+    lets run: none when it is dry run, no kill words when remove is off. A
+    game then shows its plain "nothing" rather than an effect that cannot
+    happen."""
+    if not cache:
+        return cache
+    desc = dict(cache.get("describe") or {})
+    eff = dict(desc.get("effects") or {})
+    if cfg.get("dry_run"):
+        eff = {}
+    elif not cfg["plugin"].get("allow_remove"):
+        eff.pop("delete", None)
+    desc["effects"] = eff
+    return dict(cache, describe=desc)
 
 
 # ---------------------------------------------------------------- respond --
@@ -1401,7 +1421,7 @@ def load_named(root, name):
     cfg = None
     if os.path.lexists(path) and name in BUILTINS:
         raw = restrict_builtin(name, read_config_file(os.path.abspath(path)),
-                               path)
+                               path, default_state)
         cfg = config_from_dict(raw, path, default_state, self_args)
     elif os.path.lexists(path):
         cfg = load_config(path, default_state, self_args)

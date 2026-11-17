@@ -109,7 +109,8 @@ on processes. Settings are saved with Doom's configuration.
 - **Effect via Summoner:** what a hit does to the real process. **Off** does
   nothing; **Wounds only**, the default, lets a wound lower the process's
   priority (renice) and a kill do nothing; **Wounds and kills** also lets
-  defeating a monster quit the process (`SIGTERM`). The help line under the
+  defeating a monster quit the process (`SIGTERM`); it lasts until you quit,
+  and the next launch starts at Wounds only. The help line under the
   setting says what a wound and a kill do, in the plugin's own words. The
   built-in `ps` plugin follows this setting: there is nothing to configure.
   Every hit, acted on or not, is logged in

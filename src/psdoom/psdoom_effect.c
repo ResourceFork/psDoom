@@ -24,6 +24,15 @@ const char *psdoom_effect_name(int policy)
     return psd_effect_names[policy];
 }
 
+int psdoom_effect_at_launch(int saved)
+{
+    if (saved == PSD_KILL_SIMULATE || saved == PSD_KILL_RENICE)
+    {
+        return saved;
+    }
+    return PSD_KILL_RENICE;
+}
+
 /* The plugin's words, or a plain fallback when it gave none. */
 static const char *psd_effect_or(const char *words)
 {

@@ -17,6 +17,12 @@
 /* The setting's name for policy (PSD_KILL_*); "Off" for anything else. */
 const char *psdoom_effect_name(int policy);
 
+/* The setting a launch starts at, given the saved one: "Wounds and kills"
+ * lasts only until quit (as in psQuake), so a saved one starts at Wounds
+ * only; Off and Wounds only carry over; anything unknown starts at Wounds
+ * only. The -psdoom-live flag still opts in for one run. */
+int psdoom_effect_at_launch(int saved);
+
 /* The setting's help: what a wound (line1) and a kill (line2) do under
  * policy, from the plugin's words (NULL or "" when it gave none). line2 is ""
  * when one line says it all. */
