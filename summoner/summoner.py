@@ -1044,18 +1044,26 @@ def refresh(cfg, words=()):
         desc = describe(cfg)
         applied, notes, pwords = apply_request(req, desc, unknown)
         killed = read_killed(cfg)
+        extra = 0
         if applied["limit"] and killed:
             # Killed items the plugin still lists are dropped below, so ask
-            # for one more per kill it listed last time, and per kill made
-            # since on an item the cache served. Exited kills cost nothing.
+            # for one more per kill it listed last time (for this request;
+            # for another one, per remembered kill), and per kill made since
+            # that list. A kill whose item has gone costs nothing for long.
             old = read_cache(cfg) or {}
-            extra = old.get("killed_listed", 0)
-            extra = extra if isinstance(extra, int) and extra >= 0 else 0
-            extra += sum(1 for it in old.get("items", [])
-                         if it.get("id") in killed)
+            if old.get("request") == request_key(req):
+                extra = old.get("killed_listed", 0)
+                extra = extra if isinstance(extra, int) and extra >= 0 else 0
+                since = old.get("fetched_at", 0)
+                since = since if _is_num(since) else 0
+                extra += sum(1 for t in killed.values() if t >= since)
+            else:
+                extra = len(killed)
             more = min(LIMIT_MAX, applied["limit"] + extra)
             pwords = [("limit=%d" % more) if w.startswith("limit=") else w
                       for w in pwords]
+        # max_items cuts before the kills are dropped: leave room for them.
+        cfg = dict(cfg, max_items=int(cfg["max_items"]) + extra)
         # A plugin that declares no dimensions gets the plain `list`.
         code, out = run_plugin(cfg, ["list"] + (pwords if desc["dimensions"]
                                                 else []))
@@ -1223,17 +1231,27 @@ def cmd_poll(cfg, words=()):
         spawn_refresher(cfg, list(words) +
                         ["host_pids=" + ",".join(str(p) for p in chain or [])])
         spawned = True
-    if (cache is None or changed) and not by_cut and \
+    killed = read_killed(cfg)
+    # A kill since this entry was made leaves a hole in it: wait for the
+    # refill as for a new request, so the next poll lists the next item,
+    # not the killed one and not one fewer.
+    kill_after = 0
+    if cache is not None and not changed:
+        made = cache.get("fetched_at", 0)
+        made = made if _is_num(made) else 0
+        kill_after = max([t for t in killed.values() if t >= made] or [0])
+    if (cache is None or changed or kill_after) and not by_cut and \
             (spawned or refresher_running(cfg)):
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
         while time.monotonic() < deadline:
             fresh = read_cache(cfg)
-            if fresh is not None and fresh.get("request") == key:
+            if fresh is not None and fresh.get("request") == key and \
+                    (not kill_after or fresh.get("fetched_at", 0) > kill_after):
                 cache = fresh
                 break
             time.sleep(0.02)
+        killed = read_killed(cfg)
     items = cache["items"] if cache else []
-    killed = read_killed(cfg)
     if killed:
         # Killed in the game: never sent again, whichever entry answers.
         items = [it for it in items if it.get("id") not in killed]
@@ -1350,6 +1368,13 @@ def _respond(cfg, argv):
         audit(cfg, dict(entry, outcome="unknown-id"))
         return 0
     entry.update(action=pverb, key=item["key"], name=item["name"])
+    if pverb == "remove":
+        # The game killed this monster, whatever happens below (a label
+        # that no longer matches, a dry run, a blocked, rate-limited or
+        # failed kill): remember it, so no get sends it again. Ids are never
+        # reused, so the id is the item, whatever its name is now.
+        with Locked(state_path(cfg, "state.lock")):
+            remember_kill(cfg, item["id"], time.time())
     game_label = extras.get("label")
     if game_label is not None and game_label != item["label"]:
         # The game names the monster it hit; if this id now lists something
@@ -1361,12 +1386,6 @@ def _respond(cfg, argv):
             "\x00" in key or len(key) > KEY_MAX:
         audit(cfg, dict(entry, outcome="bad-key"))
         return 0
-    if pverb == "remove":
-        # The game killed this monster, whatever happens to the item below
-        # (dry run, blocked, rate-limited, failed): remember it, so no get
-        # sends it again and the game never respawns it.
-        with Locked(state_path(cfg, "state.lock")):
-            remember_kill(cfg, item["id"], time.time())
     desc = cache.get("describe") or {}
     if pverb not in (desc.get("verbs") or []):
         audit(cfg, dict(entry, outcome="unsupported"))

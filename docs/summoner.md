@@ -214,8 +214,13 @@ killed item it still listed last time (plus kills made since), drops the killed 
 then cuts to `limit`, so the top N still fills; a kill whose item has gone costs nothing.
 A kill is never forgotten for not being listed: ids are never reused, and a process ranked
 below the limit is still alive. Only the oldest kills beyond `KILLED_MAX` (4096) are
-dropped. A wound (`post`) is never remembered, and a kill marks the cache dirty so the next
-poll refills the list.
+dropped. A wound (`post`) is never remembered. A kill counts whatever `label=` the game
+names (the id is the item), and marks the cache dirty: the next `get` waits up to
+`first_poll_wait_ms` for a list made after the kill, so at `limit=1` it lists the next item,
+not the killed one and not nothing.
+
+Kills last across game levels and sessions, for every game that uses the same root and
+plugin. To bring killed items back, delete `<state_dir>/killed.json` while no game runs.
 
 ### Order: the plugin curates
 

@@ -1438,7 +1438,7 @@ static int script_list(psd_proc_t *out, int max)
     if (script_worker != 1)
     {
         /* No thread could be made: poll here, blocking, as before. After a
-         * slow poll the last list stands for a second before the next. */
+         * slow or failed poll, the next waits a second, not one tic. */
         int n;
 
         if (script_mono_ms() < script_block_next_ms)
@@ -1448,7 +1448,7 @@ static int script_list(psd_proc_t *out, int max)
         rc = script_run_capture(cmd, script_job_buf, (int) sizeof(script_job_buf),
                                 script_timeout_ms, &cut, &exit_status);
         n = script_consume(rc, cut, exit_status, script_job_buf, out, max);
-        if (n < 0)
+        if (n < 0 || script_poll_failing)
         {
             script_block_next_ms = script_mono_ms() + SCRIPT_BLOCKING_RETRY_MS;
         }

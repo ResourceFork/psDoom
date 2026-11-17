@@ -1198,7 +1198,8 @@ class CliTests(Base):
              ("post", "post-only", "ok", None),
              ("delete", "dryrun", "label-mismatch", None),
              ("delete", "dryrun", "unknown-id", None)])
-        want = ["P03", "P04", "P05", "P06", "P07", "P08"]
+        # A kill is a kill whatever label the game names: P04 goes too.
+        want = ["P03", "P05", "P06", "P07", "P08", "P09"]
         self.assertEqual(self._wait_labels(("limit=6",), want), want)
         self._reap_refresher(self.configs[-1])
 
@@ -1206,13 +1207,15 @@ class CliTests(Base):
         # Monster count 1: the one monster is killed under Wounds only, so
         # its process keeps running and the plugin still ranks it first.
         # The next poll lists the next item: not A again, and not nothing.
-        self.named("dim", self._ranked(4), spec=self._kill_spec())
+        self.named("dim", self._ranked(4), spec=self._kill_spec(list_sleep=0.3))
         self.r("use", "dim")
         rows = self.wait_rows(words=("limit=1",))
         self.assertEqual([r["label"] for r in rows], ["P00"])
+        self._reap_refresher(self.configs[-1])
         self.r("delete", rows[0]["id"], "label=P00", "mode=post-only")
-        self.assertEqual(self._wait_labels(("limit=1",), ["P01"]), ["P01"])
-        self.assertEqual(self._wait_labels(("limit=1",), ["P01"]), ["P01"])
+        for _ in range(5):            # the very next poll, and those after
+            self.assertEqual([r["label"] for r in self.get(words=("limit=1",))],
+                             ["P01"])
         self._reap_refresher(self.configs[-1])
 
     def test_kill_after_the_item_left_the_cache_is_remembered(self):

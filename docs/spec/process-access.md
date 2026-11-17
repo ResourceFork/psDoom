@@ -13,7 +13,8 @@
    stands (no monster is read as exited) and the next poll starts. Only when no poll has
    answered yet, or on the 6th such timeout in a row, does it list nothing. A poll that
    cannot be run, or lists nothing because it exited non-zero or printed only
-   `# summon error`, lists nothing at once. Then there are no process monsters and no
+   `# summon error`, lists nothing at once (so does a poll that cannot even be started,
+   for example when `fork` fails under a real fork bomb). Then there are no process monsters and no
    action. The latest reason is shown on the HUD and logged once per failure streak. A
    poll that times out after complete lines still uses those lines.
 5. psDoom calls `kill()` in one place only: the script backend killing **its own** timed-out

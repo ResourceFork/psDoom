@@ -24,10 +24,12 @@ Where things live:
   limit only tighter; it cannot change the command, name or state directory. A plugin that
   is not built in is dry run, with remove off, unless its config says otherwise.
 - **Ids:** one map per root, never reused, failing closed if lost.
-- **Killed ids:** every `delete` for an id Summoner issued (any mode, any outcome, listed
-  now or not) is remembered in the plugin's state (`killed.json`). `get` never lists that
-  id again, and a refresh asks the plugin for `limit` plus one per killed item it still
-  lists, then drops them before the cut. Kills are kept until 4096 newer ones push them out.
+- **Killed ids:** every `delete` for an id Summoner issued (any mode, any outcome, any
+  label, listed now or not) is remembered in the plugin's state (`killed.json`). `get`
+  never lists that id again; after a kill it waits for a list made after it, so the top N
+  is refilled on the next poll. A refresh asks the plugin for `limit` plus one per killed
+  item it still lists, then drops them before the cut. Kills are kept across sessions until
+  4096 newer ones push them out; deleting `killed.json` resets them.
 
 ## Plugins
 
