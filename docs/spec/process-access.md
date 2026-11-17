@@ -9,9 +9,12 @@
    `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, the Command Line Tools', then
    Xcode's. It never uses the `/usr/bin/python3` install shim.
 4. If Summoner is missing or no `python3` is found, the backend is `proc_none_backend`.
-   If a poll does not answer, or lists nothing because it exited non-zero or printed only
-   `# summon error`, that poll lists nothing. Either way there are no process monsters and
-   no action. The latest reason is shown on the HUD and logged once per failure streak. A
+   A poll that times out before its first line is slow, not empty: the last good list
+   stands (no monster is read as exited) and the next poll starts. Only when no poll has
+   answered yet, or after 5 such timeouts in a row, does it list nothing. A poll that
+   cannot be run, or lists nothing because it exited non-zero or printed only
+   `# summon error`, lists nothing at once. Then there are no process monsters and no
+   action. The latest reason is shown on the HUD and logged once per failure streak. A
    poll that times out after complete lines still uses those lines.
 5. psDoom calls `kill()` in one place only: the script backend killing **its own** timed-out
    child process group, or its own poll still running when psDoom exits normally (not on

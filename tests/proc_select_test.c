@@ -903,6 +903,53 @@ static void test_script_poll_timeout_drops_partial_line(void)
     CHECK(index_of(out, n, 42) < 0);
 }
 
+/* A poll that times out without a line keeps the last good list: list()
+ * says "no new list yet" (-1), so the game keeps its monsters, and polls
+ * again. Only a streak of timeouts (Summoner truly not answering) turns
+ * into "lists nothing", the spec's fail-safe. Here the first poll answers
+ * and every later one hangs past its 300 ms timeout. */
+static void test_script_poll_timeout_keeps_last_list(void)
+{
+    char               flag[512];
+    char               poll[1200];
+    psd_proc_t         out[4];
+    unsigned long long t0;
+    unsigned long long first_zero = 0;
+    int                n;
+    int                positive_after = 0;
+
+    snprintf(flag, sizeof(flag), "%s/psd_answered_%d", test_tmpdir(), (int) getpid());
+    unlink(flag);
+    snprintf(poll, sizeof(poll),
+             "if [ -e '%s' ]; then sleep 5; else : > '%s'; "
+             "printf 'id=7\\nid=8\\n'; fi", flag, flag);
+    proc_script_install(poll, NULL, 300);
+    n = psd_test_list_wait(out, 4);
+    CHECK(n == 2);
+
+    t0 = test_mono_ms();
+    while (test_mono_ms() - t0 < 6000)
+    {
+        n = proc_backend()->list(out, 4);
+        if (n > 0)
+        {
+            positive_after++;
+        }
+        if (n == 0)
+        {
+            first_zero = test_mono_ms() - t0;
+            break;
+        }
+        usleep(5000);
+    }
+    /* Never a new list while it hangs; "nothing" only after the streak
+     * (5 timeouts of 300 ms), never on the first timeout. */
+    CHECK(positive_after == 0);
+    CHECK(first_zero >= 1200);
+    CHECK(proc_script_status() != NULL);
+    unlink(flag);
+}
+
 /* The commands run in a background process group, so they get /dev/null as
  * stdin rather than the game's (a terminal read would stop them with
  * SIGTTIN). Here the game's stdin is a pipe nobody writes: `cat` would block
@@ -1266,6 +1313,7 @@ int main(int argc, char **argv)
     test_script_children_inherit_no_fds();
     test_script_parse_drops_overlong_line();
     test_script_poll_timeout_drops_partial_line();
+    test_script_poll_timeout_keeps_last_list();
     test_script_children_stdin_is_devnull();
     test_script_children_inherit_no_fds_above_limit();
     test_script_poll_does_not_block_caller();

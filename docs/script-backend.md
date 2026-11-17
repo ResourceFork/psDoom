@@ -30,9 +30,9 @@ If `PSDOOM_POLL_CMD` is unset, psDoom runs the Summoner bundled in the app
 (`Contents/Resources/summoner`) with a `python3` it finds without a shell
 (Homebrew's, then the Command Line Tools' or Xcode's real one; never the
 `/usr/bin/python3` install shim). psDoom has **no native process backend**: if
-Summoner is missing, no `python3` is found, or a poll does not answer, there
+Summoner is missing, no `python3` is found, or a poll fails, there
 are no process monsters, psDoom says why once (log and HUD), and nothing is
-acted on. The variables are for development: pointing psDoom at another
+acted on. A poll that only times out keeps the last list, up to 5 in a row. The variables are for development: pointing psDoom at another
 script, or at a `summon` with `--root` or `--plugin`.
 
 ## Poll output — what the game reads

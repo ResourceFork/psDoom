@@ -55,6 +55,7 @@ extern char **environ;
 #define SCRIPT_ARGV_MAX      64   /* argv slots for the response command         */
 #define SCRIPT_SNAPSHOT_MAX 4096  /* cached entities for label lookup            */
 #define SCRIPT_RESULT_MAX_WAIT_MS 1000 /* a result kept longer (plus the timeout) is dropped */
+#define SCRIPT_TIMEOUT_GRACE  5   /* timeouts in a row that keep the last list    */
 
 /* ------------------------------------------------------------------- state */
 
@@ -72,6 +73,11 @@ static int  script_resp_nfixed;
 static char script_status[160];
 static int  script_poll_failing;
 static int  script_timeout_ms = 1000;
+/* A poll that times out keeps the last good list (list() says "no new
+ * list yet"), up to SCRIPT_TIMEOUT_GRACE in a row; only then, or with no
+ * good list yet, does it list nothing. */
+static int  script_have_list;   /* a poll answered since install       */
+static int  script_timeouts;    /* timeouts in a row with no answer     */
 
 /* The last poll's entities, kept so a response can attach the entity's label
  * (the vtable's renice/kill receive only an id). */
@@ -1226,6 +1232,18 @@ static int script_consume(int rc, int cut, int exit_status, const char *buf,
     int          n;
     int          i;
 
+    if (rc >= 0 && cut && strchr(buf, '\n') == NULL && script_have_list
+        && ++script_timeouts < SCRIPT_TIMEOUT_GRACE)
+    {
+        /* Slow, not gone: keep the last list (and its labels) and poll
+         * again. Every process monster stays; none is read as exited. */
+        if (script_timeouts == 1)
+        {
+            fprintf(stderr, "psDoom: the process list was slow; keeping the "
+                    "last one (poll: %s)\n", script_poll_cmd);
+        }
+        return -1;
+    }
     if (rc < 0 || (cut && strchr(buf, '\n') == NULL))
     {
         /* No process monsters until a poll works again; say why once. */
@@ -1259,6 +1277,8 @@ static int script_consume(int rc, int cut, int exit_status, const char *buf,
         script_last_n = 0;
         return 0;
     }
+    script_have_list = 1;
+    script_timeouts  = 0;
     if (script_poll_failing)
     {
         fprintf(stderr, "psDoom: Summoner answers again\n");
@@ -1488,6 +1508,8 @@ void proc_script_install(const char *poll_cmd, const char *respond_cmd,
     script_status[0]    = '\0';
     script_poll_failing = 0;
     script_timeout_ms = (timeout_ms > 0) ? timeout_ms : 1000;
+    script_have_list  = 0;
+    script_timeouts   = 0;
     script_last_n     = 0;
     script_ndims      = 0;
     script_applied[0] = '\0';
