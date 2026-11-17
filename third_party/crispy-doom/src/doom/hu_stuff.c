@@ -635,6 +635,11 @@ void HU_Start(void)
     message_dontfuckwithme = false;
     message_nottobefuckedwith = false;
     secret_on = false;
+    // [psdoom] A level change can close an open chat line: end its text input.
+    if (chat_on)
+    {
+        I_StopTextInput();
+    }
     chat_on = false;
 
     // [crispy] re-calculate WIDESCREENDELTA

@@ -2,7 +2,8 @@
  * psDoom -- fullscreen shortcut and mouse grab tests.
  *
  * Exercises the production key and mouse grab predicates without creating an
- * SDL window.
+ * SDL window. text_input_test.c, linked in and run from main, starts SDL's
+ * dummy video driver with a hidden window (nothing reaches the screen).
  */
 
 #include "i_video_window.h"

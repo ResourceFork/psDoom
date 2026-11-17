@@ -388,6 +388,12 @@ add_test(NAME psdoom_no_raw_backend_actions
     COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/no_raw_backend_actions.cmake")
 
+# SetVideoMode turns SDL text input off once the window exists, so macOS
+# shows no press-and-hold accent popup in play (static check of i_video.c).
+add_test(NAME psdoom_text_input_sync_call
+    COMMAND ${CMAKE_COMMAND} -DPSD_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_input_sync_call.cmake")
+
 if(NOT DEFINED EMSCRIPTEN)
     add_executable(psdoom_window_state_tests EXCLUDE_FROM_ALL
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/window_state_test.c"

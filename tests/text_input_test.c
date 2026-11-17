@@ -69,8 +69,9 @@ void M_BindFloatVariable(const char *name, float *variable)
 /* Press 'a' and return the typed char (data3) the game sees. With vanilla
  * keyboard mapping it comes from the key code; otherwise from the
  * SDL_TEXTINPUT the macOS input method queues after the key down, which only
- * arrives while SDL text input is active (sdl2-compat cannot take one pushed
- * by the application, so the test checks that state instead). */
+ * arrives while SDL text input is active. sdl2-compat crashes on an
+ * SDL_TEXTINPUT the application pushes, so for that mode the test checks the
+ * SDL state only, and typing in a field is part of the live check. */
 static int type_a(void)
 {
     SDL_Event key;
@@ -100,7 +101,10 @@ static void check_modes(int vanilla)
      * built from key codes, so SDL text input (and the popup) stays off. */
     I_StartTextInput(0, 0, 0, 0);
     CHECK(SDL_IsTextInputActive() == !vanilla);
-    CHECK(type_a() == (vanilla ? 'a' : 0));
+    if (vanilla)
+    {
+        CHECK(type_a() == 'a');
+    }
 
     /* Closing the prompt (Enter or Escape) returns to play. */
     I_StopTextInput();
@@ -110,7 +114,10 @@ static void check_modes(int vanilla)
     /* Chat and the Crispness numeric entry use the same pair. */
     I_StartTextInput(0, 8, 320, 16);
     CHECK(SDL_IsTextInputActive() == !vanilla);
-    CHECK(type_a() == (vanilla ? 'a' : 0));
+    if (vanilla)
+    {
+        CHECK(type_a() == 'a');
+    }
     I_StopTextInput();
     CHECK(!SDL_IsTextInputActive());
 

@@ -279,6 +279,11 @@ void HU_Start(void)
         message_on = false;
         message_dontfuckwithme = false;
         message_nottobefuckedwith = false;
+        // [psdoom] A level change can close an open chat line: end its text input.
+        if (chat_on)
+        {
+            I_StopTextInput();
+        }
         chat_on = false;
 
         // create the message widget

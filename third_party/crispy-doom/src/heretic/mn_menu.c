@@ -2124,6 +2124,9 @@ boolean MN_Responder(event_t * event)
                 {
                     key = KEY_ESCAPE;
                     FileMenuKeySteal = false;
+                    // [psdoom] Close the save-name field's text input, as
+                    // MN_DeactivateMenu only does while FileMenuKeySteal is set.
+                    I_StopTextInput();
                 }
                 else
                 {
