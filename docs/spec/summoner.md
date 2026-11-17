@@ -24,6 +24,10 @@ Where things live:
   limit only tighter; it cannot change the command, name or state directory. A plugin that
   is not built in is dry run, with remove off, unless its config says otherwise.
 - **Ids:** one map per root, never reused, failing closed if lost.
+- **Killed ids:** every `delete` for a listed item (any mode, any outcome) is remembered in
+  the plugin's state (`killed.json`). `get` never lists that id again, and a refresh asks
+  the plugin for `limit` plus one per remembered kill, then drops them before the cut. A
+  killed id the plugin has not listed for an hour is forgotten (its item is gone).
 
 ## Plugins
 

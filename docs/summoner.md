@@ -202,6 +202,18 @@ an id must never name two entities at once.
 The processes plugin keys a process as `<pid>@<start time>`, so a pid the OS reuses becomes a
 new key, a new id and a new monster, and the plugin re-checks the start time before it acts.
 
+### Killed ids
+
+Every `delete` the game sends for a listed item is a kill in the game, whatever the mode
+then lets the plugin do (a dry run, a blocked or rate-limited kill, a failed one). Summoner
+remembers that id in the plugin's state (`killed.json`) and never lists it again, so the
+game never respawns a monster for it, even when the item itself is still there (a process
+killed under No effect or Wounds only keeps running). A refresh asks the plugin for
+`limit` plus one per remembered kill and drops the killed ones before cutting to `limit`,
+so the top N still fills. A killed id the plugin has not listed for `KILLED_FORGET_S`
+(an hour) is forgotten; ids are never reused, so it cannot come back as another item. A
+wound (`post`) is never remembered.
+
 ### Order: the plugin curates
 
 Summoner **never re-sorts**. The plugin's order is the poll's order, and psDoom keeps it

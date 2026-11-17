@@ -27,8 +27,10 @@ Full text: [script-backend.md](../script-backend.md).
   and those are the monsters. Lowering the count prunes the lowest-ranked: they leave the
   list and teleport out as an exited process's monster does, with no wound, no kill and
   no responder call. Raising it brings in the next-ranked. A script that declares no
-  dimensions gets no `limit`, so only new spawns stop at the count. A process killed this
-  level that stays listed keeps its place in the N and gets no new monster.
+  dimensions gets no `limit`, so only new spawns stop at the count. Summoner never lists
+  an id the game killed again, so a killed process that keeps running leaves room for the
+  next; a script of its own must drop the ids it was sent `delete` for, or a killed one
+  keeps its place in the N and gets no new monster.
 - Grades are relative to what was listed: with `limit` at the count they spread over the
   N monsters, so the lowest-ranked live monster takes the lightest tier.
 - The host keeps the order and filters nothing; who owns what is in

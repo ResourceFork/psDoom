@@ -62,6 +62,7 @@ ID_MAX = 2147483647
 KEY_MAX = 1024            # longest plugin key Summoner accepts
 OUTPUT_CAP = 8 * 1024 * 1024  # max bytes read from one plugin call
 ID_MAP_CAP = 100000       # keys remembered; the id counter never goes back
+KILLED_FORGET_S = 3600    # a killed id not listed this long is forgotten
 
 # The words the game (and you) send map to plugin verbs.
 VERB_MAP = {"post": "nudge", "delete": "remove"}
@@ -968,6 +969,34 @@ def _link_parents(items):
             it["parent"] = 0
 
 
+# ----------------------------------------------------------------- killed --
+
+def read_killed(cfg):
+    """The ids the game has killed: {id: last time the plugin listed it}.
+    Kept per state dir in killed.json. Ids are never reused, so a killed id
+    stands for that one item for good."""
+    k = read_json(state_path(cfg, "killed.json"), {})
+    ids = k.get("ids") if isinstance(k, dict) else None
+    out = {}
+    if isinstance(ids, dict):
+        for key, seen in ids.items():
+            if key.isdigit() and _is_num(seen):
+                out[int(key)] = float(seen)
+    return out
+
+
+def write_killed(cfg, killed):
+    write_json_atomic(state_path(cfg, "killed.json"), {
+        "version": 1, "ids": {str(i): t for i, t in killed.items()}})
+
+
+def remember_kill(cfg, ident, now):
+    """Record that the game killed `ident`. Call under state.lock."""
+    killed = read_killed(cfg)
+    killed[int(ident)] = now
+    write_killed(cfg, killed)
+
+
 # ------------------------------------------------------------------ cache --
 
 def refresh(cfg, words=()):
@@ -992,6 +1021,13 @@ def refresh(cfg, words=()):
             pass        # removed only once this refresh has written a cache
         desc = describe(cfg)
         applied, notes, pwords = apply_request(req, desc, unknown)
+        killed = read_killed(cfg)
+        if applied["limit"] and killed:
+            # Killed items the plugin still lists are dropped below, so ask
+            # for one more per remembered kill and the head still fills.
+            more = min(LIMIT_MAX, applied["limit"] + len(killed))
+            pwords = [("limit=%d" % more) if w.startswith("limit=") else w
+                      for w in pwords]
         # A plugin that declares no dimensions gets the plain `list`.
         code, out = run_plugin(cfg, ["list"] + (pwords if desc["dimensions"]
                                                 else []))
@@ -1001,11 +1037,23 @@ def refresh(cfg, words=()):
         primary = applied["sort"][0][0] if applied["sort"] else None
         cfg = dict(cfg, _applied_dirs={a: b for a, b in applied["sort"]})
         items = normalize(raw, desc, cfg, primary)
-        if applied["limit"]:
-            items = items[:applied["limit"]]
         now = round(time.time(), 3)
         with Locked(state_path(cfg, "state.lock")):
             assign_ids(cfg, items, now)
+            # The game killed these: never list them again. A killed id the
+            # plugin no longer lists for KILLED_FORGET_S is forgotten (its
+            # item is gone; ids are never reused).
+            killed = read_killed(cfg)
+            if killed:
+                for it in items:
+                    if it["id"] in killed:
+                        killed[it["id"]] = now
+                killed = {i: t for i, t in killed.items()
+                          if now - t < KILLED_FORGET_S}
+                write_killed(cfg, killed)
+                items = [it for it in items if it["id"] not in killed]
+            if applied["limit"]:
+                items = items[:applied["limit"]]
             write_json_atomic(state_path(cfg, "cache.json"), {
                 "version": 1,
                 "fetched_at": now,
@@ -1164,6 +1212,10 @@ def cmd_poll(cfg, words=()):
                 break
             time.sleep(0.02)
     items = cache["items"] if cache else []
+    killed = read_killed(cfg)
+    if killed:
+        # Killed in the game: never sent again, whichever entry answers.
+        items = [it for it in items if it.get("id") not in killed]
     if chain is None:
         # The calling chain could not be read: fail closed, serving nothing
         # that stands for a local process.
@@ -1280,6 +1332,12 @@ def _respond(cfg, argv):
             "\x00" in key or len(key) > KEY_MAX:
         audit(cfg, dict(entry, outcome="bad-key"))
         return 0
+    if pverb == "remove":
+        # The game killed this monster, whatever happens to the item below
+        # (dry run, blocked, rate-limited, failed): remember it, so no get
+        # sends it again and the game never respawns it.
+        with Locked(state_path(cfg, "state.lock")):
+            remember_kill(cfg, item["id"], time.time())
     desc = cache.get("describe") or {}
     if pverb not in (desc.get("verbs") or []):
         audit(cfg, dict(entry, outcome="unsupported"))

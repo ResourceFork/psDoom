@@ -28,6 +28,9 @@ It MUST NOT know anything about processes or games.
 - It decides from the mode whether an event runs the plugin's wound action, its kill action,
   or nothing. The user's optional config MAY only restrict that further.
 - It owns the ids, the request-keyed cache and the audit log.
+- It owns the inventory of killed ids: every `delete` the game sends for a listed item is
+  a kill in the game, whatever the mode lets the plugin do. That id is never sent again,
+  and the plugin is asked for one more item per remembered kill, so the top N still fills.
 
 ## The plugin (for example `ps`) is trusted and owns its domain
 
