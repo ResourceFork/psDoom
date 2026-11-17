@@ -148,6 +148,7 @@ static void test_poll_limit_is_the_monster_cap(void)
     pl_poll(args, last, sizeof(last));
     PL_CHECK(strcmp(last, "[limit=35]") == 0);
 
+    psdoom_monster_cap = 10;   /* the shipped default, for later tests */
     proc_backend_set(NULL);
     unlink(script);
     unlink(args);

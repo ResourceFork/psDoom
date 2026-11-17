@@ -37,7 +37,8 @@ Where things live:
   plugin's list.
 - `get` lists at most `limit` items, the head of the plugin's order. The cache is keyed by
   the request: a changed request refreshes, but a lower `limit` with the same sort and group
-  is answered at once by the head of the entry made for more.
+  is answered at once by the head of the entry made for more, with that entry's grades and
+  notes until the refresh lands. The caller's own chain is dropped before the cut.
 - Summoner validates the request against the dimensions. An unknown id is dropped with a
   `# summon:` note and replaced by the default sort; the poll never fails.
 

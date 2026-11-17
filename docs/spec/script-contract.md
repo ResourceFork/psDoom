@@ -19,10 +19,15 @@ Full text: [script-backend.md](../script-backend.md).
   as printable ASCII, and never acts on them.
 - Once dimensions are declared, the host appends `limit=<n>` and, if the player chose one,
   `sort=<id>` to the poll command. Only `[a-z][a-z0-9_]{0,15}` ids and digits are appended.
-- `limit` is the player's monster count (*Max live monsters*, 5..35), read at each poll, so
-  the script's top N in its sort order are the monsters. Lowering the count prunes the
-  lowest-ranked: they leave the list and teleport out as an exited process's monster does,
-  with no wound, no kill and no responder call. Raising it brings in the next-ranked.
+- `limit` is the player's monster count (*Max live monsters*, 5..35), sent on each poll
+  once the count changes, so a script that honours it lists its top N in its sort order,
+  and those are the monsters. Lowering the count prunes the lowest-ranked: they leave the
+  list and teleport out as an exited process's monster does, with no wound, no kill and
+  no responder call. Raising it brings in the next-ranked. A script that declares no
+  dimensions gets no `limit`, so only new spawns stop at the count. A process killed this
+  level that stays listed keeps its place in the N and gets no new monster.
+- Grades are relative to what was listed: with `limit` at the count they spread over the
+  N monsters, so the lowest-ranked live monster takes the lightest tier.
 - The host keeps the order and filters nothing; who owns what is in
   [separation of concerns](separation-of-concerns.md).
 - The host polls about once a second, one poll at a time, off its game thread: a frame never

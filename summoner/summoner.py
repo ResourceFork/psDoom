@@ -1156,9 +1156,6 @@ def cmd_poll(cfg, words=()):
                 break
             time.sleep(0.02)
     items = cache["items"] if cache else []
-    if req["limit"]:
-        # Never more than asked for, whichever entry answers.
-        items = items[:req["limit"]]
     if chain is None:
         # The calling chain could not be read: fail closed, serving nothing
         # that stands for a local process.
@@ -1166,6 +1163,10 @@ def cmd_poll(cfg, words=()):
     else:
         mine = set(chain)
         items = [it for it in items if it.get("pid") not in mine]
+    if req["limit"]:
+        # Never more than asked for, whichever entry answers; cut after the
+        # caller's own chain is dropped, so a cut entry still lists N.
+        items = items[:req["limit"]]
     sys.stdout.write(render(items, effects_for(cfg, cache)))
     return 0
 

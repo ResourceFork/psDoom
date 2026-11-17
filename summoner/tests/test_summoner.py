@@ -1093,6 +1093,40 @@ class CliTests(Base):
         self.assertLess(elapsed, 0.6)
         self._reap_refresher(self.configs[-1])
 
+    def test_changed_sort_is_not_answered_by_a_cut(self):
+        # Only a lower limit with the same sort and group is answered by
+        # the old entry's head; a new sort waits for its own refresh.
+        req = lambda *w: H.canonical_request(list(w))[0]
+        entry = {"request": H.request_key(req("sort=size:desc", "limit=10"))}
+        self.assertTrue(H.answers_by_cut(entry, req("sort=size:desc", "limit=3")))
+        self.assertFalse(H.answers_by_cut(entry, req("sort=size:asc", "limit=3")))
+        self.assertFalse(H.answers_by_cut(entry, req("limit=3")))
+        self.assertFalse(H.answers_by_cut(
+            entry, req("sort=size:desc", "group=team", "limit=3")))
+        self.assertFalse(H.answers_by_cut(entry, req("sort=size:desc", "limit=12")))
+        self.assertFalse(H.answers_by_cut(entry, req("sort=size:desc")))
+        whole = {"request": H.request_key(req("sort=size:desc"))}
+        self.assertTrue(H.answers_by_cut(whole, req("sort=size:desc", "limit=3")))
+        self.assertFalse(H.answers_by_cut({"request": "not json"}, req("limit=3")))
+        self.assertFalse(H.answers_by_cut({}, req("limit=3")))
+
+    def test_cut_is_made_after_the_callers_chain_is_dropped(self):
+        # An entry item standing for the caller itself is dropped first, so a
+        # cut entry still lists `limit` items.
+        me = os.getpid()
+        items = [{"key": "me", "name": "Me", "pid": me, "size": 200}] + \
+            self._ranked()
+        self.named("dim", items, spec=self.dims_spec())
+        self.r("use", "dim")
+        self.wait_rows(words=("limit=10",))
+        self._reap_refresher(self.configs[-1])
+        spec = self.dims_spec()
+        spec["list_sleep"] = 3
+        self.named("dim", items, spec=spec)
+        three = self.get(words=("limit=3",))
+        self.assertEqual([r["label"] for r in three], ["P00", "P01", "P02"])
+        self._reap_refresher(self.configs[-1])
+
     def test_raised_limit_is_not_answered_from_a_smaller_entry(self):
         # A raised limit cannot be answered from an entry made for fewer
         # items: the refresh runs and its longer list is served.

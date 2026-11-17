@@ -217,7 +217,8 @@ every dimension and `# sort` / `# group` lines for what was applied; items carry
 `first_poll_wait_ms`) instead of serving an answer to the old question. One case is answered
 at once: a lower `limit` with the same sort and group is the head of the entry made for more
 items, so `get limit=3` after `get limit=10` lists exactly the first 3 of those 10 while the
-refresh runs. `get` never lists more than its `limit`, whichever entry answers.
+refresh runs; its grades and notes are that entry's until then. `get` never lists more
+than its `limit`, whichever entry answers, and cuts after dropping the caller's own chain.
 
 ### Normalisation
 
