@@ -83,6 +83,15 @@ int psd_select_child_count(int pid)
     {
         return 0;
     }
+    /* A backend that reports the count is believed: the listing holds only
+     * the top N, so most of a forking parent's children are not in it. */
+    for (i = 0; i < select_raw_count; i++)
+    {
+        if (select_raw[i].pid == pid && select_raw[i].has_children)
+        {
+            return select_raw[i].children;
+        }
+    }
     for (i = 0; i < select_raw_count; i++)
     {
         if (select_raw[i].ppid == pid)

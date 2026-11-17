@@ -145,6 +145,41 @@ static void test_child_count(void)
     CHECK(psd_select_child_count(0)   == 0);   /* guard                   */
 }
 
+/* A backend that reports a child count (`children=`) is believed over the
+ * listed children: with the list cut to the monster count, a forking
+ * parent's children are mostly not listed. Without one, the listed children
+ * are counted as before. */
+static void test_child_count_reported(void)
+{
+    psd_proc_t snap[] = {
+        mkproc(410, 1,   501, 0, 0, "forker"),
+        mkproc(411, 410, 501, 0, 0, "one listed child"),
+        mkproc(412, 1,   501, 0, 0, "counted"),
+    };
+    psd_proc_t out[16];
+    int        n;
+
+    snap[0].has_children = 1;
+    snap[0].children     = 40;
+    proc_fake_install(501);
+    proc_fake_push_snapshot(snap, 3);
+    psd_select_init();
+    (void) psd_test_collect_wait(out, 16);
+    CHECK(psd_select_child_count(410) == 40);  /* reported, not 1 listed */
+    CHECK(psd_select_child_count(412) == 0);   /* not reported: counted  */
+
+    /* The script contract carries it: children=N, a whole number >= 0. */
+    n = psd_script_parse("id=7\tchildren=12\tlabel=a\n"
+                         "id=8\tchildren=-3\n"
+                         "id=9\tchildren=x\n"
+                         "id=10\n", out, 16);
+    CHECK(n == 4);
+    CHECK(n == 4 && out[0].has_children == 1 && out[0].children == 12);
+    CHECK(n == 4 && out[1].has_children == 0);
+    CHECK(n == 4 && out[2].has_children == 0);
+    CHECK(n == 4 && out[3].has_children == 0);
+}
+
 /* ---- script backend: contract parser + a real subprocess round-trip ------ */
 
 /* The poll parser (docs/script-backend.md): tab-separated key=value, comments
@@ -1304,6 +1339,7 @@ int main(int argc, char **argv)
 
     test_collect_and_action_log();
     test_child_count();
+    test_child_count_reported();
     test_script_parse();
     test_script_parse_truncates();
     test_script_backend_roundtrip();

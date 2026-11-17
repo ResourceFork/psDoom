@@ -198,6 +198,11 @@ def items(rows, now=None):
     now = time.time() if now is None else now
     keys = {r["pid"]: "%d@%s" % (r["pid"], r["start"]) for r in rows}
     names = {r["pid"]: r["name"] for r in rows}
+    # Direct children among the rows (before any trim), so a fork burst
+    # shows however few items the limit keeps.
+    kids = {}
+    for r in rows:
+        kids[r["ppid"]] = kids.get(r["ppid"], 0) + 1
     out = []
     for r in rows:
         age = None
@@ -207,6 +212,7 @@ def items(rows, now=None):
               "size": r["rss"] * 1024, "load": int(r["cpu"] + 0.5),
               "background": r["tty"] == "??",
               "pid": r["pid"],      # Summoner drops it if it is the caller
+              "children": kids.get(r["pid"], 0),
               "values": {"relevance": relevance(r), "mem": r["rss"] * 1024,
                          "cpu": r["cpu"], "age": age},
               "categories": {"app": r["name"],

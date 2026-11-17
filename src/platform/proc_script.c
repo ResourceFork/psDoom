@@ -292,6 +292,22 @@ static int script_parse_line(const char *line, psd_proc_t *p)
             strncpy(p->group, val, sizeof(p->group) - 1);
             p->group[sizeof(p->group) - 1] = '\0';
         }
+        else if (strcmp(key, "children") == 0)
+        {
+            /* The backend's own child count, a whole number >= 0; anything
+             * else is ignored. */
+            int c;
+
+            if (script_parse_int(val, 0, &c))
+            {
+                p->children     = c;
+                p->has_children = 1;
+            }
+            else
+            {
+                p->has_children = 0;
+            }
+        }
         else if (strcmp(key, "grade") == 0)
         {
             double g;

@@ -39,6 +39,11 @@ typedef struct
     /* Script backend only: the entity's group label (`group=`), "" if none.
      * Drawn above the monster's label; never part of its identity. */
     char               group[PSD_PROC_NAME_MAX];
+    /* Script backend only: the direct child count the backend reports
+     * (`children=`), believed over the listed children; has_children = 0
+     * when it sent none. */
+    int                has_children;
+    int                children;
 } psd_proc_t;
 
 #endif /* PSDOOM_PROC_TYPES_H */

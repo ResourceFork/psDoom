@@ -7,8 +7,11 @@ Full text: [script-backend.md](../script-backend.md).
 - stdout, one entity per line, TAB-separated `key=value`; `#` lines are comments.
 - `id` is required: plain decimal 2..2147483647, stable, and never names two entities.
 - The optional fields are `parent`, `label` (31 bytes drawn), `weight`, `load`, `flags`
-  (bit 0 = background), `group`, and `grade`. `grade` is a finite decimal, clamped to 0..1;
-  anything else is ignored.
+  (bit 0 = background), `group`, `grade` and `children`. `grade` is a finite decimal, clamped
+  to 0..1; anything else is ignored.
+- `children` is the entity's direct child count, a whole number 0..2147483647. When an
+  entity has one, the fork-bomb check believes it over the children the poll lists; without
+  one, the listed children are counted.
 - `grade` picks the monster: tier `min(floor(grade × N), N − 1)` over the N tiers the WAD
   draws. Without `grade`, *Monster size by* (weight or load) decides.
 - A leading block of `# dim id= kind= dir= roles= unit= label=` lines declares the

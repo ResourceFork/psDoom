@@ -32,6 +32,8 @@ Where things live:
   which `get` passes on as `# effect` header lines),
   `list [sort= group= limit=]` (JSON Lines), `nudge <key> amount=N`, `remove <key>` and
   optionally `restore`. It is run as an argv, never through a shell, with a timeout.
+- An item may carry `children`, its direct child count over everything the plugin saw; `get`
+  passes it on as `children=N`. The built-in `ps` sends it.
 - What the plugin owns, and what Summoner's core must not do, is in
   [separation of concerns](separation-of-concerns.md). `max_items` keeps the head of the
   plugin's list.

@@ -67,6 +67,7 @@ script, or at a `summon` with `--root` or `--plugin`.
 | `load` | integer (percent; `100` = one core) | no | `0` | "Load" metric. Drives monster toughness when *Classify by* is **CPU/load**. Compared against the [load ladder](#load-ladder). |
 | `flags` | integer bitmask | no | `0` | Bit `0` (`1`) = background / low-priority: ranked below interactive entities when truncating to the cap. Other bits are reserved (emit `0` if unsure). |
 | `group` | string | no | `""` | The entity's group (an app, a team, a parent). Drawn on its own line above the label when it differs from it. Truncated to 31 bytes. |
+| `children` | integer ≥ 0 | no | — | The entity's direct child count, whether or not those children are listed. When present the fork-bomb check uses it instead of counting the listed entities whose `parent` is this `id`, which matters once the list is cut to the monster count. Anything that is not plain decimal digits is ignored. |
 | `grade` | decimal number | no | — | Where the entity sits on its source's own full range: `0` = least, `1` = most. When present it **picks the monster**, overriding *Classify by* ([below](#grade)). Values below 0 or above 1 are clamped. A value that is not a finite decimal number (empty, `abc`, `0.5x`, a hex float such as `0x1p-1`, `nan`, `inf`, an overflow such as `1e999`, a leading space) is ignored, and the last valid `grade` on a line wins. |
 
 `weight` and `load` are deliberately the same two metrics the native backend reports

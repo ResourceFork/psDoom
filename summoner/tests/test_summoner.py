@@ -1160,6 +1160,21 @@ class CliTests(Base):
         self.assertTrue(res.stdout.startswith("# summon error"))
         self.assertEqual(parse_v1(res.stdout), [])
 
+    def test_get_carries_children(self):
+        # A plugin's child count reaches the game as children=N; anything
+        # that is not a whole number >= 0 is left out.
+        self.named("kids", [{"key": "a", "name": "Forker", "children": 12},
+                            {"key": "b", "name": "Leaf", "children": 0},
+                            {"key": "c", "name": "Bad", "children": -1},
+                            {"key": "d", "name": "Text", "children": "9"},
+                            {"key": "e", "name": "Bool", "children": True},
+                            {"key": "f", "name": "None"}])
+        rows = {r["label"]: r for r in self.wait_rows("--plugin", "kids")}
+        self.assertEqual(rows["Forker"].get("children"), "12")
+        self.assertEqual(rows["Leaf"].get("children"), "0")
+        for name in ("Bad", "Text", "Bool", "None"):
+            self.assertNotIn("children", rows[name], name)
+
     def test_grade_source_order_and_max_tier(self):
         # load only (no sizes): the load decides, not the rank
         self.named("loads", [{"key": "a", "name": "Busy", "load": 90},
@@ -1676,6 +1691,10 @@ class ProcessesPluginTests(Base):
         self.assertEqual(its[1]["parent"], its[0]["key"])
         self.assertTrue(its[0]["background"])
         self.assertFalse(its[1]["background"])
+        # Each item reports its direct children among the rows, so the
+        # game can see a fork burst whatever the limit keeps listed.
+        self.assertEqual(its[0]["children"], 1)
+        self.assertEqual(its[1]["children"], 0)
 
     def ps_rows(self, specs):
         rows = []

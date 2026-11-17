@@ -146,6 +146,7 @@ kill when `allow_remove` is off.
 | `size` | number ≥ 0 | no | The poll's `weight` (bytes, or scaled). If no item has a size, the position decides (first = biggest). |
 | `load` | number ≥ 0 | no | The poll's `load`. |
 | `parent` | string | no | Key of a parent item (fork-bomb grouping). Unknown parents become `0`. |
+| `children` | integer ≥ 0 | no | The item's direct child count, counted by the plugin over everything it saw, before any trim. `get` passes it on as `children=N`, so the game sees a fork burst however few items the limit lists. The built-in `ps` counts each process's children among the processes it lists. Anything but a JSON integer ≥ 0 is left out. |
 | `background` | bool | no | `true` sets the poll's `flags` bit 0. |
 
 Unknown fields are ignored, so a plugin can carry extra data for its own use.

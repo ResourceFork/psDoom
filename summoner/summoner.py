@@ -858,6 +858,12 @@ def normalize(items, desc, cfg, primary=None):
             "pid": it["pid"] if isinstance(it.get("pid"), int) and
             not isinstance(it.get("pid"), bool) and it["pid"] > 1 else None,
             "grade": None if grades[i] is None else round(grades[i], 4),
+            # The plugin's direct child count, so the game sees a fork burst
+            # whatever the limit lists: a whole number >= 0, else none.
+            "children": it["children"]
+            if isinstance(it.get("children"), int) and
+            not isinstance(it.get("children"), bool) and
+            0 <= it["children"] <= 2147483647 else None,
             "parent_key": parent if isinstance(parent, str) else None,
         })
     return out
@@ -1054,8 +1060,8 @@ def render(items, cache=None):
       # sort id=<id> dir=<asc|desc>        the applied primary sort, if any
       # group id=<id>                      the applied grouping, if any
       # summon: <note>                     a request word that was ignored
-    Items carry `grade` (0..1) and `group` (the item's group label) where
-    they have one. The label stays last so it never hides a field from a
+    Items carry `grade` (0..1), `group` (the item's group label) and
+    `children` (the plugin's direct child count) where they have one. The label stays last so it never hides a field from a
     reader that splits on TAB."""
     lines = []
     if cache:
@@ -1081,10 +1087,12 @@ def render(items, cache=None):
         g = it.get("grade")
         grade = "" if g is None else "\tgrade=%.4f" % g
         group = "\tgroup=%s" % it["group"] if it.get("group") else ""
-        lines.append("id=%d\tparent=%d\tweight=%d\tload=%d\tflags=%d%s%s"
+        kids = it.get("children")
+        kids = "" if kids is None else "\tchildren=%d" % kids
+        lines.append("id=%d\tparent=%d\tweight=%d\tload=%d\tflags=%d%s%s%s"
                      "\tlabel=%s"
                      % (it["id"], it["parent"], it["weight"], it["load"],
-                        it["flags"], grade, group, it["label"]))
+                        it["flags"], grade, group, kids, it["label"]))
     return "".join(line + "\n" for line in lines)
 
 
