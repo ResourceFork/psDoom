@@ -1149,18 +1149,19 @@ def cmd_poll(cfg, words=()):
 
 
 def effects_for(cfg, cache):
-    """The cache with its describe's effect words cut to what this config
-    lets run: none when it is dry run, no kill words when remove is off. A
-    game then shows its plain "nothing" rather than an effect that cannot
-    happen."""
+    """The cache with its describe's effect words set to what this config
+    lets run: "nothing" for both when it is dry run, and for the kill when
+    remove is off, so a game never shows an effect that cannot happen."""
     if not cache:
         return cache
     desc = dict(cache.get("describe") or {})
     eff = dict(desc.get("effects") or {})
+    # Only words the plugin declared are replaced: a plugin that gives none
+    # gets no header lines it did not ask for.
     if cfg.get("dry_run"):
-        eff = {}
-    elif not cfg["plugin"].get("allow_remove"):
-        eff.pop("delete", None)
+        eff = {k: "nothing" for k in eff}
+    elif not cfg["plugin"].get("allow_remove") and "delete" in eff:
+        eff["delete"] = "nothing"
     desc["effects"] = eff
     return dict(cache, describe=desc)
 

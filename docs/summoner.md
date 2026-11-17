@@ -124,9 +124,9 @@ or `relative` (the default). The `meaning` strings are for people (`describe` pr
 wound and a kill do to the thing behind the monster (the `ps` plugin: "lowers its priority",
 "quits the process"). `get` passes them on as `# effect verb=post|delete text=…` header
 lines, and the games show them on the effect setting's help line. Only a verb the plugin
-lists counts; anything that is not a string is left out. `get` sends only the words that
-can come true under the plugin's config: none when it is dry run, no kill words when
-`allow_remove` is off.
+lists counts; anything that is not a string is left out. `get` sends only words that can
+come true under the plugin's config: "nothing" for both when it is dry run, and for the
+kill when `allow_remove` is off.
 
 ### `list` — one JSON object per line
 

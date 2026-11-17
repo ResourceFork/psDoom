@@ -1953,9 +1953,12 @@ class EffectTests(unittest.TestCase):
         self.assertEqual(len(lines(both)), 2)
         self.assertEqual(lines({"dry_run": False,
                                 "plugin": {"allow_remove": False}}),
-                         ["# effect verb=post text=lowers its priority"])
+                         ["# effect verb=post text=lowers its priority",
+                          "# effect verb=delete text=nothing"])
         self.assertEqual(lines({"dry_run": True,
-                                "plugin": {"allow_remove": True}}), [])
+                                "plugin": {"allow_remove": True}}),
+                         ["# effect verb=post text=nothing",
+                          "# effect verb=delete text=nothing"])
         self.assertEqual(desc["effects"]["delete"], "quits the process")
 
     def test_the_poll_carries_them_as_header_lines(self):
