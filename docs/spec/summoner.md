@@ -32,8 +32,9 @@ Where things live:
   which `get` passes on as `# effect` header lines),
   `list [sort= group= limit=]` (JSON Lines), `nudge <key> amount=N`, `remove <key>` and
   optionally `restore`. It is run as an argv, never through a shell, with a timeout.
-- **The plugin is trusted and curates.** It sorts, groups, trims, grades and excludes.
-  Summoner keeps its order; `max_items` keeps the head of the list.
+- What the plugin owns, and what Summoner's core must not do, is in
+  [separation of concerns](separation-of-concerns.md). `max_items` keeps the head of the
+  plugin's list.
 - Summoner validates the request against the dimensions. An unknown id is dropped with a
   `# summon:` note and replaced by the default sort; the poll never fails.
 
