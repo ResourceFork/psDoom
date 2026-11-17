@@ -106,7 +106,7 @@ Summoner which monster was hit and how far it may go.
 Open **Options** > **psDoom Options** to adjust how psDoom represents and acts
 on processes. Settings are saved with Doom's configuration.
 
-- **Effect via Summoner:** what a hit does to the real process. **Off** does
+- **Fighting monsters effects:** what a hit does to the real process. **No effect** does
   nothing; **Wounds only**, the default, lets a wound lower the process's
   priority (renice) and a kill do nothing; **Wounds and kills** also lets
   defeating a monster quit the process (`SIGTERM`); it lasts until you quit,

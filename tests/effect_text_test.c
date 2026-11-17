@@ -25,12 +25,13 @@ extern int checks_failed;
 
 static void test_names(void)
 {
-    EF_CHECK(strcmp(psdoom_effect_name(PSD_KILL_SIMULATE), "Off") == 0);
+    EF_CHECK(strcmp(PSD_EFFECT_TITLE, "Fighting monsters effects") == 0);
+    EF_CHECK(strcmp(psdoom_effect_name(PSD_KILL_SIMULATE), "No effect") == 0);
     EF_CHECK(strcmp(psdoom_effect_name(PSD_KILL_RENICE), "Wounds only") == 0);
     EF_CHECK(strcmp(psdoom_effect_name(PSD_KILL_LIVE), "Wounds and kills")
              == 0);
-    EF_CHECK(strcmp(psdoom_effect_name(-1), "Off") == 0);
-    EF_CHECK(strcmp(psdoom_effect_name(PSD_KILL_NUM), "Off") == 0);
+    EF_CHECK(strcmp(psdoom_effect_name(-1), "No effect") == 0);
+    EF_CHECK(strcmp(psdoom_effect_name(PSD_KILL_NUM), "No effect") == 0);
 }
 
 static void test_help(void)

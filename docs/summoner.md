@@ -275,7 +275,7 @@ This tool can delete things. The defaults assume a mistake.
 
 | Guard | Default | Effect |
 | --- | --- | --- |
-| Host `mode` | `dryrun` | Sent by the game with every event (its effect setting: Off = `dryrun`, Wounds only = `post-only`, Wounds and kills = `delete`): `dryrun` runs nothing, `post-only` runs `post` and refuses `delete`, `delete` allows both. Missing or unknown = `dryrun`. Audited with `mode` and `reason: host mode`. |
+| Host `mode` | `dryrun` | Sent by the game with every event (its "Fighting monsters effects" setting: No effect = `dryrun`, Wounds only = `post-only`, Wounds and kills = `delete`): `dryrun` runs nothing, `post-only` runs `post` and refuses `delete`, `delete` allows both. Missing or unknown = `dryrun`. Audited with `mode` and `reason: host mode`. |
 | `dry_run` | `true`; built-in `ps`: `false` | A per-plugin restriction on top of the host's mode: no plugin action runs. Audited `dry-run`, `reason: plugin config`. |
 | `plugin.allow_remove` | `false`; built-in `ps`: `true` | Also on top of the mode: `delete` is audited as `blocked`; only `post` (nudge) runs. The effective action is the **stricter** of the host's mode and these two, so the built-in `ps` with no config does exactly what the mode allows. |
 | `rate_limit` | 10 actions / 60 s | Executed actions over the limit are audited as `rate-limited` and skipped. |
@@ -407,7 +407,7 @@ build/psDoom.app/Contents/MacOS/psDoom  # run from this shell so it inherits PAT
 ```
 
 Every shot is then audited in `~/.config/summoner/state/ps/audit.jsonl`. What runs is the
-game's effect setting: with **Off** each shot is audited as `dry-run` and nothing is touched;
+game's "Fighting monsters effects" setting: with **No effect** each shot is audited as `dry-run` and nothing is touched;
 **Wounds only** renices; **Wounds and kills** also quits. For a run that can never act
 whatever the setting, add `{"dry_run": true}` as `~/.config/summoner/plugins/ps.json`.
 

@@ -133,7 +133,7 @@ $PSDOOM_RESPOND_CMD <verb> <id> [key=value ...]
 | `$2` `id` | The entity `id` from the poll output. Always present. |
 | `$3…` `key=value` | Extensible, order-independent extras. Currently: `amount=<int>` (injury magnitude; present for `post`, absent for `delete`), `label=<string>` (the entity's label, when known) and `mode=<dryrun\|post-only\|delete>` (always present). Ignore keys you don't recognize. |
 
-**`mode`** is the game's effect setting, sent with every event: `dryrun` (psDoom **Off**:
+**`mode`** is the game's effect setting, sent with every event: `dryrun` (psDoom **No effect**:
 act on nothing), `post-only` (**Wounds only**: `post` may act, `delete` must not) or `delete`
 (**Wounds and kills**: both may act). These protocol words never appear in the game's menus. psDoom always reports the event and leaves the decision to the responder, so
 **a responder must honour `mode`**; treat a missing or unknown mode as `dryrun`. The

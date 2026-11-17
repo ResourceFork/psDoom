@@ -28,9 +28,11 @@ Full text: [script-backend.md](../script-backend.md).
 
 - psDoom execs the responder, never through a shell, detached, and ignores its exit code.
 - argv: `<cmd> post|delete <id> [amount=<n>] [label=<text>] mode=<dryrun|post-only|delete>`.
-- The mode follows psDoom's effect setting: Off → `dryrun`, Wounds only → `post-only`,
+- The mode follows psDoom's "Fighting monsters effects" setting: No effect → `dryrun`, Wounds only → `post-only`,
   Wounds and kills → `delete`. It is sent with every event. The protocol's words
-  (`dryrun`, `post`, `delete`) never appear in the game's menus, help or prompts.
+  (`dryrun`, `post`, `delete`) and the name Summoner never appear in player-facing
+  text (menus, help, warnings, prompts, on-screen messages); they stay in the protocol,
+  the CLI, the specs and the logs.
 - A responder **must honour `mode`**: missing or unknown means `dryrun`, and `post-only`
   never deletes. Unknown verbs and keys are no-ops that exit 0.
 - There is no version header, and the contract grows only by adding keys and verbs.

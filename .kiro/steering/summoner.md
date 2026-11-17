@@ -11,6 +11,7 @@ inclusion: always
   order, filters nothing, and sends `post` / `delete` with `mode=dryrun|post-only|delete`.
 - The effective action is the stricter of the host mode and the plugin config. The built-in
   `ps` plugin follows the host mode with no config; a `ps.json` can only restrict it. The
-  game's menus say Off / Wounds only / Wounds and kills, never dry run / post / delete.
+  game's "Fighting monsters effects" setting says No effect / Wounds only / Wounds and
+  kills, and no player-facing text says Summoner, dry run, post or delete.
 - Tests: never act on a real process. Use scratch `--root` and `HOME`, never
   `~/.config/summoner`. Gate and rules: `AGENTS.md`.

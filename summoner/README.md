@@ -74,7 +74,7 @@ build/psDoom.app/Contents/MacOS/psDoom
 ```
 
 Every shot is then written to `~/.config/summoner/state/ps/audit.jsonl`. What runs is the
-game's effect setting: **Off** touches nothing (audited `dry-run`), **Wounds only** renices,
+game's "Fighting monsters effects" setting: **No effect** touches nothing (audited `dry-run`), **Wounds only** renices,
 **Wounds and kills** also quits. Start psDoom from that shell: Finder and `open` give it a minimal PATH.
 Paths, a `--root` included, must not contain spaces (the respond command is split on whitespace).
 

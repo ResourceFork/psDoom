@@ -10,7 +10,7 @@
 
 static const char *const psd_effect_names[PSD_KILL_NUM] =
 {
-    "Off",
+    "No effect",
     "Wounds only",
     "Wounds and kills",
 };

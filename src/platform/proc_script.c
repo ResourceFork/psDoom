@@ -1230,7 +1230,7 @@ static int script_consume(int rc, int cut, int exit_status, const char *buf,
     {
         /* No process monsters until a poll works again; say why once. */
         snprintf(script_status, sizeof(script_status),
-                 "No process monsters: Summoner did not answer");
+                 "No process monsters: the process list did not answer");
         if (!script_poll_failing)
         {
             fprintf(stderr, "psDoom: %s (poll: %s)\n", script_status,
@@ -1249,7 +1249,7 @@ static int script_consume(int rc, int cut, int exit_status, const char *buf,
                    || strncmp(buf, "# summon error", 14) == 0))
     {
         snprintf(script_status, sizeof(script_status),
-                 "No process monsters: Summoner failed (see the log)");
+                 "No process monsters: the process list failed (see the log)");
         if (!script_poll_failing)
         {
             fprintf(stderr, "psDoom: %s (exit %d; %.200s)\n", script_status,
@@ -1721,7 +1721,7 @@ int proc_script_install_bundled(const char *exe_path)
         || !script_readable(summon))
     {
         snprintf(script_status, sizeof(script_status),
-                 "No process monsters: Summoner is missing from the app");
+                 "No process monsters: part of the app is missing");
         fprintf(stderr, "psDoom: %s (looked for %s)\n", script_status,
                 exe_path != NULL ? summon : "(no executable path)");
         return 0;
@@ -1729,7 +1729,7 @@ int proc_script_install_bundled(const char *exe_path)
     if (!psd_python_choose(script_executable, python, sizeof(python)))
     {
         snprintf(script_status, sizeof(script_status),
-                 "No process monsters: Summoner needs python3");
+                 "No process monsters: python3 is needed");
         fprintf(stderr, "psDoom: %s (install Homebrew python3, or the "
                 "Command Line Tools: xcode-select --install)\n",
                 script_status);

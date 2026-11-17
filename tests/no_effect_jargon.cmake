@@ -1,8 +1,10 @@
 # psDoom -- static check: the player never sees the protocol's words.
 #
-# The effect setting reads Off / Wounds only / Wounds and kills, and its help
-# line uses the plugin's plain words. "dry run", "post", "delete" and "renice"
-# stay in the protocol, the CLI and the spec. This scans the string literals of
+# The setting reads "Fighting monsters effects": No effect / Wounds only /
+# Wounds and kills, and its help line uses the plugin's plain words.
+# "Summoner", "dry run", "post", "delete" and "renice" stay in the protocol,
+# the CLI, the spec and the logs. The HUD's "No process monsters: ..." status
+# lines (src/platform/proc_script.c) are checked too. This scans the string literals of
 # the files that draw the menu and its help (any case), and every game source
 # for the old setting names. A tripwire, not a proof.
 #
@@ -22,7 +24,7 @@ file(GLOB_RECURSE _psd_all
 set(_psd_bad "")
 # Any string literal in the drawn files naming a protocol word, in any case.
 set(_psd_word
-    "\"[^\"]*([Dd][Rr][Yy][ -]?[Rr][Uu][Nn]|[Pp][Oo][Ss][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Rr][Ee][Nn][Ii][Cc][Ee]|SIGTERM)[^\"]*\"")
+    "\"[^\"]*([Ss][Uu][Mm][Mm][Oo][Nn]|[Dd][Rr][Yy][ -]?[Rr][Uu][Nn]|[Pp][Oo][Ss][Tt]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Rr][Ee][Nn][Ii][Cc][Ee]|SIGTERM)[^\"]*\"")
 foreach(_f IN LISTS _psd_shown)
     if(NOT EXISTS "${_f}")
         message(FATAL_ERROR "missing ${_f}")
@@ -32,10 +34,20 @@ foreach(_f IN LISTS _psd_shown)
         list(APPEND _psd_bad "${_f}: ${_h}")
     endforeach()
 endforeach()
+# The HUD's status lines.
+set(_psd_status "${PSD_SOURCE_DIR}/src/platform/proc_script.c")
+if(NOT EXISTS "${_psd_status}")
+    message(FATAL_ERROR "missing ${_psd_status}")
+endif()
+file(STRINGS "${_psd_status}" _hits
+     REGEX "\"No process monsters[^\"]*([Ss]ummon|[Dd]ry run|[Pp]ost|[Dd]elete)")
+foreach(_h IN LISTS _hits)
+    list(APPEND _psd_bad "${_psd_status}: ${_h}")
+endforeach()
 # The old setting names, anywhere in the game.
 foreach(_f IN LISTS _psd_all)
     file(STRINGS "${_f}" _hits
-         REGEX "\"[^\"]*(dry run\\)|post only|post \\+ delete|\\(KILL\\))[^\"]*\"")
+         REGEX "\"[^\"]*(dry run\\)|post only|post \\+ delete|\\(KILL\\)|Effect via Summoner)[^\"]*\"")
     foreach(_h IN LISTS _hits)
         list(APPEND _psd_bad "${_f}: ${_h}")
     endforeach()

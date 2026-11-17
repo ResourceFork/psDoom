@@ -9,7 +9,7 @@
 
 #include "psdoom_menu.h"
 #include "psdoom_options.h"
-#include "psdoom_effect.h"  /* Off / Wounds only / Wounds and kills, and help */
+#include "psdoom_effect.h"  /* No effect / Wounds only / Wounds and kills, and help */
 #include "proc_script.h"   /* "Sort by" from the script backend */
 
 #include <stdio.h>
@@ -126,9 +126,15 @@ static void M_DrawPsDoom(void)
             psdoom_kill_policy == PSD_KILL_SIMULATE ? crstr[CR_GRAY] :
                                                       crstr[CR_GREEN];
         char buf[80];
-        snprintf(buf, sizeof(buf), "%sEffect via Summoner: %s%s",
-                 crstr[CR_NONE], vc, psdoom_effect_name(psdoom_kill_policy));
-        M_WriteText(PSD_MENU_X, PSD_MENU_Y + psd_row_killpolicy * PSD_MENU_LH, buf);
+        int  y = PSD_MENU_Y + psd_row_killpolicy * PSD_MENU_LH;
+
+        /* Title and value together are wider than the screen: the value
+         * goes on its own line, inside the row's 16 pixels. */
+        snprintf(buf, sizeof(buf), "%s%s:", crstr[CR_NONE], PSD_EFFECT_TITLE);
+        M_WriteText(PSD_MENU_X, y, buf);
+        snprintf(buf, sizeof(buf), "%s%s", vc,
+                 psdoom_effect_name(psdoom_kill_policy));
+        M_WriteText(PSD_MENU_X + 16, y + 8, buf);
     }
 
     /* Max live monsters: a left/right slider clamped to 5..35. */
