@@ -20,6 +20,15 @@ int psdoom_show_labels = 1;                 /* default: labels on             */
 int psdoom_show_pid    = 0;                 /* default: name only (less clutter)*/
 int psdoom_label_range = PSD_LABELS_NORMAL;
 
+/* The poll asks for exactly as many items as there may be live monsters:
+ * the plugin's top N, in its sort order, are the monsters. A monster whose
+ * process leaves that list teleports out, so a lower cap prunes the
+ * lowest-ranked on the next poll, and a higher one brings in the next. */
+static void psd_send_cap(void)
+{
+    proc_script_set_limit(psdoom_monster_cap);
+}
+
 /* ------------------------------------------------------------------ startup */
 
 void psdoom_options_parse_args(void)
@@ -67,6 +76,7 @@ void psdoom_options_parse_args(void)
     {
         psdoom_monster_cap = PSD_MONSTER_CAP_MAX;
     }
+    psd_send_cap();
 }
 
 /* ------------------------------------------------------------------ queries */
@@ -141,6 +151,7 @@ void psdoom_opt_adjust_monstercap(int choice)
     {
         psdoom_monster_cap = PSD_MONSTER_CAP_MAX;
     }
+    psd_send_cap();   /* the next poll asks for the new count */
 }
 
 void psdoom_opt_cycle_classifyby(int choice)

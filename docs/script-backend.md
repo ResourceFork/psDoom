@@ -219,13 +219,15 @@ before the first entity, on every poll:
   a plain "acts on it".
 
 Once a poll has declared dimensions, psDoom appends the request to `PSDOOM_POLL_CMD` on each
-following poll: `limit=64` (its candidate cap) and, after the player picks one under
+following poll: `limit=<n>`, the player's monster count (**Max live monsters**), and, after the player picks one under
 **Sort by** in the psDoom options menu, `sort=<id>`. A changed choice reaches the next poll,
 about a second later. Only well-formed ids are appended, and a script that never declares a
 dimension never gets any words. The words go on the **end** of the command line, so a
 dimension-declaring `PSDOOM_POLL_CMD` must end with the command that reads them: no pipeline
 stage after it and no trailing `# comment`. The script answers in that order, trimmed to `limit`, and
-grades relative to the requested dimension.
+grades relative to the requested dimension. Its top `limit` items are the monsters: when the
+player lowers the count, the ones that drop off the list teleport out like an exited
+process's monster, and no responder call is made for them.
 
 With [Summoner](summoner.md) the words are `summon get sort=ID[:asc|desc][,ID…] group=ID
 limit=N`; Summoner checks them against the plugin's dimensions and drops unknown ones with a

@@ -91,13 +91,13 @@
 #define PSD_MAX_SWARM_LIVE    24   /* global ceiling on live swarm souls        */
 #define PSD_SWARM_COOLDOWN  (PSD_SYNC_INTERVAL * 4) /* tics before a parent re-swarms */
 
-/* Candidate pool: the triage layer returns at most this many (most-relevant)
- * processes each sync. The live-monster cap below picks from these, so keep it
- * comfortably larger than the cap. */
+/* Room for one listing. The poll asks for psdoom_monster_cap items (its
+ * limit), so a curating backend sends no more; this only bounds a script
+ * that ignores limit, and stays larger than the cap's maximum. */
 #define PSD_CANDIDATE_CAP 64
 
-/* The live-monster cap is now a user setting (psdoom_monster_cap, the menu
- * slider). The candidate pool stays comfortably larger than its max. */
+/* The live-monster cap is a user setting (psdoom_monster_cap, the menu
+ * slider), and the poll's limit. */
 
 /* Cap on remembered killed-this-level processes (see PSD_MarkKilled). */
 #define PSD_MAX_KILLED    1024
@@ -1047,11 +1047,9 @@ void psdoom_init(void)
      * PSDOOM_RESPOND_CMD) override it for development; otherwise the copy
      * bundled in Contents/Resources/summoner runs. If it cannot, psDoom
      * shows no process monsters and touches nothing (proc_none_backend). */
-    if (proc_script_install_from_env() || PSD_InstallBundledSummoner())
-    {
-        /* Ask the curating backend for as many candidates as we keep. */
-        proc_script_set_limit(PSD_CANDIDATE_CAP);
-    }
+    /* The poll's limit is the live-monster cap: psdoom_options_parse_args
+     * below sends it, and the menu sends each change. */
+    (void) (proc_script_install_from_env() || PSD_InstallBundledSummoner());
 
     psd_select_init();
     psdoom_options_parse_args();   /* let -psdoom-* flags override the config */

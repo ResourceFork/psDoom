@@ -208,10 +208,10 @@ Summoner **never re-sorts**. The plugin's order is the poll's order, and psDoom 
 host's `limit` cut the tail. `rank` is no longer read.
 
 A host asks for an order with request words: `summon get sort=cpu:desc,mem group=app
-limit=64`. Summoner checks each id against `describe`. An unknown id, a wrong kind or a bad
+limit=10` (psDoom's `limit` is its monster count). Summoner checks each id against `describe`. An unknown id, a wrong kind or a bad
 limit is dropped with a `# summon: ignored …` line, and `default_sort` takes the sort's
 place. The poll never fails because of a request. The checked words reach the plugin as
-`list sort=cpu:desc,mem:desc group=app limit=64`. The output starts with `# dim` lines for
+`list sort=cpu:desc,mem:desc group=app limit=10`. The output starts with `# dim` lines for
 every dimension and `# sort` / `# group` lines for what was applied; items carry `group=`.
 **The cache is keyed by the request**, so a new request refreshes at once (waiting up to
 `first_poll_wait_ms`) instead of serving an answer to the old question. One case is answered

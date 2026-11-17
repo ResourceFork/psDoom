@@ -40,6 +40,7 @@ void summoner_e2e_tests(int *checks_run, int *checks_failed); /* summoner_e2e_te
 void script_grade_tests(int *checks_run, int *checks_failed); /* script_grade_test.c */
 void script_request_tests(int *checks_run, int *checks_failed); /* script_request_test.c */
 void summoner_bundle_tests(int *checks_run, int *checks_failed); /* summoner_bundle_test.c */
+void poll_limit_tests(int *checks_run, int *checks_failed); /* poll_limit_test.c */
 
 /* ---- tiny check harness -------------------------------------------------- */
 static int checks_run;
@@ -1287,6 +1288,7 @@ int main(int argc, char **argv)
     test_legacy_process_monster();
     script_grade_tests(&checks_run, &checks_failed);
     script_request_tests(&checks_run, &checks_failed);
+    poll_limit_tests(&checks_run, &checks_failed);
     summoner_bundle_tests(&checks_run, &checks_failed);
     summoner_e2e_tests(&checks_run, &checks_failed);
     iwad_select_tests(&checks_run, &checks_failed);

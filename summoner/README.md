@@ -90,7 +90,7 @@ The full contract is psDoom's `docs/script-backend.md`; this is the part Summone
   clamped), which picks the monster over the tiers the game can draw
   (`min(floor(grade × N), N − 1)`), `group`. Lines starting with `#` are comments; a
   leading `# dim` block declares the sort and group dimensions, and then the game appends
-  `limit=64` and its chosen `sort=<id>` to the poll command. The game keeps the order and
+  `limit=<its monster count>` and its chosen `sort=<id>` to the poll command. The game keeps the order and
   filters nothing.
 - **Respond** (`PSDOOM_RESPOND_CMD`, split on whitespace, exec'd without a shell, detached,
   exit code ignored): `<cmd> <verb> <id> [key=value...]`: `post` (with `amount=N`) for a

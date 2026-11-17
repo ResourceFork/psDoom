@@ -332,6 +332,9 @@ add_executable(psdoom_tests EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_grade_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/script_request_test.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/summoner_bundle_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/poll_limit_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_options.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_effect.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/psdoom_grade.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos/iwad_select.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom/proc_select.c"
@@ -347,6 +350,8 @@ target_compile_definitions(psdoom_tests PRIVATE
     PSD_E2E_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}/summoner-e2e")
 target_include_directories(psdoom_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/psdoom"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/crispy-doom/src"   # m_argv.h (options)
+    "${CMAKE_CURRENT_BINARY_DIR}/third_party/crispy-doom"       # its config.h
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/macos")
 add_test(NAME psdoom_tests COMMAND psdoom_tests)
