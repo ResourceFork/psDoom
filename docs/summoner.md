@@ -207,22 +207,25 @@ new key, a new id and a new monster, and the plugin re-checks the start time bef
 Every `delete` the game sends for an id Summoner issued is a kill in the game, whatever the
 mode then lets the plugin do (a dry run, a blocked or rate-limited kill, a failed one), and
 even when a refresh has already moved the item out of the cached list. Summoner remembers
-that id in the plugin's state (`killed.json`) and never lists it again, so the game never
-respawns a monster for it, even when the item itself is still there (a process killed under
+that id in the plugin's state (`killed.json`) and does not list it again that level, so the
+game never respawns a monster for it, even when the item itself is still there (a process killed under
 No effect or Wounds only keeps running). A refresh asks the plugin for `limit` plus one per
 killed item it still listed last time (plus kills made since), drops the killed ones and
 then cuts to `limit`, so the top N still fills; a kill whose item has gone costs nothing.
-A kill is never forgotten for not being listed: ids are never reused, and a process ranked
-below the limit is still alive. Only the oldest kills beyond `KILLED_MAX` (4096) are
-dropped. A wound (`post`) is never remembered. A kill counts whatever `label=` the game
+Within a level a kill is never forgotten for not being listed: ids are never reused, and a
+process ranked below the limit is still alive. Beyond `KILLED_MAX` (4096) the oldest go. A wound (`post`) is never remembered. A kill counts whatever `label=` the game
 names (the id is the item), and marks the cache dirty: the next `get` waits up to
 `first_poll_wait_ms` for a list made after the kill, so at `limit=1` it lists the next item,
 not the killed one and not nothing.
 
-Kills last one level. When a level starts (a new game, the next map, a loaded save, a
-launch), the game sends `summon forget mode=<mode>`, and Summoner clears `killed.json` and
-marks the cache dirty, so the last level's killed items list again. Deleting
-`<state_dir>/killed.json` while no game runs does the same by hand.
+Kills last one level. The game sends `summon forget mode=<mode>` when a level starts, and
+Summoner clears `killed.json`, marks the cache dirty and makes the next `get` wait for a list
+made after the forget, so the first poll of the new level lists the last level's killed
+items again. psDoom sends it at launch, on any save load and when its process level
+restarts after a death (only that level syncs processes); psQuake sends it at launch and at
+every server spawn (a new map, a restart, a load). Deleting `<state_dir>/killed.json` while
+no game runs does the same by hand. Games that share a root and plugin share the kill list,
+so one game's new level forgets the other's kills too.
 
 ### Order: the plugin curates
 

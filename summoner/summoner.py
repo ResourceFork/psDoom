@@ -973,10 +973,10 @@ def _link_parents(items):
 # ----------------------------------------------------------------- killed --
 
 def read_killed(cfg):
-    """The ids the game has killed: {id: when}. Kept per state dir in
-    killed.json. Ids are never reused, so a killed id stands for that one
-    item for good, listed or not; only the oldest kills beyond KILLED_MAX
-    are forgotten."""
+    """The ids the game killed this level: {id: when}. Kept per state dir
+    in killed.json until the game's `forget` (a new level). Ids are never
+    reused, so a killed id stands for that one item, listed or not; beyond
+    KILLED_MAX the oldest kills go first."""
     k = read_json(state_path(cfg, "killed.json"), {})
     ids = k.get("ids") if isinstance(k, dict) else None
     out = {}
@@ -1241,6 +1241,11 @@ def cmd_poll(cfg, words=()):
         made = cache.get("fetched_at", 0)
         made = made if _is_num(made) else 0
         kill_after = max([t for t in killed.values() if t >= made] or [0])
+        # A forget since: the entry still leaves out what is listable again.
+        f = read_json(state_path(cfg, "forgot.json"), {})
+        forgot = f.get("at") if isinstance(f, dict) else None
+        if _is_num(forgot) and forgot >= made:
+            kill_after = max(kill_after, forgot)
     if (cache is None or changed or kill_after) and not by_cut and \
             (spawned or refresher_running(cfg)):
         deadline = time.monotonic() + cfg["first_poll_wait_ms"] / 1000.0
@@ -1326,6 +1331,10 @@ def cmd_forget(cfg):
     with Locked(state_path(cfg, "state.lock")):
         count = len(read_killed(cfg))
         write_killed(cfg, {})
+        # get waits for a list newer than this, so the first poll of the
+        # new level already lists the forgotten items.
+        write_json_atomic(state_path(cfg, "forgot.json"),
+                          {"version": 1, "at": time.time()})
         with open(state_path(cfg, "dirty"), "w"):
             pass
     audit(cfg, {"verb": "forget", "outcome": "forgot", "count": count})

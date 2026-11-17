@@ -55,7 +55,7 @@ static int *e2e_failed;
 
 static const char *const state_files[] = {
     "ids.json", "cache.json", "audit.jsonl", "rate.json", "state.lock",
-    "refresh.lock", "refresh.log", "refresh.pid", "dirty", "killed.json", NULL
+    "refresh.lock", "refresh.log", "refresh.pid", "dirty", "killed.json", "forgot.json", NULL
 };
 
 static void path_join(char *out, size_t cap, const char *a, const char *b)

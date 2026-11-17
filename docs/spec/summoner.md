@@ -27,10 +27,11 @@ Where things live:
 - **Ids:** one map per root, never reused, failing closed if lost.
 - **Killed ids:** every `delete` for an id Summoner issued (any mode, any outcome, any
   label, listed now or not) is remembered in the plugin's state (`killed.json`). `get`
-  never lists that id again; after a kill it waits for a list made after it, so the top N
+  does not list that id again that level; after a kill it waits for a list made after it, so the top N
   is refilled on the next poll. A refresh asks the plugin for `limit` plus one per killed
   item it still lists, then drops them before the cut. Kills last one level: `forget`
-  (sent by the game when a level starts) clears them; at most 4096 are kept.
+  (sent by the game when a level starts) clears them, and the next `get` waits for a list
+  made after it; at most 4096 are kept. Games sharing a root and plugin share the list.
 
 ## Plugins
 

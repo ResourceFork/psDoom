@@ -963,12 +963,16 @@ void psdoom_end_intro(void)
     psd_first_active_collection = false;
 }
 
+static const char *PSD_ScriptMode(void);
+
 /* Forget everything psDoom tracks about the current level's monsters. */
 static void PSD_ResetLevelState(void)
 {
     /* A poll result from before this level (or game) is out of date. */
     proc_script_discard();
-    /* Kills last one level: tell Summoner to list last level's kills again. */
+    /* Kills last one level: tell Summoner to list last level's kills again,
+     * with the effect setting in force now. */
+    proc_script_set_mode(PSD_ScriptMode());
     proc_script_forget_kills();
     psd_killed_count = 0;
     psd_grade_count  = 0;

@@ -1221,7 +1221,7 @@ class CliTests(Base):
     def test_forget_at_a_new_level_brings_killed_items_back(self):
         # The game sends `forget` when a level starts: the kills of the last
         # level are dropped, and the next poll lists those items again.
-        self.named("dim", self._ranked(4), spec=self._kill_spec())
+        self.named("dim", self._ranked(4), spec=self._kill_spec(list_sleep=0.3))
         self.r("use", "dim")
         rows = self.wait_rows(words=("limit=1",))
         self.r("delete", rows[0]["id"], "label=P00", "mode=post-only")
@@ -1230,7 +1230,9 @@ class CliTests(Base):
         res = self.r("forget", "mode=dryrun")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(res.stdout, "")
-        self.assertEqual(self._wait_labels(("limit=1",), ["P00"]), ["P00"])
+        # The very first poll of the new level already lists it again.
+        self.assertEqual([r["label"] for r in self.get(words=("limit=1",))],
+                         ["P00"])
         self.assertEqual(self.audit()[-1]["outcome"], "forgot")
         self.assertEqual(self.audit()[-1]["count"], 1)
         self._reap_refresher(self.configs[-1])
